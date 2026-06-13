@@ -31,6 +31,7 @@ Long term maintainability is a core priority. If you add new functionality, firs
 - Keep workflow-only fork changes narrow and prefer job-level disables over broad refactors.
 - Do not commit package version bumps solely to represent fork releases.
 - Keep macOS release signing separate from Apple notarization; do not require notarization secrets just to sign updater artifacts.
+- Keep self-signed macOS signing certificate trust in the release workflow when using non-Apple signing certificates.
 - Re-check Electron updater channel behavior when changing version strings, release metadata, or desktop packaging.
 - Keep fork-only storage in `state-tarik02.sqlite` unless intentionally upstreaming it.
 - When preparing fork PRs, branch from `origin/main` and target `tarik02/t3code:main`.

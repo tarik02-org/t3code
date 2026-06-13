@@ -10,6 +10,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Release builds publish updater metadata against the fork repository.
 - Fork release versions are derived in the release workflow so package manifests stay close to upstream.
 - macOS release signing is separate from Apple notarization.
+- Self-signed macOS signing certificates are trusted during release builds.
 
 ### Desktop Updater Channels
 
