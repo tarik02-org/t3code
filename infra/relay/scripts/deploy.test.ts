@@ -167,7 +167,9 @@ describe("release workflow tracing config propagation", () => {
 
       expect(workflow).not.toContain("client_tracing_token:");
       expect(workflow).not.toContain("needs.relay_public_config.outputs.client_tracing_token");
-      expect(workflow).toContain("if: ${{ false }} # Disabled for the fork: no production relay config.");
+      expect(workflow).toContain(
+        "if: ${{ false }} # Disabled for the fork: no production relay config.",
+      );
       expect(workflow).toContain('--github-env-file "$RUNNER_TEMP/relay-client-tracing.env"');
       expect(workflow).toContain("name: relay-client-tracing-config");
       expect(workflow).not.toContain('cat "$config_path" >> "$GITHUB_ENV"');
