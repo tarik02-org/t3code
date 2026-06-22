@@ -231,6 +231,114 @@ jobs:
             --current-tag "${{ steps.release_meta.outputs.tag }}" \
             --github-output
 
+  prepare_release_ref:
+    name: Prepare release ref
+    needs: [preflight]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.release_ref.outputs.ref }}
+    steps:
+      - id: app_token
+        name: Mint release app token
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'workflow_dispatch' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout release source
+        if: ${{ needs.preflight.outputs.release_channel != 'stable' || github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Checkout main for stable release commit
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+          persist-credentials: true
+
+      - id: app_bot
+        name: Resolve GitHub App bot identity
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+        run: |
+          user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          echo "name=${APP_SLUG}[bot]" >> "$GITHUB_OUTPUT"
+          echo "email=${user_id}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Vite+
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'workflow_dispatch' }}
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+              - --filter=@t3tools/oxlint-plugin-t3code...
+
+      - id: update_versions
+        name: Update version strings
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'workflow_dispatch' }}
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: node scripts/update-release-package-versions.ts "$RELEASE_VERSION" --github-output
+
+      - name: Format package.json files
+        if: ${{ steps.update_versions.outputs.changed == 'true' }}
+        run: vp fmt apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json
+
+      - name: Refresh lockfile
+        if: ${{ steps.update_versions.outputs.changed == 'true' }}
+        run: vp install --lockfile-only --ignore-scripts
+
+      - name: Commit and push stable release version
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'workflow_dispatch' && steps.update_versions.outputs.changed == 'true' }}
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          if git diff --quiet -- apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json pnpm-lock.yaml; then
+            echo "No version changes to commit."
+            exit 0
+          fi
+
+          git config user.name "${{ steps.app_bot.outputs.name }}"
+          git config user.email "${{ steps.app_bot.outputs.email }}"
+
+          git add apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json pnpm-lock.yaml
+          git commit -m "chore(release): prepare $RELEASE_TAG"
+          git push origin HEAD:main
+
+      - name: Validate stable tag package versions
+        if: ${{ needs.preflight.outputs.release_channel == 'stable' && github.event_name == 'push' }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          for file in apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json; do
+            version="$(node -e "console.log(require('./${file}').version)")"
+            if [[ "$version" != "$RELEASE_VERSION" ]]; then
+              echo "$file version is $version, expected $RELEASE_VERSION for tag $GITHUB_REF_NAME." >&2
+              exit 1
+            fi
+          done
+
+      - id: release_ref
+        name: Resolve release ref
+        run: echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   relay_public_config:
     name: Resolve T3 Connect public config
     needs: preflight
@@ -319,8 +427,8 @@ jobs:
 
   build:
     name: Build ${{ matrix.label }}
-    needs: [preflight]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    needs: [preflight, prepare_release_ref]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.prepare_release_ref.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -361,7 +469,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.preflight.outputs.ref }}
+          ref: ${{ needs.prepare_release_ref.outputs.ref }}
           fetch-depth: 0
 
       - name: Setup Vite+
@@ -668,8 +776,8 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [preflight, build]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' }}
+    needs: [preflight, prepare_release_ref, build]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.prepare_release_ref.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -684,7 +792,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.preflight.outputs.ref }}
+          ref: ${{ needs.prepare_release_ref.outputs.ref }}
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -747,7 +855,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
-          target_commitish: ${{ needs.preflight.outputs.ref }}
+          target_commitish: ${{ needs.prepare_release_ref.outputs.ref }}
           name: ${{ needs.preflight.outputs.release_name }}
           generate_release_notes: true
           previous_tag: ${{ needs.preflight.outputs.previous_tag }}
@@ -768,7 +876,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
-          target_commitish: ${{ needs.preflight.outputs.ref }}
+          target_commitish: ${{ needs.prepare_release_ref.outputs.ref }}
           name: ${{ needs.preflight.outputs.release_name }}
           generate_release_notes: true
           prerelease: ${{ needs.preflight.outputs.is_prerelease }}
@@ -883,7 +991,7 @@ jobs:
 
   finalize:
     name: Finalize release
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    if: false # Disabled for the fork: stable release versions are committed before building and tagging.
     needs: [preflight, release]
     runs-on: ubuntu-latest
     timeout-minutes: 10
