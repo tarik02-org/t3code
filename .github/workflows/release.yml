@@ -110,17 +110,9 @@ jobs:
 
           stable_from_main=false
           if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            if [[ -n "${BEFORE_SHA:-}" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
-              changed_files="$(git diff --name-only "$BEFORE_SHA" "$GITHUB_SHA")"
-            else
-              changed_files="$(git diff-tree --root --no-commit-id --name-only -r "$GITHUB_SHA")"
-            fi
-            if [[ "$HEAD_COMMIT_MESSAGE" == *"prepare stable release"* ]] &&
-              grep -qx "apps/server/package.json" <<< "$changed_files" &&
-              grep -qx "apps/desktop/package.json" <<< "$changed_files" &&
-              grep -qx "apps/web/package.json" <<< "$changed_files" &&
-              grep -qx "packages/contracts/package.json" <<< "$changed_files" &&
-              [[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\+${fork_marker}(\.[0-9]+)?$ ]]; then
+            head_commit_title="${HEAD_COMMIT_MESSAGE%%$'\n'*}"
+            if [[ "$head_commit_title" =~ ^prepare[[:space:]]stable[[:space:]]release[[:space:]]([0-9]+\.[0-9]+\.[0-9]+\+${fork_marker}(\.[0-9]+)?)([[:space:]]+\(#[0-9]+\))?$ ]] &&
+              [[ "${BASH_REMATCH[1]}" == "$package_version" ]]; then
               stable_from_main=true
             fi
           fi
