@@ -307,7 +307,7 @@ export function resolveAdjacentThreadId<T>(input: {
 
   const currentIndex = threadIds.indexOf(currentThreadId);
   if (currentIndex === -1) {
-    return direction === "previous" ? (threadIds.at(-1) ?? null) : (threadIds[0] ?? null);
+    return null;
   }
 
   if (direction === "previous") {
