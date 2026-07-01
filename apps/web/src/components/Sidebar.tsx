@@ -2756,7 +2756,7 @@ function EnvironmentVisibilityMenu({
         </TooltipPopup>
       </Tooltip>
       <MenuPopup
-        align="end"
+        align="start"
         collisionAvoidance={{ side: "none", align: "none", fallbackAxisSide: "none" }}
         side="bottom"
         className="min-w-56"
