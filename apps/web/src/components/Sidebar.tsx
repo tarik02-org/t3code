@@ -150,6 +150,7 @@ import {
 import { Input } from "./ui/input";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuGroup,
   MenuPopup,
   MenuRadioGroup,
@@ -242,6 +243,13 @@ const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> =
 };
 const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
   "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
+
+interface SidebarEnvironmentVisibilityOption {
+  environmentId: string;
+  label: string;
+  visible: boolean;
+  projectCount: number;
+}
 
 function SidebarThreadDetailPrewarmer({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
   useEnvironmentThread(threadRef.environmentId, threadRef.threadId);
@@ -2716,6 +2724,71 @@ function ProjectSortMenu({
   );
 }
 
+function EnvironmentVisibilityMenu({
+  environments,
+  hiddenCount,
+  onVisibilityChange,
+}: {
+  environments: readonly SidebarEnvironmentVisibilityOption[];
+  hiddenCount: number;
+  onVisibilityChange: (environmentId: string, visible: boolean) => void;
+}) {
+  if (environments.length <= 1) {
+    return null;
+  }
+
+  const visibleEnvironmentCount = environments.filter((environment) => environment.visible).length;
+
+  return (
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground" />
+          }
+        >
+          <Globe2Icon className="size-3.5" />
+        </TooltipTrigger>
+        <TooltipPopup side="right">
+          {hiddenCount > 0
+            ? `${hiddenCount} hidden environment${hiddenCount === 1 ? "" : "s"}`
+            : "Environments"}
+        </TooltipPopup>
+      </Tooltip>
+      <MenuPopup align="end" side="bottom" className="min-w-56">
+        <MenuGroup>
+          <div className="px-2 py-1 font-medium text-muted-foreground sm:text-xs">Environments</div>
+          {environments.map((environment) => {
+            const isLastVisibleEnvironment = environment.visible && visibleEnvironmentCount <= 1;
+            return (
+              <MenuCheckboxItem
+                key={environment.environmentId}
+                checked={environment.visible}
+                className="min-h-7 py-1 sm:text-xs"
+                disabled={isLastVisibleEnvironment}
+                variant="switch"
+                onCheckedChange={(checked) => {
+                  if (isLastVisibleEnvironment && checked !== true) {
+                    return;
+                  }
+                  onVisibilityChange(environment.environmentId, checked === true);
+                }}
+              >
+                <span className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-3">
+                  <span className="truncate">{environment.label}</span>
+                  <span className="text-muted-foreground/60">
+                    {environment.projectCount} project{environment.projectCount === 1 ? "" : "s"}
+                  </span>
+                </span>
+              </MenuCheckboxItem>
+            );
+          })}
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
 function SortableProjectItem({
   projectId,
   disabled = false,
@@ -2857,7 +2930,10 @@ interface SidebarProjectsContentProps {
   threadSortOrder: SidebarThreadSortOrder;
   projectGroupingMode: SidebarProjectGroupingMode;
   threadPreviewCount: SidebarThreadPreviewCount;
+  environmentVisibilityOptions: readonly SidebarEnvironmentVisibilityOption[];
+  hiddenEnvironmentCount: number;
   updateSettings: ReturnType<typeof useUpdateClientSettings>;
+  setSidebarEnvironmentVisible: (environmentId: string, visible: boolean) => void;
   openAddProject: () => void;
   isManualProjectSorting: boolean;
   projectDnDSensors: ReturnType<typeof useSensors>;
@@ -2898,7 +2974,10 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     threadSortOrder,
     projectGroupingMode,
     threadPreviewCount,
+    environmentVisibilityOptions,
+    hiddenEnvironmentCount,
     updateSettings,
+    setSidebarEnvironmentVisible,
     openAddProject,
     isManualProjectSorting,
     projectDnDSensors,
@@ -2949,6 +3028,12 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       updateSettings({ sidebarThreadPreviewCount: count });
     },
     [updateSettings],
+  );
+  const handleEnvironmentVisibilityChange = useCallback(
+    (environmentId: string, visible: boolean) => {
+      setSidebarEnvironmentVisible(environmentId, visible);
+    },
+    [setSidebarEnvironmentVisible],
   );
 
   return (
@@ -3015,6 +3100,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               onThreadSortOrderChange={handleThreadSortOrderChange}
               onProjectGroupingModeChange={handleProjectGroupingModeChange}
               onThreadPreviewCountChange={handleThreadPreviewCountChange}
+            />
+            <EnvironmentVisibilityMenu
+              environments={environmentVisibilityOptions}
+              hiddenCount={hiddenEnvironmentCount}
+              onVisibilityChange={handleEnvironmentVisibilityChange}
             />
             <Tooltip>
               <TooltipTrigger
@@ -3123,7 +3213,13 @@ export default function Sidebar() {
   const sidebarThreads = useThreadShells();
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const sidebarEnvironmentHiddenById = useUiStateStore(
+    (store) => store.sidebarEnvironmentHiddenById,
+  );
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
+  const setSidebarEnvironmentVisible = useUiStateStore(
+    (store) => store.setSidebarEnvironmentVisible,
+  );
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
@@ -3178,6 +3274,24 @@ export default function Sidebar() {
       ),
     [environments],
   );
+  const environmentVisibilityOptions = useMemo<SidebarEnvironmentVisibilityOption[]>(() => {
+    const projectCountsByEnvironmentId = new Map<string, number>();
+    for (const project of projects) {
+      projectCountsByEnvironmentId.set(
+        project.environmentId,
+        (projectCountsByEnvironmentId.get(project.environmentId) ?? 0) + 1,
+      );
+    }
+    return environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      visible: sidebarEnvironmentHiddenById[environment.environmentId] !== true,
+      projectCount: projectCountsByEnvironmentId.get(environment.environmentId) ?? 0,
+    }));
+  }, [environments, projects, sidebarEnvironmentHiddenById]);
+  const hiddenEnvironmentCount = environmentVisibilityOptions.filter(
+    (environment) => !environment.visible,
+  ).length;
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
       items: projects,
@@ -3189,30 +3303,44 @@ export default function Sidebar() {
       ],
     });
   }, [projectOrder, projects]);
+  const visibleOrderedProjects = useMemo(
+    () =>
+      orderedProjects.filter(
+        (project) => sidebarEnvironmentHiddenById[project.environmentId] !== true,
+      ),
+    [orderedProjects, sidebarEnvironmentHiddenById],
+  );
+  const visibleSidebarThreads = useMemo(
+    () =>
+      sidebarThreads.filter(
+        (thread) => sidebarEnvironmentHiddenById[thread.environmentId] !== true,
+      ),
+    [sidebarEnvironmentHiddenById, sidebarThreads],
+  );
 
   // Build a mapping from physical project key → logical project key for
   // cross-environment grouping.  Projects that share a repositoryIdentity
   // canonicalKey are treated as one logical project in the sidebar.
   const physicalToLogicalKey = useMemo(() => {
     return buildPhysicalToLogicalProjectKeyMap({
-      projects: orderedProjects,
+      projects: visibleOrderedProjects,
       settings: projectGroupingSettings,
     });
-  }, [orderedProjects, projectGroupingSettings]);
+  }, [visibleOrderedProjects, projectGroupingSettings]);
   const projectPhysicalKeyByScopedRef = useMemo(
     () =>
       new Map(
-        orderedProjects.map((project) => [
+        visibleOrderedProjects.map((project) => [
           scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
           derivePhysicalProjectKey(project),
         ]),
       ),
-    [orderedProjects],
+    [visibleOrderedProjects],
   );
 
   const sidebarProjects = useMemo<SidebarProjectSnapshot[]>(() => {
     return buildSidebarProjectSnapshots({
-      projects: orderedProjects,
+      projects: visibleOrderedProjects,
       settings: projectGroupingSettings,
       primaryEnvironmentId,
       resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -3221,7 +3349,7 @@ export default function Sidebar() {
   }, [
     environmentLabelById,
     desktopLocalEnvironmentIds,
-    orderedProjects,
+    visibleOrderedProjects,
     projectGroupingSettings,
     primaryEnvironmentId,
   ]);
@@ -3259,7 +3387,7 @@ export default function Sidebar() {
   // are displayed together.
   const threadsByProjectKey = useMemo(() => {
     const next = new Map<string, SidebarThreadSummary[]>();
-    for (const thread of sidebarThreads) {
+    for (const thread of visibleSidebarThreads) {
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
           scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -3273,7 +3401,7 @@ export default function Sidebar() {
       }
     }
     return next;
-  }, [sidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
+  }, [visibleSidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
   const getCurrentSidebarShortcutContext = useCallback(
     () => ({
       terminalFocus: isTerminalFocused(),
@@ -3382,8 +3510,8 @@ export default function Sidebar() {
   }, []);
 
   const visibleThreads = useMemo(
-    () => sidebarThreads.filter((thread) => thread.archivedAt === null),
-    [sidebarThreads],
+    () => visibleSidebarThreads.filter((thread) => thread.archivedAt === null),
+    [visibleSidebarThreads],
   );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
@@ -3730,7 +3858,10 @@ export default function Sidebar() {
             threadSortOrder={sidebarThreadSortOrder}
             projectGroupingMode={sidebarProjectGroupingMode}
             threadPreviewCount={sidebarThreadPreviewCount}
+            environmentVisibilityOptions={environmentVisibilityOptions}
+            hiddenEnvironmentCount={hiddenEnvironmentCount}
             updateSettings={updateSettings}
+            setSidebarEnvironmentVisible={setSidebarEnvironmentVisible}
             openAddProject={openAddProjectCommandPalette}
             isManualProjectSorting={isManualProjectSorting}
             projectDnDSensors={projectDnDSensors}
