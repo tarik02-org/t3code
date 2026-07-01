@@ -2755,7 +2755,12 @@ function EnvironmentVisibilityMenu({
             : "Environments"}
         </TooltipPopup>
       </Tooltip>
-      <MenuPopup align="end" side="bottom" className="min-w-56">
+      <MenuPopup
+        align="end"
+        collisionAvoidance={{ side: "none", align: "none", fallbackAxisSide: "none" }}
+        side="bottom"
+        className="min-w-56"
+      >
         <MenuGroup>
           <div className="px-2 py-1 font-medium text-muted-foreground sm:text-xs">Environments</div>
           {environments.map((environment) => {
