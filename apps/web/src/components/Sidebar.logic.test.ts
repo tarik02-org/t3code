@@ -485,6 +485,20 @@ describe("resolveAdjacentThreadId", () => {
     expect(
       resolveAdjacentThreadId({
         threadIds: threads,
+        currentThreadId: ThreadId.make("hidden-thread"),
+        direction: "next",
+      }),
+    ).toBe(threads[0]);
+    expect(
+      resolveAdjacentThreadId({
+        threadIds: threads,
+        currentThreadId: ThreadId.make("hidden-thread"),
+        direction: "previous",
+      }),
+    ).toBe(threads[2]);
+    expect(
+      resolveAdjacentThreadId({
+        threadIds: threads,
         currentThreadId: threads[0] ?? null,
         direction: "previous",
       }),

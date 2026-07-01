@@ -3282,10 +3282,13 @@ export default function Sidebar() {
         (projectCountsByEnvironmentId.get(project.environmentId) ?? 0) + 1,
       );
     }
+    const canHideSidebarEnvironments = environments.length > 1;
     return environments.map((environment) => ({
       environmentId: environment.environmentId,
       label: environment.label,
-      visible: sidebarEnvironmentHiddenById[environment.environmentId] !== true,
+      visible:
+        !canHideSidebarEnvironments ||
+        sidebarEnvironmentHiddenById[environment.environmentId] !== true,
       projectCount: projectCountsByEnvironmentId.get(environment.environmentId) ?? 0,
     }));
   }, [environments, projects, sidebarEnvironmentHiddenById]);
@@ -3306,16 +3309,18 @@ export default function Sidebar() {
   const visibleOrderedProjects = useMemo(
     () =>
       orderedProjects.filter(
-        (project) => sidebarEnvironmentHiddenById[project.environmentId] !== true,
+        (project) =>
+          environments.length <= 1 || sidebarEnvironmentHiddenById[project.environmentId] !== true,
       ),
-    [orderedProjects, sidebarEnvironmentHiddenById],
+    [environments.length, orderedProjects, sidebarEnvironmentHiddenById],
   );
   const visibleSidebarThreads = useMemo(
     () =>
       sidebarThreads.filter(
-        (thread) => sidebarEnvironmentHiddenById[thread.environmentId] !== true,
+        (thread) =>
+          environments.length <= 1 || sidebarEnvironmentHiddenById[thread.environmentId] !== true,
       ),
-    [sidebarEnvironmentHiddenById, sidebarThreads],
+    [environments.length, sidebarEnvironmentHiddenById, sidebarThreads],
   );
 
   // Build a mapping from physical project key → logical project key for
@@ -3353,6 +3358,28 @@ export default function Sidebar() {
     projectGroupingSettings,
     primaryEnvironmentId,
   ]);
+  const sidebarProjectsForProjectOrder = useMemo<SidebarProjectSnapshot[]>(() => {
+    return buildSidebarProjectSnapshots({
+      projects: orderedProjects,
+      settings: projectGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
+      isDesktopLocalEnvironment: (environmentId) => desktopLocalEnvironmentIds.has(environmentId),
+    });
+  }, [
+    environmentLabelById,
+    desktopLocalEnvironmentIds,
+    orderedProjects,
+    projectGroupingSettings,
+    primaryEnvironmentId,
+  ]);
+  const sidebarProjectForProjectOrderByKey = useMemo(
+    () =>
+      new Map(
+        sidebarProjectsForProjectOrder.map((project) => [project.projectKey, project] as const),
+      ),
+    [sidebarProjectsForProjectOrder],
+  );
 
   const sidebarProjectByKey = useMemo(
     () => new Map(sidebarProjects.map((project) => [project.projectKey, project] as const)),
@@ -3464,8 +3491,8 @@ export default function Sidebar() {
       dragInProgressRef.current = false;
       const { active, over } = event;
       if (!over || active.id === over.id) return;
-      const activeProject = sidebarProjects.find((project) => project.projectKey === active.id);
-      const overProject = sidebarProjects.find((project) => project.projectKey === over.id);
+      const activeProject = sidebarProjectForProjectOrderByKey.get(String(active.id));
+      const overProject = sidebarProjectForProjectOrderByKey.get(String(over.id));
       if (!activeProject || !overProject) return;
       const activeMemberKeys = activeProject.memberProjects.map(
         (member) => member.physicalProjectKey,
@@ -3473,7 +3500,7 @@ export default function Sidebar() {
       const overMemberKeys = overProject.memberProjects.map((member) => member.physicalProjectKey);
       reorderProjects(orderedProjects.map(getProjectOrderKey), activeMemberKeys, overMemberKeys);
     },
-    [orderedProjects, sidebarProjectSortOrder, reorderProjects, sidebarProjects],
+    [orderedProjects, sidebarProjectForProjectOrderByKey, sidebarProjectSortOrder, reorderProjects],
   );
 
   const handleProjectDragStart = useCallback(
