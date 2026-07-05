@@ -3557,7 +3557,7 @@ export default function Sidebar() {
     animatedThreadListsRef.current.add(node);
   }, []);
   const lastSidebarScrollTargetKeyRef = useRef<string | null>(null);
-  const instantSidebarScrollTargetKeyRef = useRef<string | null>(null);
+  const pendingInstantSidebarScrollTargetKeyRef = useRef<string | null>(null);
   const sidebarIsVisible = isMobile ? openMobile : open;
   const sidebarWasVisibleRef = useRef(false);
 
@@ -3695,35 +3695,35 @@ export default function Sidebar() {
     const wasSidebarVisible = sidebarWasVisibleRef.current;
     sidebarWasVisibleRef.current = sidebarIsVisible;
     if (!sidebarScrollTargetKey) {
-      instantSidebarScrollTargetKeyRef.current = null;
+      pendingInstantSidebarScrollTargetKeyRef.current = null;
       return;
     }
     if (!sidebarIsVisible) {
       return;
     }
-    if (instantSidebarScrollTargetKeyRef.current !== sidebarScrollTargetKey) {
-      instantSidebarScrollTargetKeyRef.current = null;
+    if (pendingInstantSidebarScrollTargetKeyRef.current !== sidebarScrollTargetKey) {
+      pendingInstantSidebarScrollTargetKeyRef.current = null;
     }
     if (!wasSidebarVisible) {
-      instantSidebarScrollTargetKeyRef.current = sidebarScrollTargetKey;
+      pendingInstantSidebarScrollTargetKeyRef.current = sidebarScrollTargetKey;
     }
     if (
-      instantSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey &&
+      pendingInstantSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey &&
       scrollSidebarTarget("instant", true)
     ) {
-      instantSidebarScrollTargetKeyRef.current = null;
+      pendingInstantSidebarScrollTargetKeyRef.current = null;
     }
   }, [scrollSidebarTarget, sidebarIsVisible, sidebarScrollTargetKey]);
   useEffect(() => {
     if (!sidebarScrollTargetKey) {
       lastSidebarScrollTargetKeyRef.current = null;
-      instantSidebarScrollTargetKeyRef.current = null;
+      pendingInstantSidebarScrollTargetKeyRef.current = null;
       return;
     }
     if (!sidebarIsVisible) {
       return;
     }
-    if (instantSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey) {
+    if (pendingInstantSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey) {
       return;
     }
     scrollSidebarTarget("smooth");
