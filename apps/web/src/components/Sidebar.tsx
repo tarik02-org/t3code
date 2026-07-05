@@ -3232,7 +3232,7 @@ export default function Sidebar() {
   const updateSettings = useUpdateClientSettings();
   const handleNewThread = useNewThreadHandler();
   const { archiveThread, deleteThread } = useThreadActions();
-  const { isMobile, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, open, openMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
@@ -3557,6 +3557,9 @@ export default function Sidebar() {
     animatedThreadListsRef.current.add(node);
   }, []);
   const lastSidebarScrollTargetKeyRef = useRef<string | null>(null);
+  const instantSidebarScrollTargetKeyRef = useRef<string | null>(null);
+  const sidebarIsVisible = isMobile ? openMobile : open;
+  const sidebarWasVisibleRef = useRef(false);
 
   const visibleThreads = useMemo(
     () => visibleSidebarThreads.filter((thread) => thread.archivedAt === null),
@@ -3643,55 +3646,88 @@ export default function Sidebar() {
       ? `thread:${routeThreadKey}`
       : `project:${activeRouteProjectKey}`
     : null;
+  const scrollSidebarTarget = useCallback(
+    (behavior: ScrollBehavior, force = false) => {
+      if (
+        !sidebarScrollTargetKey ||
+        !activeRouteProjectKey ||
+        (!force && lastSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey)
+      ) {
+        return false;
+      }
+      if (!sidebarProjectByKey.has(activeRouteProjectKey)) {
+        return false;
+      }
+      if (routeThreadKey) {
+        const projectThreads = threadsByProjectKey.get(activeRouteProjectKey) ?? [];
+        if (
+          !projectThreads.some(
+            (thread) =>
+              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
+          )
+        ) {
+          return false;
+        }
+      }
+      const target = routeThreadKey
+        ? document.querySelector<HTMLElement>(
+            `[data-sidebar-thread-key="${globalThis.CSS.escape(routeThreadKey)}"]`,
+          )
+        : document.querySelector<HTMLElement>(
+            `[data-sidebar-project-key="${globalThis.CSS.escape(activeRouteProjectKey)}"]`,
+          );
+      if (!target) {
+        return false;
+      }
+      target.scrollIntoView({ behavior, block: "center" });
+      lastSidebarScrollTargetKeyRef.current = sidebarScrollTargetKey;
+      return true;
+    },
+    [
+      activeRouteProjectKey,
+      routeThreadKey,
+      sidebarProjectByKey,
+      sidebarScrollTargetKey,
+      threadsByProjectKey,
+    ],
+  );
   useLayoutEffect(() => {
+    const wasSidebarVisible = sidebarWasVisibleRef.current;
+    sidebarWasVisibleRef.current = sidebarIsVisible;
     if (!sidebarScrollTargetKey) {
-      lastSidebarScrollTargetKeyRef.current = null;
+      instantSidebarScrollTargetKeyRef.current = null;
       return;
     }
-    if (isMobile && !openMobile) {
+    if (!sidebarIsVisible) {
       return;
+    }
+    if (instantSidebarScrollTargetKeyRef.current !== sidebarScrollTargetKey) {
+      instantSidebarScrollTargetKeyRef.current = null;
+    }
+    if (!wasSidebarVisible) {
+      instantSidebarScrollTargetKeyRef.current = sidebarScrollTargetKey;
     }
     if (
-      !activeRouteProjectKey ||
-      lastSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey
+      instantSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey &&
+      scrollSidebarTarget("instant", true)
     ) {
+      instantSidebarScrollTargetKeyRef.current = null;
+    }
+  }, [scrollSidebarTarget, sidebarIsVisible, sidebarScrollTargetKey]);
+  useEffect(() => {
+    if (!sidebarScrollTargetKey) {
+      lastSidebarScrollTargetKeyRef.current = null;
+      instantSidebarScrollTargetKeyRef.current = null;
       return;
     }
-    if (!sidebarProjectByKey.has(activeRouteProjectKey)) {
+    if (!sidebarIsVisible) {
       return;
     }
-    if (routeThreadKey) {
-      const projectThreads = threadsByProjectKey.get(activeRouteProjectKey) ?? [];
-      if (
-        !projectThreads.some(
-          (thread) =>
-            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
-        )
-      ) {
-        return;
-      }
-    }
-    const target = routeThreadKey
-      ? document.querySelector<HTMLElement>(
-          `[data-sidebar-thread-key="${globalThis.CSS.escape(routeThreadKey)}"]`,
-        )
-      : document.querySelector<HTMLElement>(
-          `[data-sidebar-project-key="${globalThis.CSS.escape(activeRouteProjectKey)}"]`,
-        );
-    if (!target) {
+    if (instantSidebarScrollTargetKeyRef.current === sidebarScrollTargetKey) {
       return;
     }
-    target.scrollIntoView({ behavior: "instant", block: "center" });
-    lastSidebarScrollTargetKeyRef.current = sidebarScrollTargetKey;
-  }, [
-    activeRouteProjectKey,
-    isMobile,
-    openMobile,
-    routeThreadKey,
-    sidebarProjectByKey,
-    sidebarScrollTargetKey,
-    threadsByProjectKey,
-  ]);
+    scrollSidebarTarget("smooth");
+  }, [scrollSidebarTarget, sidebarIsVisible, sidebarScrollTargetKey]);
   const threadJumpCommandByKey = useMemo(() => {
     const mapping = new Map<string, NonNullable<ReturnType<typeof threadJumpCommandForIndex>>>();
     for (const [visibleThreadIndex, threadKey] of visibleSidebarThreadKeys.entries()) {
