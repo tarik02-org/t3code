@@ -1176,7 +1176,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
   };
 
   const queueRelayChildStates = (): void => {
-    if (finished || relayFrame !== null) return;
+    if (finished || childFrameStates.size === 0 || relayFrame !== null) return;
     relayFrame = window.requestAnimationFrame(() => {
       relayFrame = null;
       for (const entry of childFrameStates.values()) relayChildState(entry);
@@ -1286,6 +1286,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
   };
 
   function queueEditorLayout(): void {
+    if (!isMainFrame) return;
     if (editorLayoutFrame !== null) window.cancelAnimationFrame(editorLayoutFrame);
     editorLayoutFrame = window.requestAnimationFrame(() => {
       editorLayoutFrame = null;
@@ -1776,6 +1777,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
     teardown,
     applyTheme: (theme) => applyAnnotationTheme(host, theme),
   };
+  queuePublishState();
 }
 
 ipcRenderer.on(

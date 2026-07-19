@@ -36,6 +36,7 @@ import {
   nativeImage,
   shell,
   webContents,
+  webFrameMain,
 } from "electron";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -101,6 +102,7 @@ const MAX_EVALUATION_BYTES = 64_000;
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
+const MAX_PREVIEW_TITLE_LENGTH = 512;
 const DIAGNOSTIC_BUFFER_LIMIT = 200;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
@@ -1215,7 +1217,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const computeNavStatus = (wc: Electron.WebContents): PreviewNavStatus => {
     const url = wc.getURL();
-    const title = wc.getTitle();
+    const title = wc.getTitle().slice(0, MAX_PREVIEW_TITLE_LENGTH);
     if (url === "" || url === "about:blank") return { kind: "Idle" };
     if (wc.isLoading()) return { kind: "Loading", url, title };
     return { kind: "Success", url, title };
@@ -1320,7 +1322,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           navStatus: {
             kind: "LoadFailed",
             url: validatedUrl || wc.getURL(),
-            title: wc.getTitle(),
+            title: wc.getTitle().slice(0, MAX_PREVIEW_TITLE_LENGTH),
             code,
             description,
           },
@@ -1710,7 +1712,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             wc.ipc.removeListener(ELEMENT_PICKED_CHANNEL, onMessage);
             wc.off("destroyed", onDestroyed);
             wc.off("did-start-navigation", onNavigated);
-            wc.off("frame-created", onFrameCreated);
+            wc.off("did-frame-finish-load", onFrameLoaded);
           }).pipe(Effect.ignore);
           yield* Ref.update(pickSessionsRef, (sessions) =>
             replaceMap(sessions, (copy) => {
@@ -1724,6 +1726,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const active = (yield* Ref.get(pickSessionsRef)).get(tabId);
           if (!active || active.cancel !== cancel) return;
           yield* cleanup();
+          if (payload === null && !wc.isDestroyed()) {
+            yield* attempt(
+              { operation: "pickElement.cancelFrames", tabId, webContentsId: wc.id },
+              () => sendToPreviewFrames(wc, CANCEL_PICK_CHANNEL),
+            ).pipe(Effect.ignore);
+          }
           resume(Effect.succeed(payload));
         });
         const settle = (payload: PreviewAnnotationPayload | null) => {
@@ -1784,32 +1792,34 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ) => {
           if (isMainFrame) settle(null);
         };
-        const onFrameCreated = (
+        const onFrameLoaded = (
           _event: Electron.Event,
-          { frame }: Electron.FrameCreatedDetails,
+          isMainFrame: boolean,
+          frameProcessId: number,
+          frameRoutingId: number,
         ): void => {
+          if (isMainFrame) return;
+          const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
           if (!frame) return;
-          frame.once("dom-ready", () => {
-            runFork(
-              Ref.get(pickSessionsRef).pipe(
-                Effect.flatMap((sessions) => {
-                  if (sessions.get(tabId)?.sessionId !== sessionId || frame.isDestroyed()) {
-                    return Effect.void;
-                  }
-                  return attempt(
-                    { operation: "pickElement.startFrame", tabId, webContentsId: wc.id },
-                    () =>
-                      frame.send(
-                        START_PICK_CHANNEL,
-                        annotationTheme,
-                        sessionId,
-                        String(frame.frameTreeNodeId),
-                      ),
-                  ).pipe(Effect.ignore);
-                }),
-              ),
-            );
-          });
+          runFork(
+            Ref.get(pickSessionsRef).pipe(
+              Effect.flatMap((sessions) => {
+                if (sessions.get(tabId)?.sessionId !== sessionId || frame.isDestroyed()) {
+                  return Effect.void;
+                }
+                return attempt(
+                  { operation: "pickElement.startFrame", tabId, webContentsId: wc.id },
+                  () =>
+                    frame.send(
+                      START_PICK_CHANNEL,
+                      annotationTheme,
+                      sessionId,
+                      String(frame.frameTreeNodeId),
+                    ),
+                ).pipe(Effect.ignore);
+              }),
+            ),
+          );
         };
         const registerPickElement = Effect.fn("PreviewManager.registerPickElement")(function* () {
           yield* Ref.update(pickSessionsRef, (sessions) =>
@@ -1820,8 +1830,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           yield* attempt({ operation: "pickElement.register", tabId, webContentsId: wc.id }, () => {
             wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
             wc.once("destroyed", onDestroyed);
-            wc.once("did-start-navigation", onNavigated);
-            wc.on("frame-created", onFrameCreated);
+            wc.on("did-start-navigation", onNavigated);
+            wc.on("did-frame-finish-load", onFrameLoaded);
             if (!wc.isFocused()) wc.focus();
             startPickInPreviewFrames(wc, annotationTheme, sessionId);
           });
