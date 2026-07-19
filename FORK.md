@@ -40,6 +40,10 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - Provider sessions use a shared launch environment pipeline instead of ad hoc environment assembly.
 
+### Preview Iframes
+
+- Preview annotations and MCP automation include nested iframes in the same browser surface.
+
 ### Base Path And Remote URLs
 
 - The fork includes base-path handling for served web assets and remote URL normalization.

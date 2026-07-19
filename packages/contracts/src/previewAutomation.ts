@@ -62,6 +62,15 @@ const PreviewAutomationTabTargetFields = {
   }),
 };
 
+const PreviewAutomationFrameTargetFields = {
+  frameIndex: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+      description:
+        "Frame index from preview_snapshot. Omit to search every frame for selector-based actions; other actions default to the main frame (index 0).",
+    }),
+  ),
+};
+
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
@@ -266,6 +275,7 @@ const LegacySelector = TrimmedNonEmptyString.annotate({
 
 export const PreviewAutomationClickInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationFrameTargetFields,
   selector: Schema.optional(LegacySelector).annotate({
     description:
       "Legacy CSS selector such as button[type='submit']. Prefer locator for resilient role/text targeting.",
@@ -294,6 +304,9 @@ export const PreviewAutomationClickInput = Schema.Struct({
       const hasY = input.y !== undefined;
       if (hasX !== hasY) return "Coordinates require both x and y.";
       const coordinateModes = hasX && hasY ? 1 : 0;
+      if (coordinateModes === 1 && input.frameIndex !== undefined) {
+        return "Coordinate clicks do not accept frameIndex.";
+      }
       return selectorModes + coordinateModes === 1 || "Provide exactly one click target.";
     }),
   )
@@ -305,6 +318,7 @@ export type PreviewAutomationClickInput = typeof PreviewAutomationClickInput.Typ
 
 export const PreviewAutomationTypeInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationFrameTargetFields,
   text: Schema.String.annotate({ description: "Literal text to insert." }),
   selector: Schema.optional(LegacySelector).annotate({
     description: "Legacy CSS selector for the input. Prefer locator.",
@@ -335,6 +349,7 @@ export type PreviewAutomationTypeInput = typeof PreviewAutomationTypeInput.Type;
 
 export const PreviewAutomationPressInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationFrameTargetFields,
   key: Schema.String.check(Schema.isTrimmed())
     .check(
       Schema.isNonEmpty({
@@ -356,6 +371,7 @@ export type PreviewAutomationPressInput = typeof PreviewAutomationPressInput.Typ
 
 export const PreviewAutomationScrollInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationFrameTargetFields,
   deltaX: Schema.optional(
     Schema.Finite.annotate({
       description: "Horizontal scroll delta in CSS pixels. Positive scrolls right. Defaults to 0.",
@@ -391,17 +407,18 @@ export type PreviewAutomationScrollInput = typeof PreviewAutomationScrollInput.T
 
 export const PreviewAutomationEvaluateInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationFrameTargetFields,
   expression: Schema.String.check(Schema.isTrimmed())
     .check(
       Schema.isNonEmpty({
         description:
-          "JavaScript expression evaluated in the page's main frame, for example document.title or (() => ({href: location.href}))().",
+          "JavaScript expression evaluated in the selected frame, defaulting to the main frame, for example document.title or (() => ({href: location.href}))().",
       }),
     )
     .check(Schema.isMaxLength(64_000))
     .annotateKey({
       description:
-        "JavaScript expression evaluated in the page's main frame, for example document.title or (() => ({href: location.href}))().",
+        "JavaScript expression evaluated in the selected frame, defaulting to the main frame, for example document.title or (() => ({href: location.href}))().",
     }),
   awaitPromise: Schema.optional(
     Schema.Boolean.annotate({ description: "Await a returned Promise. Defaults to true." }),
@@ -420,6 +437,7 @@ export type PreviewAutomationEvaluateInput = typeof PreviewAutomationEvaluateInp
 
 export const PreviewAutomationWaitForInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationFrameTargetFields,
   selector: Schema.optional(LegacySelector).annotate({
     description: "Legacy CSS selector that must match an element. Prefer locator.",
   }),
@@ -462,6 +480,7 @@ export const PreviewAutomationWaitForInput = Schema.Struct({
 export type PreviewAutomationWaitForInput = typeof PreviewAutomationWaitForInput.Type;
 
 export const PreviewAutomationElement = Schema.Struct({
+  frameIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   tag: Schema.String,
   role: Schema.NullOr(Schema.String),
   name: Schema.String,
@@ -472,6 +491,13 @@ export const PreviewAutomationElement = Schema.Struct({
   height: Schema.Number,
 });
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
+
+export const PreviewAutomationFrame = Schema.Struct({
+  index: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  url: Schema.String,
+  name: Schema.String,
+});
+export type PreviewAutomationFrame = typeof PreviewAutomationFrame.Type;
 
 export const PreviewAutomationConsoleEntry = Schema.Struct({
   level: Schema.String,
@@ -505,6 +531,7 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
+  frames: Schema.Array(PreviewAutomationFrame),
   visibleText: Schema.String,
   interactiveElements: Schema.Array(PreviewAutomationElement),
   accessibilityTree: Schema.Unknown,

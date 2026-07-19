@@ -286,7 +286,7 @@ export const make = Effect.gen(function* () {
       }
       webPreferences.sandbox = true;
       webPreferences.nodeIntegration = false;
-      webPreferences.nodeIntegrationInSubFrames = false;
+      webPreferences.nodeIntegrationInSubFrames = true;
       webPreferences.contextIsolation = false;
     });
 

@@ -29,8 +29,76 @@ const PRIMARY_FILL = "color-mix(in srgb, var(--t3-primary) 10%, transparent)";
 const MAX_MARQUEE_ELEMENTS = 20;
 const CONTENT_LAYER_Z_INDEX = 1;
 const CHROME_LAYER_Z_INDEX = 10;
+const FRAME_BRIDGE_SOURCE = "t3code-preview-annotation";
+const isMainFrame = process.isMainFrame;
 
 type AnnotationTool = "select" | "marquee" | "draw" | "erase";
+
+interface AnnotationComputedStyles {
+  readonly fontFamily: string;
+  readonly fontSize: string;
+  readonly fontWeight: string;
+  readonly lineHeight: string;
+  readonly color: string;
+  readonly backgroundColor: string;
+  readonly opacity: string;
+  readonly borderRadius: string;
+  readonly borderColor: string;
+  readonly borderWidth: string;
+  readonly padding: string;
+  readonly margin: string;
+  readonly gap: string;
+}
+
+interface FrameElementTarget {
+  readonly id: string;
+  readonly element: PickedElementPayload;
+  readonly rect: PreviewAnnotationRect;
+  readonly computedStyles: AnnotationComputedStyles;
+}
+
+interface FrameAnnotationState {
+  readonly pageUrl: string;
+  readonly pageTitle: string | null;
+  readonly elements: ReadonlyArray<FrameElementTarget>;
+  readonly regions: ReadonlyArray<PreviewAnnotationRegionTarget>;
+  readonly strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>;
+  readonly styleChanges: ReadonlyArray<PreviewAnnotationStyleChange>;
+}
+
+interface FrameStateMessage {
+  readonly source: typeof FRAME_BRIDGE_SOURCE;
+  readonly kind: "state";
+  readonly sessionId: string;
+  readonly frameId: string;
+  readonly viewport: { readonly width: number; readonly height: number };
+  readonly state: FrameAnnotationState;
+}
+
+type FrameCommand =
+  | { readonly kind: "tool"; readonly tool: AnnotationTool }
+  | {
+      readonly kind: "clear-elements";
+      readonly keepFrameId: string;
+      readonly keepTargetId: string;
+    }
+  | { readonly kind: "style"; readonly property: string; readonly value: string };
+
+interface FrameCommandMessage {
+  readonly source: typeof FRAME_BRIDGE_SOURCE;
+  readonly kind: "command";
+  readonly sessionId: string;
+  readonly command: FrameCommand;
+}
+
+interface FrameToolRequestMessage {
+  readonly source: typeof FRAME_BRIDGE_SOURCE;
+  readonly kind: "tool-request";
+  readonly sessionId: string;
+  readonly tool: AnnotationTool;
+}
+
+type FrameBridgeMessage = FrameStateMessage | FrameCommandMessage | FrameToolRequestMessage;
 
 interface SelectedElement {
   id: string;
@@ -38,6 +106,7 @@ interface SelectedElement {
   outline: HTMLDivElement;
   label: HTMLDivElement;
   baselineStyles: Map<string, string>;
+  capture: Promise<PickedElementPayload | null>;
 }
 
 interface AnnotationSession {
@@ -124,17 +193,106 @@ const normalizeRect = (
   height: Math.abs(endY - startY),
 });
 
+const intersectRects = (
+  rect: PreviewAnnotationRect,
+  clip: PreviewAnnotationRect,
+): PreviewAnnotationRect => {
+  const x = Math.max(rect.x, clip.x);
+  const y = Math.max(rect.y, clip.y);
+  const right = Math.min(rect.x + rect.width, clip.x + clip.width);
+  const bottom = Math.min(rect.y + rect.height, clip.y + clip.height);
+  return {
+    x,
+    y,
+    width: Math.max(0, right - x),
+    height: Math.max(0, bottom - y),
+  };
+};
+
+const clipToViewport = (rect: PreviewAnnotationRect): PreviewAnnotationRect =>
+  intersectRects(rect, { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight });
+
+const snapshotComputedStyles = (element: Element): AnnotationComputedStyles => {
+  const computed = getComputedStyle(element);
+  return {
+    fontFamily: computed.fontFamily,
+    fontSize: computed.fontSize,
+    fontWeight: computed.fontWeight,
+    lineHeight: computed.lineHeight,
+    color: computed.color,
+    backgroundColor: computed.backgroundColor,
+    opacity: computed.opacity,
+    borderRadius: computed.borderRadius,
+    borderColor: computed.borderColor,
+    borderWidth: computed.borderWidth,
+    padding: computed.padding,
+    margin: computed.margin,
+    gap: computed.gap,
+  };
+};
+
+const frameOwnerElements = (): ReadonlyArray<HTMLIFrameElement | HTMLFrameElement> =>
+  Array.from(document.querySelectorAll<HTMLIFrameElement | HTMLFrameElement>("iframe,frame"));
+
+const projectFrameState = (
+  message: FrameStateMessage,
+  owner: HTMLIFrameElement | HTMLFrameElement,
+): FrameStateMessage => {
+  const ownerRect = owner.getBoundingClientRect();
+  const borderScaleX = owner.offsetWidth > 0 ? ownerRect.width / owner.offsetWidth : 1;
+  const borderScaleY = owner.offsetHeight > 0 ? ownerRect.height / owner.offsetHeight : 1;
+  const contentRect = {
+    x: ownerRect.left + owner.clientLeft * borderScaleX,
+    y: ownerRect.top + owner.clientTop * borderScaleY,
+    width: owner.clientWidth * borderScaleX,
+    height: owner.clientHeight * borderScaleY,
+  };
+  const scaleX = message.viewport.width > 0 ? contentRect.width / message.viewport.width : 1;
+  const scaleY = message.viewport.height > 0 ? contentRect.height / message.viewport.height : 1;
+  const visibleFrame = clipToViewport(contentRect);
+  const mapPoint = (point: PreviewAnnotationPoint): PreviewAnnotationPoint => ({
+    x: contentRect.x + point.x * scaleX,
+    y: contentRect.y + point.y * scaleY,
+  });
+  const mapRect = (rect: PreviewAnnotationRect): PreviewAnnotationRect =>
+    intersectRects(
+      {
+        x: contentRect.x + rect.x * scaleX,
+        y: contentRect.y + rect.y * scaleY,
+        width: rect.width * scaleX,
+        height: rect.height * scaleY,
+      },
+      visibleFrame,
+    );
+  return {
+    ...message,
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    state: {
+      ...message.state,
+      elements: message.state.elements.map((target) => ({ ...target, rect: mapRect(target.rect) })),
+      regions: message.state.regions.map((region) => ({ ...region, rect: mapRect(region.rect) })),
+      strokes: message.state.strokes.map((stroke) => ({
+        ...stroke,
+        points: stroke.points.map(mapPoint),
+        bounds: mapRect(stroke.bounds),
+        width: stroke.width * Math.min(scaleX, scaleY),
+      })),
+    },
+  };
+};
+
 const isUsableRect = (rect: PreviewAnnotationRect): boolean => rect.width >= 3 && rect.height >= 3;
 
 function unionRects(
   rects: ReadonlyArray<PreviewAnnotationRect>,
   padding = 20,
 ): PreviewAnnotationRect | null {
-  if (rects.length === 0) return null;
-  const left = Math.min(...rects.map((rect) => rect.x));
-  const top = Math.min(...rects.map((rect) => rect.y));
-  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
-  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+  const visibleRects = rects.filter((rect) => rect.width > 0 && rect.height > 0);
+  if (visibleRects.length === 0) return null;
+  const left = Math.min(...visibleRects.map((rect) => rect.x));
+  const top = Math.min(...visibleRects.map((rect) => rect.y));
+  const right = Math.max(...visibleRects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...visibleRects.map((rect) => rect.y + rect.height));
   const x = Math.max(0, left - padding);
   const y = Math.max(0, top - padding);
   const maxWidth = Math.max(1, window.innerWidth - x);
@@ -194,6 +352,10 @@ function createBox(color: string, fill: string): HTMLDivElement {
 }
 
 function positionBox(node: HTMLElement, rect: PreviewAnnotationRect): void {
+  if (rect.width <= 0 || rect.height <= 0) {
+    node.style.display = "none";
+    return;
+  }
   node.style.display = "block";
   node.style.transform = `translate(${rect.x}px, ${rect.y}px)`;
   node.style.width = `${rect.width}px`;
@@ -221,11 +383,15 @@ function updateSelectedVisual(target: SelectedElement): void {
     target.label.style.display = "none";
     return;
   }
-  const rect = target.element.getBoundingClientRect();
-  positionBox(target.outline, rectFromDomRect(rect));
+  const rect = clipToViewport(rectFromDomRect(target.element.getBoundingClientRect()));
+  positionBox(target.outline, rect);
+  if (rect.width <= 0 || rect.height <= 0) {
+    target.label.style.display = "none";
+    return;
+  }
   target.label.textContent = describeRawElement(target.element);
   target.label.style.display = "block";
-  target.label.style.transform = `translate(${Math.max(4, rect.left)}px, ${Math.max(4, rect.top - 22)}px)`;
+  target.label.style.transform = `translate(${Math.max(4, rect.x)}px, ${Math.max(4, rect.y - 22)}px)`;
 }
 
 function toStackFrame(frame: {
@@ -350,7 +516,7 @@ function strokeBounds(
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-function startAnnotation(): void {
+function startAnnotation(sessionId: string, frameId: string): void {
   activeSession?.teardown(false);
   let finished = false;
   const host = document.createElement("div");
@@ -390,14 +556,14 @@ function startAnnotation(): void {
   toolbar.className =
     "pointer-events-auto fixed top-2.5 left-1/2 flex -translate-x-1/2 gap-0.5 rounded-lg border border-border bg-popover/95 p-1 text-popover-foreground shadow-lg backdrop-blur-xl";
   toolbar.style.zIndex = String(CHROME_LAYER_Z_INDEX);
-  root.appendChild(toolbar);
+  if (isMainFrame) root.appendChild(toolbar);
 
   const editor = document.createElement("div");
   editor.setAttribute(OVERLAY_ATTRIBUTE, "");
   editor.className =
     "pointer-events-auto fixed hidden max-h-[calc(100vh-16px)] w-[min(360px,calc(100vw-16px))] flex-col overflow-hidden rounded-xl border border-border bg-popover/96 text-popover-foreground shadow-2xl backdrop-blur-xl";
   editor.style.zIndex = String(CHROME_LAYER_Z_INDEX);
-  root.appendChild(editor);
+  if (isMainFrame) root.appendChild(editor);
 
   const composerRow = document.createElement("div");
   composerRow.className = "flex items-start gap-2 p-2";
@@ -441,6 +607,19 @@ function startAnnotation(): void {
   const regions: PreviewAnnotationRegionTarget[] = [];
   const strokes: PreviewAnnotationStrokeTarget[] = [];
   const styleChanges = new Map<string, PreviewAnnotationStyleChange>();
+  const remoteFrames = new Map<string, FrameAnnotationState>();
+  const childFrameStates = new Map<
+    string,
+    { readonly sourceWindow: WindowProxy; readonly message: FrameStateMessage }
+  >();
+  const regionOrigins = new Map<
+    string,
+    { readonly scrollX: number; readonly scrollY: number; readonly node: HTMLDivElement }
+  >();
+  const strokeOrigins = new Map<
+    string,
+    { readonly scrollX: number; readonly scrollY: number; readonly path: SVGPathElement }
+  >();
   const toolButtons = new Map<AnnotationTool, HTMLButtonElement>();
   let tool: AnnotationTool = "select";
   let dragStart: PreviewAnnotationPoint | null = null;
@@ -451,6 +630,8 @@ function startAnnotation(): void {
   let editorPosition: { left: number; top: number } | null = null;
   let editorDrag: { pointerId: number; offsetX: number; offsetY: number } | null = null;
   let editorLayoutFrame: number | null = null;
+  let publishFrame: number | null = null;
+  let relayFrame: number | null = null;
 
   const resizeComment = (): void => {
     const maxHeight = 96;
@@ -462,15 +643,129 @@ function startAnnotation(): void {
   };
   comment.addEventListener("input", resizeComment);
 
+  const currentRegionRect = (region: PreviewAnnotationRegionTarget): PreviewAnnotationRect => {
+    const origin = regionOrigins.get(region.id);
+    return origin
+      ? {
+          ...region.rect,
+          x: region.rect.x - (window.scrollX - origin.scrollX),
+          y: region.rect.y - (window.scrollY - origin.scrollY),
+        }
+      : region.rect;
+  };
+
+  const currentStroke = (stroke: PreviewAnnotationStrokeTarget): PreviewAnnotationStrokeTarget => {
+    const origin = strokeOrigins.get(stroke.id);
+    if (!origin) return stroke;
+    const offsetX = window.scrollX - origin.scrollX;
+    const offsetY = window.scrollY - origin.scrollY;
+    return {
+      ...stroke,
+      points: stroke.points.map((point) => ({ x: point.x - offsetX, y: point.y - offsetY })),
+      bounds: {
+        ...stroke.bounds,
+        x: stroke.bounds.x - offsetX,
+        y: stroke.bounds.y - offsetY,
+      },
+    };
+  };
+
+  let publishRevision = 0;
+  const publishState = (): void => {
+    if (isMainFrame || finished) return;
+    const revision = ++publishRevision;
+    void Promise.all(
+      Array.from(selected.values()).map(async (target) => {
+        const element = await target.capture;
+        if (!element || !target.element.isConnected) return null;
+        for (const change of styleChanges.values()) {
+          if (change.targetId === target.id) change.selector = element.selector;
+        }
+        return {
+          id: target.id,
+          element,
+          rect: clipToViewport(rectFromDomRect(target.element.getBoundingClientRect())),
+          computedStyles: snapshotComputedStyles(target.element),
+        } satisfies FrameElementTarget;
+      }),
+    ).then((captured) => {
+      if (finished || revision !== publishRevision) return;
+      const message: FrameStateMessage = {
+        source: FRAME_BRIDGE_SOURCE,
+        kind: "state",
+        sessionId,
+        frameId,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        state: {
+          pageUrl: location.href,
+          pageTitle: document.title?.trim() || null,
+          elements: captured.filter((target) => target !== null),
+          regions: regions.map((region) => ({
+            ...region,
+            rect: clipToViewport(currentRegionRect(region)),
+          })),
+          strokes: strokes.map((stroke) => {
+            const current = currentStroke(stroke);
+            return { ...current, bounds: clipToViewport(current.bounds) };
+          }),
+          styleChanges: Array.from(styleChanges.values()),
+        },
+      };
+      window.parent.postMessage(message, "*");
+    });
+  };
+
+  const queuePublishState = (): void => {
+    if (isMainFrame || finished || publishFrame !== null) return;
+    publishFrame = window.requestAnimationFrame(() => {
+      publishFrame = null;
+      publishState();
+    });
+  };
+
+  const broadcastFrameCommand = (command: FrameCommand): void => {
+    const message: FrameCommandMessage = {
+      source: FRAME_BRIDGE_SOURCE,
+      kind: "command",
+      sessionId,
+      command,
+    };
+    for (const owner of frameOwnerElements()) owner.contentWindow?.postMessage(message, "*");
+  };
+
+  const remoteTargets = (): ReadonlyArray<FrameElementTarget> =>
+    Array.from(remoteFrames.values()).flatMap((state) => state.elements);
+
+  const remoteTargetRects = (): ReadonlyArray<PreviewAnnotationRect> =>
+    Array.from(remoteFrames.values()).flatMap((state) => [
+      ...state.elements.map((target) => target.rect),
+      ...state.regions.map((region) => region.rect),
+      ...state.strokes.map((stroke) => stroke.bounds),
+    ]);
+
   const updateStatus = (): void => {
-    const hasTargets = selected.size > 0 || regions.length > 0 || strokes.length > 0;
-    editor.style.display = hasTargets ? "flex" : "none";
+    const hasTargets =
+      selected.size > 0 ||
+      regions.length > 0 ||
+      strokes.length > 0 ||
+      remoteTargetRects().length > 0;
+    const hasVisibleTarget =
+      unionRects([
+        ...Array.from(selected.values(), (target) =>
+          clipToViewport(rectFromDomRect(target.element.getBoundingClientRect())),
+        ),
+        ...regions.map((region) => clipToViewport(currentRegionRect(region))),
+        ...strokes.map((stroke) => clipToViewport(currentStroke(stroke).bounds)),
+        ...remoteTargetRects(),
+      ]) !== null;
+    editor.style.display = isMainFrame && hasTargets && hasVisibleTarget ? "flex" : "none";
     submit.disabled = !hasTargets;
     submit.style.opacity = hasTargets ? "1" : "0.45";
     adjust.disabled = !hasTargets;
-    stylePanel.style.display = editorExpanded && selected.size > 0 ? "grid" : "none";
+    stylePanel.style.display =
+      editorExpanded && (selected.size > 0 || remoteTargets().length > 0) ? "grid" : "none";
     queueEditorLayout();
-    if (hasTargets && !editorWasShown) {
+    if (isMainFrame && hasVisibleTarget && !editorWasShown) {
       editorWasShown = true;
       window.setTimeout(() => comment.focus({ preventScroll: true }), 0);
     }
@@ -502,16 +797,19 @@ function startAnnotation(): void {
       if (change.targetId === target.id) styleChanges.delete(key);
     }
     updateStatus();
+    queuePublishState();
   };
 
-  const addSelected = (element: Element): void => {
-    if (selected.has(element)) return;
+  const addSelected = (element: Element): SelectedElement => {
+    const existing = selected.get(element);
+    if (existing) return existing;
     const target: SelectedElement = {
-      id: nextId("element"),
+      id: `${frameId}:${nextId("element")}`,
       element,
       outline: createBox(PRIMARY, PRIMARY_FILL),
       label: createLabel(),
       baselineStyles: new Map(),
+      capture: captureElement(element),
     };
     selected.set(element, target);
     root.append(target.outline, target.label);
@@ -521,6 +819,8 @@ function startAnnotation(): void {
       stylePanel.style.display = "grid";
       syncStyleControls();
     }
+    queuePublishState();
+    return target;
   };
 
   const toggleSelected = (element: Element, additive: boolean): void => {
@@ -532,7 +832,26 @@ function startAnnotation(): void {
     if (!additive) {
       for (const target of Array.from(selected.values())) removeSelected(target);
     }
-    addSelected(element);
+    const target = addSelected(element);
+    if (!additive) {
+      const command: FrameCommand = {
+        kind: "clear-elements",
+        keepFrameId: frameId,
+        keepTargetId: target.id,
+      };
+      if (isMainFrame) broadcastFrameCommand(command);
+      else {
+        window.parent.postMessage(
+          {
+            source: FRAME_BRIDGE_SOURCE,
+            kind: "command",
+            sessionId,
+            command,
+          } satisfies FrameCommandMessage,
+          "*",
+        );
+      }
+    }
   };
 
   const setStyleForSelected = (property: string, value: string): void => {
@@ -556,6 +875,8 @@ function startAnnotation(): void {
       });
       updateSelectedVisual(target);
     }
+    queuePublishState();
+    if (isMainFrame) broadcastFrameCommand({ kind: "style", property, value });
   };
 
   const textSection = createStyleSection();
@@ -755,10 +1076,11 @@ function startAnnotation(): void {
   const gap = addSpacingField("Gap", "gap", "0px");
 
   const syncStyleControls = (): void => {
-    const first = selected.values().next().value as SelectedElement | undefined;
-    if (!first) return;
-    const computed = getComputedStyle(first.element);
-    const rect = first.element.getBoundingClientRect();
+    const local = selected.values().next().value as SelectedElement | undefined;
+    const remote = remoteTargets()[0];
+    if (!local && !remote) return;
+    const computed = local ? snapshotComputedStyles(local.element) : remote!.computedStyles;
+    const rect = local ? local.element.getBoundingClientRect() : remote!.rect;
     aspectRatio = rect.height > 0 ? rect.width / rect.height : 1;
     widthInput.value = String(Math.round(rect.width));
     heightInput.value = String(Math.round(rect.height));
@@ -793,10 +1115,110 @@ function startAnnotation(): void {
     button.addEventListener("click", () => {
       tool = candidate;
       refreshToolButtons();
+      broadcastFrameCommand({ kind: "tool", tool });
     });
     toolButtons.set(candidate, button);
     toolbar.appendChild(button);
   }
+
+  const applyFrameCommand = (command: FrameCommand): void => {
+    if (command.kind === "tool") {
+      tool = command.tool;
+      refreshToolButtons();
+      return;
+    }
+    if (command.kind === "style") {
+      setStyleForSelected(command.property, command.value);
+      return;
+    }
+    for (const target of Array.from(selected.values())) {
+      if (frameId !== command.keepFrameId || target.id !== command.keepTargetId) {
+        removeSelected(target);
+      }
+    }
+  };
+
+  const relayChildState = (entry: {
+    readonly sourceWindow: WindowProxy;
+    readonly message: FrameStateMessage;
+  }): void => {
+    const owner = frameOwnerElements().find(
+      (candidate) => candidate.contentWindow === entry.sourceWindow,
+    );
+    const message = owner
+      ? projectFrameState(entry.message, owner)
+      : {
+          ...entry.message,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          state: {
+            ...entry.message.state,
+            elements: [],
+            regions: [],
+            strokes: [],
+            styleChanges: [],
+          },
+        };
+    if (!isMainFrame) {
+      window.parent.postMessage(message, "*");
+      return;
+    }
+    if (
+      message.state.elements.length === 0 &&
+      message.state.regions.length === 0 &&
+      message.state.strokes.length === 0
+    ) {
+      remoteFrames.delete(message.frameId);
+    } else {
+      remoteFrames.set(message.frameId, message.state);
+    }
+    updateStatus();
+    if (editorExpanded) syncStyleControls();
+  };
+
+  const queueRelayChildStates = (): void => {
+    if (finished || relayFrame !== null) return;
+    relayFrame = window.requestAnimationFrame(() => {
+      relayFrame = null;
+      for (const entry of childFrameStates.values()) relayChildState(entry);
+    });
+  };
+
+  const onFrameBridgeMessage = (event: MessageEvent<FrameBridgeMessage>): void => {
+    const message = event.data;
+    if (!message || message.source !== FRAME_BRIDGE_SOURCE || message.sessionId !== sessionId) {
+      return;
+    }
+    if (message.kind === "state") {
+      const owner = frameOwnerElements().find(
+        (candidate) => candidate.contentWindow === event.source,
+      );
+      if (!owner?.contentWindow) return;
+      const entry = { sourceWindow: owner.contentWindow, message };
+      childFrameStates.set(message.frameId, entry);
+      relayChildState(entry);
+      return;
+    }
+    if (message.kind === "tool-request") {
+      if (isMainFrame) {
+        applyFrameCommand({ kind: "tool", tool: message.tool });
+        broadcastFrameCommand({ kind: "tool", tool: message.tool });
+      } else {
+        window.parent.postMessage(message, "*");
+      }
+      return;
+    }
+    if (event.source === window.parent && !isMainFrame) {
+      applyFrameCommand(message.command);
+      broadcastFrameCommand(message.command);
+      return;
+    }
+    if (isMainFrame) {
+      applyFrameCommand(message.command);
+      broadcastFrameCommand(message.command);
+    } else {
+      window.parent.postMessage(message, "*");
+    }
+  };
 
   const clampEditorPosition = (left: number, top: number): { left: number; top: number } => {
     const margin = 8;
@@ -826,10 +1248,11 @@ function startAnnotation(): void {
     unionRects(
       [
         ...Array.from(selected.values(), (target) =>
-          rectFromDomRect(target.element.getBoundingClientRect()),
+          clipToViewport(rectFromDomRect(target.element.getBoundingClientRect())),
         ),
-        ...regions.map((region) => region.rect),
-        ...strokes.map((stroke) => stroke.bounds),
+        ...regions.map((region) => clipToViewport(currentRegionRect(region))),
+        ...strokes.map((stroke) => clipToViewport(currentStroke(stroke).bounds)),
+        ...remoteTargetRects(),
       ],
       0,
     );
@@ -873,17 +1296,17 @@ function startAnnotation(): void {
   }
 
   adjust.addEventListener("click", () => {
-    if (selected.size === 0) return;
+    if (selected.size === 0 && remoteTargets().length === 0) return;
     if (!editorExpanded) {
       const rect = editor.getBoundingClientRect();
       editorExpanded = true;
       editorPosition = { left: rect.left, top: rect.top };
-      stylePanel.style.display = selected.size > 0 ? "grid" : "none";
+      stylePanel.style.display = selected.size > 0 || remoteTargets().length > 0 ? "grid" : "none";
       dragHandle.style.display = "block";
       adjust.setAttribute("aria-expanded", "true");
       adjust.title = "Collapse annotation editor";
       adjust.setAttribute("aria-label", "Collapse annotation editor");
-      if (selected.size > 0) syncStyleControls();
+      syncStyleControls();
     } else {
       editorExpanded = false;
       editorPosition = null;
@@ -936,7 +1359,17 @@ function startAnnotation(): void {
 
   const repaint = (): void => {
     for (const target of selected.values()) updateSelectedVisual(target);
-    queueEditorLayout();
+    for (const region of regions) {
+      const origin = regionOrigins.get(region.id);
+      if (origin) positionBox(origin.node, clipToViewport(currentRegionRect(region)));
+    }
+    for (const stroke of strokes) {
+      const origin = strokeOrigins.get(stroke.id);
+      if (origin) origin.path.setAttribute("d", pathFromPoints(currentStroke(stroke).points));
+    }
+    updateStatus();
+    queuePublishState();
+    queueRelayChildStates();
   };
 
   const removeTargetAtPoint = (x: number, y: number): boolean => {
@@ -947,30 +1380,37 @@ function startAnnotation(): void {
         return true;
       }
     }
-    const regionIndex = regions.findIndex(
-      (region) =>
-        x >= region.rect.x &&
-        x <= region.rect.x + region.rect.width &&
-        y >= region.rect.y &&
-        y <= region.rect.y + region.rect.height,
-    );
+    const regionIndex = regions.findIndex((region) => {
+      const rect = currentRegionRect(region);
+      return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+    });
     if (regionIndex >= 0) {
       const [removed] = regions.splice(regionIndex, 1);
-      root.querySelector(`[data-region-id="${removed?.id}"]`)?.remove();
+      if (removed) {
+        regionOrigins.get(removed.id)?.node.remove();
+        regionOrigins.delete(removed.id);
+      }
       updateStatus();
+      queuePublishState();
       return true;
     }
-    const strokeIndex = strokes.findIndex(
-      (stroke) =>
-        x >= stroke.bounds.x &&
-        x <= stroke.bounds.x + stroke.bounds.width &&
-        y >= stroke.bounds.y &&
-        y <= stroke.bounds.y + stroke.bounds.height,
-    );
+    const strokeIndex = strokes.findIndex((stroke) => {
+      const bounds = currentStroke(stroke).bounds;
+      return (
+        x >= bounds.x &&
+        x <= bounds.x + bounds.width &&
+        y >= bounds.y &&
+        y <= bounds.y + bounds.height
+      );
+    });
     if (strokeIndex >= 0) {
       const [removed] = strokes.splice(strokeIndex, 1);
-      svg.querySelector(`[data-stroke-id="${removed?.id}"]`)?.remove();
+      if (removed) {
+        strokeOrigins.get(removed.id)?.path.remove();
+        strokeOrigins.delete(removed.id);
+      }
       updateStatus();
+      queuePublishState();
       return true;
     }
     return false;
@@ -1022,8 +1462,9 @@ function startAnnotation(): void {
     }
     if (tool === "select" && dragStart === null) {
       const target = pickFromPoint(event.clientX, event.clientY);
-      if (target) positionBox(hoverOutline, rectFromDomRect(target.getBoundingClientRect()));
-      else clearHoverOutline();
+      if (target) {
+        positionBox(hoverOutline, clipToViewport(rectFromDomRect(target.getBoundingClientRect())));
+      } else clearHoverOutline();
       return;
     }
     clearHoverOutline();
@@ -1063,7 +1504,7 @@ function startAnnotation(): void {
     dragStart = { x: event.clientX, y: event.clientY };
     if (tool === "draw") {
       const stroke: PreviewAnnotationStrokeTarget = {
-        id: nextId("stroke"),
+        id: `${frameId}:${nextId("stroke")}`,
         color: annotationTheme?.primary ?? "#2563eb",
         width: 4,
         points: [dragStart],
@@ -1092,7 +1533,10 @@ function startAnnotation(): void {
       if (isUsableRect(rect)) {
         const found = selectElementsInRect(rect);
         if (found === 0) {
-          const region: PreviewAnnotationRegionTarget = { id: nextId("region"), rect };
+          const region: PreviewAnnotationRegionTarget = {
+            id: `${frameId}:${nextId("region")}`,
+            rect,
+          };
           regions.push(region);
           const regionBox = createBox(
             PRIMARY,
@@ -1101,15 +1545,27 @@ function startAnnotation(): void {
           regionBox.setAttribute("data-region-id", region.id);
           positionBox(regionBox, rect);
           root.appendChild(regionBox);
+          regionOrigins.set(region.id, {
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            node: regionBox,
+          });
         }
       }
     } else if (tool === "draw" && activeStroke) {
-      if (activeStroke.target.points.length > 1) strokes.push(activeStroke.target);
-      else activeStroke.path.remove();
+      if (activeStroke.target.points.length > 1) {
+        strokes.push(activeStroke.target);
+        strokeOrigins.set(activeStroke.target.id, {
+          scrollX: window.scrollX,
+          scrollY: window.scrollY,
+          path: activeStroke.path,
+        });
+      } else activeStroke.path.remove();
       activeStroke = null;
     }
     dragStart = null;
     updateStatus();
+    queuePublishState();
   };
 
   const onClick = (event: MouseEvent): void => {
@@ -1137,8 +1593,28 @@ function startAnnotation(): void {
     }
   };
 
+  const frameObserver = new MutationObserver(queueRelayChildStates);
+
   const teardown = (notifyMain: boolean): void => {
     if (finished) return;
+    if (!isMainFrame) {
+      const message: FrameStateMessage = {
+        source: FRAME_BRIDGE_SOURCE,
+        kind: "state",
+        sessionId,
+        frameId,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        state: {
+          pageUrl: location.href,
+          pageTitle: document.title?.trim() || null,
+          elements: [],
+          regions: [],
+          strokes: [],
+          styleChanges: [],
+        },
+      };
+      window.parent.postMessage(message, "*");
+    }
     finished = true;
     restoreStyles();
     window.removeEventListener("pointermove", onPointerMove, true);
@@ -1150,11 +1626,15 @@ function startAnnotation(): void {
     window.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("scroll", repaint, true);
     window.removeEventListener("resize", repaint);
+    window.removeEventListener("message", onFrameBridgeMessage);
+    frameObserver.disconnect();
     dragHandle.removeEventListener("pointerdown", onEditorPointerDown);
     dragHandle.removeEventListener("pointermove", onEditorPointerMove);
     dragHandle.removeEventListener("pointerup", onEditorPointerUp);
     dragHandle.removeEventListener("pointercancel", onEditorPointerUp);
     if (editorLayoutFrame !== null) window.cancelAnimationFrame(editorLayoutFrame);
+    if (publishFrame !== null) window.cancelAnimationFrame(publishFrame);
+    if (relayFrame !== null) window.cancelAnimationFrame(relayFrame);
     ipcRenderer.off(CANCEL_PICK_CHANNEL, onCancel);
     ipcRenderer.off(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
     document.documentElement.removeAttribute("data-t3code-annotation-tool");
@@ -1180,17 +1660,39 @@ function startAnnotation(): void {
     else if (event.key === "e") tool = "erase";
     else return;
     refreshToolButtons();
+    if (isMainFrame) broadcastFrameCommand({ kind: "tool", tool });
+    else {
+      window.parent.postMessage(
+        {
+          source: FRAME_BRIDGE_SOURCE,
+          kind: "tool-request",
+          sessionId,
+          tool,
+        } satisfies FrameToolRequestMessage,
+        "*",
+      );
+    }
   };
 
   submit.addEventListener("click", () => {
-    if (pendingCapture || (selected.size === 0 && regions.length === 0 && strokes.length === 0))
+    const remoteStates = Array.from(remoteFrames.values());
+    if (
+      pendingCapture ||
+      (selected.size === 0 &&
+        regions.length === 0 &&
+        strokes.length === 0 &&
+        remoteStates.every(
+          (state) =>
+            state.elements.length === 0 && state.regions.length === 0 && state.strokes.length === 0,
+        ))
+    )
       return;
     pendingCapture = true;
     submit.disabled = true;
     submit.textContent = "Capturing…";
     void Promise.all(
       Array.from(selected.values()).map(async (target) => {
-        const element = await captureElement(target.element);
+        const element = await target.capture;
         if (!element) return null;
         for (const change of styleChanges.values()) {
           if (change.targetId === target.id) change.selector = element.selector;
@@ -1198,20 +1700,42 @@ function startAnnotation(): void {
         return {
           id: target.id,
           element,
-          rect: rectFromDomRect(target.element.getBoundingClientRect()),
+          rect: clipToViewport(rectFromDomRect(target.element.getBoundingClientRect())),
         };
       }),
     ).then((captured) => {
-      const elements = captured.filter((target) => target !== null);
+      const elements = [
+        ...captured.filter((target) => target !== null),
+        ...remoteStates.flatMap((state) =>
+          state.elements.map(({ computedStyles: _, ...target }) => target),
+        ),
+      ];
+      const currentRegions = [
+        ...regions.map((region) => ({
+          ...region,
+          rect: clipToViewport(currentRegionRect(region)),
+        })),
+        ...remoteStates.flatMap((state) => state.regions),
+      ];
+      const currentStrokes = [
+        ...strokes.map((stroke) => {
+          const current = currentStroke(stroke);
+          return { ...current, bounds: clipToViewport(current.bounds) };
+        }),
+        ...remoteStates.flatMap((state) => state.strokes),
+      ];
       const annotation: PreviewAnnotationPayload = {
         id: nextId("annotation"),
         pageUrl: location.href,
         pageTitle: document.title?.trim() || null,
         comment: comment.value.trim(),
         elements,
-        regions: [...regions],
-        strokes: [...strokes],
-        styleChanges: Array.from(styleChanges.values()),
+        regions: currentRegions,
+        strokes: currentStrokes,
+        styleChanges: [
+          ...styleChanges.values(),
+          ...remoteStates.flatMap((state) => state.styleChanges),
+        ],
         screenshot: null,
         createdAt: new Date().toISOString(),
       };
@@ -1220,8 +1744,8 @@ function startAnnotation(): void {
       hoverOutline.style.display = "none";
       const screenshotRect = unionRects([
         ...elements.map((target) => target.rect),
-        ...regions.map((region) => region.rect),
-        ...strokes.map((stroke) => stroke.bounds),
+        ...currentRegions.map((region) => region.rect),
+        ...currentStrokes.map((stroke) => stroke.bounds),
       ]);
       ipcRenderer.send(ELEMENT_PICKED_CHANNEL, annotation, screenshotRect);
     });
@@ -1241,6 +1765,8 @@ function startAnnotation(): void {
   window.addEventListener("keydown", onKeyDown, { capture: true });
   window.addEventListener("scroll", repaint, { capture: true, passive: true });
   window.addEventListener("resize", repaint, { passive: true });
+  window.addEventListener("message", onFrameBridgeMessage);
+  frameObserver.observe(document.documentElement, { childList: true, subtree: true });
   ipcRenderer.on(CANCEL_PICK_CHANNEL, onCancel);
   ipcRenderer.on(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
   document.documentElement.appendChild(host);
@@ -1252,10 +1778,18 @@ function startAnnotation(): void {
   };
 }
 
-ipcRenderer.on(START_PICK_CHANNEL, (_event, theme: DesktopPreviewAnnotationTheme | undefined) => {
-  if (theme) annotationTheme = theme;
-  startAnnotation();
-});
+ipcRenderer.on(
+  START_PICK_CHANNEL,
+  (
+    _event,
+    theme: DesktopPreviewAnnotationTheme | undefined,
+    sessionId: string,
+    frameId: string,
+  ) => {
+    if (theme) annotationTheme = theme;
+    startAnnotation(sessionId, frameId);
+  },
+);
 ipcRenderer.on(ANNOTATION_THEME_CHANNEL, (_event, theme: DesktopPreviewAnnotationTheme) => {
   annotationTheme = theme;
   activeSession?.applyTheme(theme);
