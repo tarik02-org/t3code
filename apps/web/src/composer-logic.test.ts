@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   clampCollapsedComposerCursor,
@@ -8,8 +8,23 @@ import {
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
+  shouldSubmitComposerOnEnter,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
+
+describe("shouldSubmitComposerOnEnter", () => {
+  it("submits plain Enter on desktop", () => {
+    expect(shouldSubmitComposerOnEnter({ isMobileViewport: false, shiftKey: false })).toBe(true);
+  });
+
+  it("inserts a newline for plain Enter on mobile", () => {
+    expect(shouldSubmitComposerOnEnter({ isMobileViewport: true, shiftKey: false })).toBe(false);
+  });
+
+  it("inserts a newline for Shift+Enter", () => {
+    expect(shouldSubmitComposerOnEnter({ isMobileViewport: false, shiftKey: true })).toBe(false);
+  });
+});
 
 describe("detectComposerTrigger", () => {
   it("detects @path trigger at cursor", () => {
@@ -157,6 +172,26 @@ describe("expandCollapsedComposerCursor", () => {
     );
   });
 
+  it("maps collapsed quoted mention cursor to expanded text cursor", () => {
+    const text = 'what is in @"My File.md" please';
+    const collapsedCursorAfterMention = "what is in ".length + 2;
+    const expandedCursorAfterMention = 'what is in @"My File.md" '.length;
+
+    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
+      expandedCursorAfterMention,
+    );
+  });
+
+  it("maps collapsed markdown file links to their expanded source offsets", () => {
+    const text = "what's in [AGENTS.md](AGENTS.md) please";
+    const collapsedCursorAfterMention = "what's in ".length + 2;
+    const expandedCursorAfterMention = "what's in [AGENTS.md](AGENTS.md) ".length;
+
+    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
+      expandedCursorAfterMention,
+    );
+  });
+
   it("allows path trigger detection to close after selecting a mention", () => {
     const text = "what's in my @AGENTS.md ";
     const collapsedCursorAfterMention = "what's in my ".length + 2;
@@ -185,6 +220,26 @@ describe("collapseExpandedComposerCursor", () => {
     const text = "what's in my @AGENTS.md fsfdas";
     const collapsedCursorAfterMention = "what's in my ".length + 2;
     const expandedCursorAfterMention = "what's in my @AGENTS.md ".length;
+
+    expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
+      collapsedCursorAfterMention,
+    );
+  });
+
+  it("maps expanded quoted mention cursor back to collapsed cursor", () => {
+    const text = 'what is in @"My File.md" please';
+    const collapsedCursorAfterMention = "what is in ".length + 2;
+    const expandedCursorAfterMention = 'what is in @"My File.md" '.length;
+
+    expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
+      collapsedCursorAfterMention,
+    );
+  });
+
+  it("maps expanded markdown file link cursors back to collapsed offsets", () => {
+    const text = "what's in [AGENTS.md](AGENTS.md) please";
+    const collapsedCursorAfterMention = "what's in ".length + 2;
+    const expandedCursorAfterMention = "what's in [AGENTS.md](AGENTS.md) ".length;
 
     expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
       collapsedCursorAfterMention,

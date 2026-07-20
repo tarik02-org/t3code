@@ -9,11 +9,13 @@ import {
 } from "@t3tools/contracts";
 import {
   createModelSelection,
-  normalizeModelSlug,
+  normalizeCustomModelSlug,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
+import * as Arr from "effect/Array";
+import * as Result from "effect/Result";
 import {
   getDefaultServerModel,
   getProviderModels,
@@ -115,13 +117,12 @@ function applyInstanceModelPreferences(
 export function normalizeCustomModelSlugs(
   models: Iterable<string | null | undefined>,
   builtInModelSlugs: ReadonlySet<string>,
-  provider: ProviderDriverKind = ProviderDriverKind.make("codex"),
 ): string[] {
   const normalizedModels: string[] = [];
   const seen = new Set<string>();
 
   for (const candidate of models) {
-    const normalized = normalizeModelSlug(candidate, provider);
+    const normalized = normalizeCustomModelSlug(candidate);
     if (
       !normalized ||
       normalized.length > MAX_CUSTOM_MODEL_LENGTH ||
@@ -150,9 +151,9 @@ export function getAppModelOptions(
   const options: AppModelOption[] = getProviderModels(providers, provider).map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
-    getProviderModels(providers, provider)
-      .filter((model) => !model.isCustom)
-      .map((model) => model.slug),
+    Arr.filterMap(getProviderModels(providers, provider), (model) =>
+      model.isCustom ? Result.failVoid : Result.succeed(model.slug),
+    ),
   );
 
   // Read from the default instance's config first (that's where edits
@@ -161,7 +162,7 @@ export function getAppModelOptions(
   // see the user's authored custom models.
   const defaultInstanceId = defaultInstanceIdForDriver(provider);
   const customModels = readInstanceCustomModels(settings, defaultInstanceId, provider);
-  for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs, provider)) {
+  for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs)) {
     if (seen.has(slug)) {
       continue;
     }
@@ -198,12 +199,13 @@ export function getAppModelOptionsForInstance(
   const options: AppModelOption[] = entry.models.map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
-    entry.models.filter((model) => !model.isCustom).map((model) => model.slug),
+    Arr.filterMap(entry.models, (model) =>
+      model.isCustom ? Result.failVoid : Result.succeed(model.slug),
+    ),
   );
 
   const customModels = readInstanceCustomModels(settings, entry.instanceId, entry.driverKind);
-  const normalizer = entry.driverKind;
-  for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs, normalizer)) {
+  for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs)) {
     if (seen.has(slug)) {
       continue;
     }
@@ -299,7 +301,6 @@ export function resolveAppModelSelectionState(
       provider,
       model,
       models: entry.models,
-      prompt: "",
       modelOptions: selectedEntry ? selection.options : undefined,
     });
 
@@ -317,7 +318,6 @@ export function resolveAppModelSelectionState(
     provider,
     model,
     models: getProviderModels(providers, provider),
-    prompt: "",
     modelOptions: keptSelectedProvider ? selection.options : undefined,
   });
 
