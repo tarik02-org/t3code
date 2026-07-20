@@ -16,6 +16,7 @@ import type {
 import { previewAnnotationStyles } from "./AnnotationStyles.generated.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
+  ANNOTATION_SELECTION_CLAIMED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
   CANCEL_PICK_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
@@ -78,11 +79,13 @@ interface FrameStateMessage {
 type FrameCommand =
   | { readonly kind: "tool"; readonly tool: AnnotationTool }
   | {
-      readonly kind: "clear-elements";
-      readonly keepFrameId: string;
-      readonly keepTargetId: string;
+      readonly kind: "marquee-select";
+      readonly operationId: string;
+      readonly rect: PreviewAnnotationRect;
+      readonly additive: boolean;
     }
   | { readonly kind: "style"; readonly property: string; readonly value: string };
+type FrameMarqueeSelectionCommand = Extract<FrameCommand, { readonly kind: "marquee-select" }>;
 
 interface FrameCommandMessage {
   readonly source: typeof FRAME_BRIDGE_SOURCE;
@@ -98,7 +101,41 @@ interface FrameToolRequestMessage {
   readonly tool: AnnotationTool;
 }
 
-type FrameBridgeMessage = FrameStateMessage | FrameCommandMessage | FrameToolRequestMessage;
+interface FrameDrawGestureMessage {
+  readonly source: typeof FRAME_BRIDGE_SOURCE;
+  readonly kind: "draw-gesture";
+  readonly sessionId: string;
+  readonly phase: "start" | "move" | "end" | "cancel";
+  readonly pointerId: number;
+  readonly viewport: { readonly width: number; readonly height: number };
+  readonly point: PreviewAnnotationPoint;
+}
+
+interface FrameMarqueeGestureMessage {
+  readonly source: typeof FRAME_BRIDGE_SOURCE;
+  readonly kind: "marquee-gesture";
+  readonly sessionId: string;
+  readonly phase: "start" | "move" | "end" | "cancel";
+  readonly pointerId: number;
+  readonly viewport: { readonly width: number; readonly height: number };
+  readonly point: PreviewAnnotationPoint;
+  readonly additive: boolean;
+}
+
+interface FrameMarqueeSelectionMessage {
+  readonly source: typeof FRAME_BRIDGE_SOURCE;
+  readonly kind: "marquee-selection";
+  readonly sessionId: string;
+  readonly operationId: string;
+}
+
+type FrameBridgeMessage =
+  | FrameStateMessage
+  | FrameCommandMessage
+  | FrameToolRequestMessage
+  | FrameDrawGestureMessage
+  | FrameMarqueeGestureMessage
+  | FrameMarqueeSelectionMessage;
 
 interface SelectedElement {
   id: string;
@@ -328,6 +365,8 @@ function pickFromPoint(clientX: number, clientY: number): Element | null {
     if (!(candidate instanceof Element)) continue;
     if (isAnnotationNode(candidate)) continue;
     if (candidate === document.documentElement || candidate === document.body) continue;
+    if (candidate instanceof HTMLIFrameElement || candidate instanceof HTMLFrameElement)
+      return null;
     return candidate;
   }
   return null;
@@ -635,14 +674,18 @@ function startAnnotation(sessionId: string, frameId: string): void {
     { readonly origin: AnnotationOrigin; readonly path: SVGPathElement }
   >();
   const toolButtons = new Map<AnnotationTool, HTMLButtonElement>();
+  const pendingMarqueeRegions = new Map<string, string>();
   let tool: AnnotationTool = "select";
   let hoveredElement: Element | null = null;
-  let dragStart: PreviewAnnotationPoint | null = null;
-  let dragAnchor: Element | null = null;
+  let activeMarquee: {
+    pointerId: number;
+    start: PreviewAnnotationPoint;
+    additive: boolean;
+  } | null = null;
   let activeStroke: {
+    pointerId: number;
     target: PreviewAnnotationStrokeTarget;
     path: SVGPathElement;
-    anchor: Element | null;
   } | null = null;
   let pendingCapture = false;
   let editorExpanded = false;
@@ -776,13 +819,35 @@ function startAnnotation(sessionId: string, frameId: string): void {
   };
 
   const broadcastFrameCommand = (command: FrameCommand): void => {
-    const message: FrameCommandMessage = {
-      source: FRAME_BRIDGE_SOURCE,
-      kind: "command",
-      sessionId,
-      command,
-    };
-    for (const owner of frameOwnerElements()) owner.contentWindow?.postMessage(message, "*");
+    for (const owner of frameOwnerElements()) {
+      if (!owner.contentWindow) continue;
+      let childCommand = command;
+      if (command.kind === "marquee-select") {
+        const ownerRect = owner.getBoundingClientRect();
+        const scaleX = owner.offsetWidth > 0 ? ownerRect.width / owner.offsetWidth : 1;
+        const scaleY = owner.offsetHeight > 0 ? ownerRect.height / owner.offsetHeight : 1;
+        const contentX = ownerRect.left + owner.clientLeft * scaleX;
+        const contentY = ownerRect.top + owner.clientTop * scaleY;
+        childCommand = {
+          ...command,
+          rect: {
+            x: (command.rect.x - contentX) / scaleX,
+            y: (command.rect.y - contentY) / scaleY,
+            width: command.rect.width / scaleX,
+            height: command.rect.height / scaleY,
+          },
+        };
+      }
+      owner.contentWindow.postMessage(
+        {
+          source: FRAME_BRIDGE_SOURCE,
+          kind: "command",
+          sessionId,
+          command: childCommand,
+        } satisfies FrameCommandMessage,
+        "*",
+      );
+    }
   };
 
   const remoteTargets = (): ReadonlyArray<FrameElementTarget> =>
@@ -836,7 +901,14 @@ function startAnnotation(sessionId: string, frameId: string): void {
       hoveredElement = null;
       hoverOutline.style.display = "none";
     }
-    if (tool !== "marquee") marqueeBox.style.display = "none";
+    if (tool !== "marquee") {
+      marqueeBox.style.display = "none";
+      activeMarquee = null;
+    }
+    if (tool !== "draw" && activeStroke) {
+      activeStroke.path.remove();
+      activeStroke = null;
+    }
     document.documentElement.setAttribute("data-t3code-annotation-tool", tool);
   };
 
@@ -852,6 +924,29 @@ function startAnnotation(sessionId: string, frameId: string): void {
     target.label.remove();
     for (const [key, change] of styleChanges) {
       if (change.targetId === target.id) styleChanges.delete(key);
+    }
+    updateStatus();
+    queuePublishState();
+  };
+
+  const clearTargetsExcept = (keepFrameId: string, keepTargetIds: ReadonlyArray<string>): void => {
+    const keep = frameId === keepFrameId ? new Set(keepTargetIds) : new Set<string>();
+    for (const target of Array.from(selected.values())) {
+      if (!keep.has(target.id)) removeSelected(target);
+    }
+    for (let index = regions.length - 1; index >= 0; index -= 1) {
+      const region = regions[index];
+      if (!region || keep.has(region.id)) continue;
+      regions.splice(index, 1);
+      regionOrigins.get(region.id)?.node.remove();
+      regionOrigins.delete(region.id);
+    }
+    for (let index = strokes.length - 1; index >= 0; index -= 1) {
+      const stroke = strokes[index];
+      if (!stroke || keep.has(stroke.id)) continue;
+      strokes.splice(index, 1);
+      strokeOrigins.get(stroke.id)?.path.remove();
+      strokeOrigins.delete(stroke.id);
     }
     updateStatus();
     queuePublishState();
@@ -891,23 +986,8 @@ function startAnnotation(sessionId: string, frameId: string): void {
     }
     const target = addSelected(element);
     if (!additive) {
-      const command: FrameCommand = {
-        kind: "clear-elements",
-        keepFrameId: frameId,
-        keepTargetId: target.id,
-      };
-      if (isMainFrame) broadcastFrameCommand(command);
-      else {
-        window.parent.postMessage(
-          {
-            source: FRAME_BRIDGE_SOURCE,
-            kind: "command",
-            sessionId,
-            command,
-          } satisfies FrameCommandMessage,
-          "*",
-        );
-      }
+      clearTargetsExcept(frameId, [target.id]);
+      ipcRenderer.send(ANNOTATION_SELECTION_CLAIMED_CHANNEL, sessionId, frameId, [target.id]);
     }
   };
 
@@ -1178,21 +1258,166 @@ function startAnnotation(sessionId: string, frameId: string): void {
     toolbar.appendChild(button);
   }
 
+  const applyDrawGesture = (message: FrameDrawGestureMessage): void => {
+    if (!isMainFrame) return;
+    if (message.phase === "start") {
+      activeStroke?.path.remove();
+      const stroke: PreviewAnnotationStrokeTarget = {
+        id: `${frameId}:${nextId("stroke")}`,
+        color: annotationTheme?.primary ?? "#2563eb",
+        width: 4,
+        points: [message.point],
+        bounds: { x: message.point.x, y: message.point.y, width: 1, height: 1 },
+      };
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute(OVERLAY_ATTRIBUTE, "");
+      path.setAttribute("data-stroke-id", stroke.id);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", stroke.color);
+      path.setAttribute("stroke-width", String(stroke.width));
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(path);
+      activeStroke = { pointerId: message.pointerId, target: stroke, path };
+      return;
+    }
+    if (!activeStroke || activeStroke.pointerId !== message.pointerId) return;
+    if (message.phase === "cancel") {
+      activeStroke.path.remove();
+      activeStroke = null;
+      return;
+    }
+    const lastPoint = activeStroke.target.points.at(-1);
+    if (!lastPoint || lastPoint.x !== message.point.x || lastPoint.y !== message.point.y) {
+      activeStroke.target.points = [...activeStroke.target.points, message.point];
+      activeStroke.target.bounds = strokeBounds(
+        activeStroke.target.points,
+        activeStroke.target.width,
+      );
+      activeStroke.path.setAttribute("d", pathFromPoints(activeStroke.target.points));
+    }
+    if (message.phase === "move") return;
+    if (activeStroke.target.points.length > 1) {
+      strokes.push(activeStroke.target);
+      strokeOrigins.set(activeStroke.target.id, {
+        origin: captureAnnotationOrigin(null),
+        path: activeStroke.path,
+      });
+    } else activeStroke.path.remove();
+    activeStroke = null;
+    updateStatus();
+  };
+
+  const sendDrawGesture = (phase: FrameDrawGestureMessage["phase"], event: PointerEvent): void => {
+    const message = {
+      source: FRAME_BRIDGE_SOURCE,
+      kind: "draw-gesture",
+      sessionId,
+      phase,
+      pointerId: event.pointerId,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      point: { x: event.clientX, y: event.clientY },
+    } satisfies FrameDrawGestureMessage;
+    if (isMainFrame) applyDrawGesture(message);
+    else window.parent.postMessage(message, "*");
+  };
+
+  const applyMarqueeGesture = (message: FrameMarqueeGestureMessage): void => {
+    if (!isMainFrame) return;
+    if (message.phase === "start") {
+      activeMarquee = {
+        pointerId: message.pointerId,
+        start: message.point,
+        additive: message.additive,
+      };
+      return;
+    }
+    if (!activeMarquee || activeMarquee.pointerId !== message.pointerId) return;
+    if (message.phase === "cancel") {
+      marqueeBox.style.display = "none";
+      activeMarquee = null;
+      return;
+    }
+    const rect = normalizeRect(
+      activeMarquee.start.x,
+      activeMarquee.start.y,
+      message.point.x,
+      message.point.y,
+    );
+    if (message.phase === "move") {
+      positionBox(marqueeBox, rect);
+      return;
+    }
+    marqueeBox.style.display = "none";
+    const additive = activeMarquee.additive;
+    activeMarquee = null;
+    if (!isUsableRect(rect)) return;
+    const command = {
+      kind: "marquee-select",
+      operationId: `${frameId}:${nextId("marquee")}`,
+      rect,
+      additive,
+    } satisfies FrameMarqueeSelectionCommand;
+    const found = applyMarqueeSelection(command);
+    if (found.length === 0) {
+      const region: PreviewAnnotationRegionTarget = {
+        id: `${frameId}:${nextId("region")}`,
+        rect,
+      };
+      regions.push(region);
+      const regionBox = createBox(PRIMARY, "color-mix(in srgb, var(--t3-primary) 6%, transparent)");
+      regionBox.setAttribute("data-region-id", region.id);
+      positionBox(regionBox, rect);
+      root.appendChild(regionBox);
+      regionOrigins.set(region.id, {
+        origin: captureAnnotationOrigin(null),
+        node: regionBox,
+      });
+      pendingMarqueeRegions.set(command.operationId, region.id);
+    }
+    broadcastFrameCommand(command);
+    updateStatus();
+  };
+
+  const sendMarqueeGesture = (
+    phase: FrameMarqueeGestureMessage["phase"],
+    event: PointerEvent,
+  ): void => {
+    const message = {
+      source: FRAME_BRIDGE_SOURCE,
+      kind: "marquee-gesture",
+      sessionId,
+      phase,
+      pointerId: event.pointerId,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      point: { x: event.clientX, y: event.clientY },
+      additive: event.shiftKey,
+    } satisfies FrameMarqueeGestureMessage;
+    if (isMainFrame) applyMarqueeGesture(message);
+    else window.parent.postMessage(message, "*");
+  };
+
   const applyFrameCommand = (command: FrameCommand): void => {
     if (command.kind === "tool") {
       tool = command.tool;
       refreshToolButtons();
       return;
     }
-    if (command.kind === "style") {
-      setStyleForSelected(command.property, command.value);
+    if (command.kind === "marquee-select") {
+      applyMarqueeSelection(command);
       return;
     }
-    for (const target of Array.from(selected.values())) {
-      if (frameId !== command.keepFrameId || target.id !== command.keepTargetId) {
-        removeSelected(target);
-      }
-    }
+    setStyleForSelected(command.property, command.value);
+  };
+
+  const onSelectionClaimed = (
+    _event: Electron.IpcRendererEvent,
+    claimedSessionId: string,
+    keepFrameId: string,
+    keepTargetIds: ReadonlyArray<string>,
+  ): void => {
+    if (claimedSessionId !== sessionId) return;
+    clearTargetsExcept(keepFrameId, keepTargetIds);
   };
 
   const relayChildState = (
@@ -1266,6 +1491,60 @@ function startAnnotation(sessionId: string, frameId: string): void {
       const entry = { sourceWindow: owner.contentWindow, message };
       childFrameStates.set(message.frameId, entry);
       relayChildState(entry);
+      return;
+    }
+    if (message.kind === "marquee-selection") {
+      const fromChild = frameOwnerElements().some(
+        (candidate) => candidate.contentWindow === event.source,
+      );
+      if (!fromChild) return;
+      if (!isMainFrame) {
+        window.parent.postMessage(message, "*");
+        return;
+      }
+      const regionId = pendingMarqueeRegions.get(message.operationId);
+      if (!regionId) return;
+      pendingMarqueeRegions.delete(message.operationId);
+      const regionIndex = regions.findIndex((region) => region.id === regionId);
+      if (regionIndex < 0) return;
+      regions.splice(regionIndex, 1);
+      regionOrigins.get(regionId)?.node.remove();
+      regionOrigins.delete(regionId);
+      updateStatus();
+      return;
+    }
+    if (message.kind === "draw-gesture" || message.kind === "marquee-gesture") {
+      const owner = frameOwnerElements().find(
+        (candidate) => candidate.contentWindow === event.source,
+      );
+      if (!owner?.contentWindow) return;
+      const ownerRect = owner.getBoundingClientRect();
+      const borderScaleX = owner.offsetWidth > 0 ? ownerRect.width / owner.offsetWidth : 1;
+      const borderScaleY = owner.offsetHeight > 0 ? ownerRect.height / owner.offsetHeight : 1;
+      const contentX = ownerRect.left + owner.clientLeft * borderScaleX;
+      const contentY = ownerRect.top + owner.clientTop * borderScaleY;
+      const contentWidth = owner.clientWidth * borderScaleX;
+      const contentHeight = owner.clientHeight * borderScaleY;
+      const projected = {
+        ...message,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        point: {
+          x:
+            contentX +
+            message.point.x *
+              (message.viewport.width > 0 ? contentWidth / message.viewport.width : 1),
+          y:
+            contentY +
+            message.point.y *
+              (message.viewport.height > 0 ? contentHeight / message.viewport.height : 1),
+        },
+      } satisfies FrameDrawGestureMessage | FrameMarqueeGestureMessage;
+      if (!isMainFrame) {
+        window.parent.postMessage(projected, "*");
+        return;
+      }
+      if (projected.kind === "draw-gesture") applyDrawGesture(projected);
+      else applyMarqueeGesture(projected);
       return;
     }
     if (message.kind === "tool-request") {
@@ -1529,9 +1808,14 @@ function startAnnotation(sessionId: string, frameId: string): void {
     return false;
   };
 
-  const selectElementsInRect = (rect: PreviewAnnotationRect): number => {
+  function selectElementsInRect(rect: PreviewAnnotationRect): ReadonlyArray<SelectedElement> {
     const candidates = Array.from(document.querySelectorAll("body *"))
-      .filter((element) => !isAnnotationNode(element))
+      .filter(
+        (element) =>
+          !isAnnotationNode(element) &&
+          !(element instanceof HTMLIFrameElement) &&
+          !(element instanceof HTMLFrameElement),
+      )
       .map((element) => ({ element, rect: element.getBoundingClientRect() }))
       .filter(({ rect: candidate }) => {
         if (candidate.width < 2 || candidate.height < 2) return false;
@@ -1560,9 +1844,30 @@ function startAnnotation(sessionId: string, frameId: string): void {
         (left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height,
       )
       .slice(0, MAX_MARQUEE_ELEMENTS);
-    for (const candidate of candidates) addSelected(candidate.element);
-    return candidates.length;
-  };
+    return candidates.map((candidate) => addSelected(candidate.element));
+  }
+
+  function applyMarqueeSelection(
+    command: FrameMarqueeSelectionCommand,
+  ): ReadonlyArray<SelectedElement> {
+    if (!command.additive) {
+      clearTargetsExcept(frameId, []);
+      if (isMainFrame) pendingMarqueeRegions.clear();
+    }
+    const found = selectElementsInRect(command.rect);
+    if (found.length > 0 && !isMainFrame) {
+      window.parent.postMessage(
+        {
+          source: FRAME_BRIDGE_SOURCE,
+          kind: "marquee-selection",
+          sessionId,
+          operationId: command.operationId,
+        } satisfies FrameMarqueeSelectionMessage,
+        "*",
+      );
+    }
+    return found;
+  }
 
   const clearHoverOutline = (): void => {
     hoveredElement = null;
@@ -1570,11 +1875,19 @@ function startAnnotation(sessionId: string, frameId: string): void {
   };
 
   const onPointerMove = (event: PointerEvent): void => {
+    if (tool === "draw") {
+      sendDrawGesture("move", event);
+      return;
+    }
+    if (tool === "marquee") {
+      sendMarqueeGesture("move", event);
+      return;
+    }
     if (isAnnotationNode(event.target as Element)) {
       clearHoverOutline();
       return;
     }
-    if (tool === "select" && dragStart === null) {
+    if (tool === "select") {
       const target = pickFromPoint(event.clientX, event.clientY);
       if (target) {
         hoveredElement = target;
@@ -1583,24 +1896,6 @@ function startAnnotation(sessionId: string, frameId: string): void {
       return;
     }
     clearHoverOutline();
-    if (tool === "marquee" && dragStart) {
-      positionBox(
-        marqueeBox,
-        normalizeRect(dragStart.x, dragStart.y, event.clientX, event.clientY),
-      );
-      return;
-    }
-    if (tool === "draw" && activeStroke) {
-      activeStroke.target.points = [
-        ...activeStroke.target.points,
-        { x: event.clientX, y: event.clientY },
-      ];
-      activeStroke.target.bounds = strokeBounds(
-        activeStroke.target.points,
-        activeStroke.target.width,
-      );
-      activeStroke.path.setAttribute("d", pathFromPoints(activeStroke.target.points));
-    }
   };
 
   const onPointerDown = (event: PointerEvent): void => {
@@ -1616,71 +1911,33 @@ function startAnnotation(sessionId: string, frameId: string): void {
       removeTargetAtPoint(event.clientX, event.clientY);
       return;
     }
-    dragStart = { x: event.clientX, y: event.clientY };
-    dragAnchor = pickFromPoint(event.clientX, event.clientY);
     if (tool === "draw") {
-      const stroke: PreviewAnnotationStrokeTarget = {
-        id: `${frameId}:${nextId("stroke")}`,
-        color: annotationTheme?.primary ?? "#2563eb",
-        width: 4,
-        points: [dragStart],
-        bounds: { x: dragStart.x, y: dragStart.y, width: 1, height: 1 },
-      };
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute(OVERLAY_ATTRIBUTE, "");
-      path.setAttribute("data-stroke-id", stroke.id);
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", stroke.color);
-      path.setAttribute("stroke-width", String(stroke.width));
-      path.setAttribute("stroke-linecap", "round");
-      path.setAttribute("stroke-linejoin", "round");
-      svg.appendChild(path);
-      activeStroke = { target: stroke, path, anchor: dragAnchor };
+      sendDrawGesture("start", event);
+      return;
     }
+    sendMarqueeGesture("start", event);
   };
 
   const onPointerUp = (event: PointerEvent): void => {
-    if (!dragStart) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (tool === "marquee") {
-      const rect = normalizeRect(dragStart.x, dragStart.y, event.clientX, event.clientY);
-      marqueeBox.style.display = "none";
-      if (isUsableRect(rect)) {
-        const found = selectElementsInRect(rect);
-        if (found === 0) {
-          const region: PreviewAnnotationRegionTarget = {
-            id: `${frameId}:${nextId("region")}`,
-            rect,
-          };
-          regions.push(region);
-          const regionBox = createBox(
-            PRIMARY,
-            "color-mix(in srgb, var(--t3-primary) 6%, transparent)",
-          );
-          regionBox.setAttribute("data-region-id", region.id);
-          positionBox(regionBox, rect);
-          root.appendChild(regionBox);
-          regionOrigins.set(region.id, {
-            origin: captureAnnotationOrigin(dragAnchor),
-            node: regionBox,
-          });
-        }
-      }
-    } else if (tool === "draw" && activeStroke) {
-      if (activeStroke.target.points.length > 1) {
-        strokes.push(activeStroke.target);
-        strokeOrigins.set(activeStroke.target.id, {
-          origin: captureAnnotationOrigin(activeStroke.anchor),
-          path: activeStroke.path,
-        });
-      } else activeStroke.path.remove();
-      activeStroke = null;
+    if (tool === "draw") {
+      event.preventDefault();
+      event.stopPropagation();
+      sendDrawGesture("end", event);
+      return;
     }
-    dragStart = null;
-    dragAnchor = null;
-    updateStatus();
-    queuePublishState();
+    if (tool === "marquee") {
+      event.preventDefault();
+      event.stopPropagation();
+      sendMarqueeGesture("end", event);
+    }
+  };
+
+  const onPointerCancel = (event: PointerEvent): void => {
+    if (tool === "draw") {
+      sendDrawGesture("cancel", event);
+      return;
+    }
+    if (tool === "marquee") sendMarqueeGesture("cancel", event);
   };
 
   const onClick = (event: MouseEvent): void => {
@@ -1690,7 +1947,13 @@ function startAnnotation(sessionId: string, frameId: string): void {
   };
 
   const onPointerOut = (event: PointerEvent): void => {
-    if (event.relatedTarget === null) clearHoverOutline();
+    if (
+      event.relatedTarget === null ||
+      event.relatedTarget instanceof HTMLIFrameElement ||
+      event.relatedTarget instanceof HTMLFrameElement
+    ) {
+      clearHoverOutline();
+    }
   };
 
   const onWindowBlur = (): void => {
@@ -1735,6 +1998,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
     window.removeEventListener("pointermove", onPointerMove, true);
     window.removeEventListener("pointerdown", onPointerDown, true);
     window.removeEventListener("pointerup", onPointerUp, true);
+    window.removeEventListener("pointercancel", onPointerCancel, true);
     window.removeEventListener("pointerout", onPointerOut, true);
     window.removeEventListener("click", onClick, true);
     window.removeEventListener("blur", onWindowBlur);
@@ -1753,6 +2017,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
     if (relayFrame !== null) window.cancelAnimationFrame(relayFrame);
     ipcRenderer.off(CANCEL_PICK_CHANNEL, onCancel);
     ipcRenderer.off(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
+    ipcRenderer.off(ANNOTATION_SELECTION_CLAIMED_CHANNEL, onSelectionClaimed);
     document.documentElement.removeAttribute("data-t3code-annotation-tool");
     cursorStyle.remove();
     host.remove();
@@ -1875,6 +2140,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
   window.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
   window.addEventListener("pointerdown", onPointerDown, { capture: true, passive: false });
   window.addEventListener("pointerup", onPointerUp, { capture: true, passive: false });
+  window.addEventListener("pointercancel", onPointerCancel, { capture: true, passive: false });
   window.addEventListener("pointerout", onPointerOut, { capture: true, passive: true });
   window.addEventListener("click", onClick, { capture: true, passive: false });
   window.addEventListener("blur", onWindowBlur);
@@ -1885,6 +2151,7 @@ function startAnnotation(sessionId: string, frameId: string): void {
   frameObserver.observe(document.documentElement, { childList: true, subtree: true });
   ipcRenderer.on(CANCEL_PICK_CHANNEL, onCancel);
   ipcRenderer.on(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
+  ipcRenderer.on(ANNOTATION_SELECTION_CLAIMED_CHANNEL, onSelectionClaimed);
   document.documentElement.appendChild(host);
   refreshToolButtons();
   updateStatus();

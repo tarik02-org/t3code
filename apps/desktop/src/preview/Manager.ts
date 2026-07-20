@@ -58,6 +58,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
+  ANNOTATION_SELECTION_CLAIMED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
   CANCEL_PICK_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
@@ -1710,6 +1711,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const cleanup = Effect.fn("PreviewManager.cleanupPickElement")(function* () {
           yield* attempt({ operation: "pickElement.cleanup", tabId, webContentsId: wc.id }, () => {
             wc.ipc.removeListener(ELEMENT_PICKED_CHANNEL, onMessage);
+            wc.ipc.removeListener(ANNOTATION_SELECTION_CLAIMED_CHANNEL, onSelectionClaimed);
             wc.off("destroyed", onDestroyed);
             wc.off("did-start-navigation", onNavigated);
             wc.off("did-frame-finish-load", onFrameLoaded);
@@ -1783,6 +1785,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ),
           );
         };
+        const onSelectionClaimed = (
+          _event: Electron.IpcMainEvent,
+          claimedSessionId: string,
+          keepFrameId: string,
+          keepTargetIds: ReadonlyArray<string>,
+        ): void => {
+          if (claimedSessionId !== sessionId) return;
+          runFork(
+            attempt({ operation: "pickElement.claimSelection", tabId, webContentsId: wc.id }, () =>
+              sendToPreviewFrames(
+                wc,
+                ANNOTATION_SELECTION_CLAIMED_CHANNEL,
+                sessionId,
+                keepFrameId,
+                keepTargetIds,
+              ),
+            ).pipe(Effect.ignore),
+          );
+        };
         const onDestroyed = () => settle(null);
         const onNavigated = (
           _event: Electron.Event,
@@ -1829,6 +1850,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           );
           yield* attempt({ operation: "pickElement.register", tabId, webContentsId: wc.id }, () => {
             wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
+            wc.ipc.on(ANNOTATION_SELECTION_CLAIMED_CHANNEL, onSelectionClaimed);
             wc.once("destroyed", onDestroyed);
             wc.on("did-start-navigation", onNavigated);
             wc.on("did-frame-finish-load", onFrameLoaded);
