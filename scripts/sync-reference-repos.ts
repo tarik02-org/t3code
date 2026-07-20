@@ -3,7 +3,6 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -12,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { fromYaml } from "@t3tools/shared/schemaYaml";
 
 import { referenceRepos, type ReferenceRepo } from "./lib/reference-repos.ts";
 
@@ -31,12 +31,77 @@ export interface ReferenceRepoSyncPlan {
   readonly args: ReadonlyArray<string>;
 }
 
-export class ReferenceRepoSyncError extends Data.TaggedError("ReferenceRepoSyncError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+export class ReferenceRepoSelectionError extends Schema.TaggedErrorClass<ReferenceRepoSelectionError>()(
+  "ReferenceRepoSelectionError",
+  {
+    repoId: Schema.String,
+    expectedRepoIds: Schema.Array(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `Unknown reference repo "${this.repoId}". Expected one of: ${this.expectedRepoIds.join(", ")}.`;
+  }
+}
 
-const decodePackageJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+export class ReferenceRepoVersionSourceError extends Schema.TaggedErrorClass<ReferenceRepoVersionSourceError>()(
+  "ReferenceRepoVersionSourceError",
+  {
+    operation: Schema.Literals(["read", "parse"]),
+    repoId: Schema.String,
+    sourcePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Reference repo "${this.repoId}" version source operation "${this.operation}" failed for ${this.sourcePath}.`;
+  }
+}
+
+export class ReferenceRepoVersionResolutionError extends Schema.TaggedErrorClass<ReferenceRepoVersionResolutionError>()(
+  "ReferenceRepoVersionResolutionError",
+  {
+    repoId: Schema.String,
+    sourcePath: Schema.String,
+    packageVersionPath: Schema.Array(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `No version was found for reference repo "${this.repoId}" at ${this.sourcePath}:${this.packageVersionPath.join(".")}.`;
+  }
+}
+
+export class ReferenceRepoGitSubtreeError extends Schema.TaggedErrorClass<ReferenceRepoGitSubtreeError>()(
+  "ReferenceRepoGitSubtreeError",
+  {
+    operation: Schema.Literals(["spawn", "communicate", "exit"]),
+    repoId: Schema.String,
+    action: Schema.Literals(["add", "pull"]),
+    repository: Schema.String,
+    ref: Schema.String,
+    rootDir: Schema.String,
+    argumentCount: Schema.Number,
+    exitCode: Schema.optional(Schema.Number),
+    stdoutLength: Schema.optional(Schema.Number),
+    stderrLength: Schema.optional(Schema.Number),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Git subtree ${this.action} for reference repo "${this.repoId}" failed during "${this.operation}".`;
+  }
+}
+
+export const ReferenceRepoSyncError = Schema.Union([
+  ReferenceRepoSelectionError,
+  ReferenceRepoVersionSourceError,
+  ReferenceRepoVersionResolutionError,
+  ReferenceRepoGitSubtreeError,
+]);
+export type ReferenceRepoSyncError = typeof ReferenceRepoSyncError.Type;
+export const isReferenceRepoSyncError = Schema.is(ReferenceRepoSyncError);
+
+const decodeJsonSource = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeYamlSource = Schema.decodeEffect(fromYaml(Schema.Unknown));
 
 const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
   stream.pipe(
@@ -58,6 +123,28 @@ function readNestedString(input: unknown, keys: ReadonlyArray<string>): string |
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function decodeVersionSource(
+  repo: ReferenceRepo,
+  sourcePath: string,
+  content: string,
+): Effect.Effect<unknown, ReferenceRepoSyncError> {
+  const decode =
+    repo.versionSourcePath.endsWith(".yaml") || repo.versionSourcePath.endsWith(".yml")
+      ? decodeYamlSource
+      : decodeJsonSource;
+  return decode(content).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ReferenceRepoVersionSourceError({
+          operation: "parse",
+          repoId: repo.id,
+          sourcePath,
+          cause,
+        }),
+    ),
+  );
+}
+
 function getSelectedRepos(
   repoId: string | undefined,
 ): Effect.Effect<ReadonlyArray<ReferenceRepo>, ReferenceRepoSyncError> {
@@ -69,10 +156,9 @@ function getSelectedRepos(
   return repo
     ? Effect.succeed([repo])
     : Effect.fail(
-        new ReferenceRepoSyncError({
-          message: `Unknown reference repo '${repoId}'. Expected one of: ${referenceRepos
-            .map((candidate) => candidate.id)
-            .join(", ")}.`,
+        new ReferenceRepoSelectionError({
+          repoId,
+          expectedRepoIds: referenceRepos.map((candidate) => candidate.id),
         }),
       );
 }
@@ -88,24 +174,26 @@ export const resolveReferenceRepoRef = Effect.fn("resolveReferenceRepoRef")(func
 
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const packageJsonPath = path.join(rootDir, repo.packageJsonPath);
-  const packageJson = yield* fs.readFileString(packageJsonPath).pipe(
-    Effect.flatMap(decodePackageJson),
+  const versionSourcePath = path.join(rootDir, repo.versionSourcePath);
+  const versionSourceContent = yield* fs.readFileString(versionSourcePath).pipe(
     Effect.mapError(
       (cause) =>
-        new ReferenceRepoSyncError({
-          message: `Unable to read package version for '${repo.id}' from ${packageJsonPath}.`,
+        new ReferenceRepoVersionSourceError({
+          operation: "read",
+          repoId: repo.id,
+          sourcePath: versionSourcePath,
           cause,
         }),
     ),
   );
-  const version = readNestedString(packageJson, repo.packageVersionPath);
+  const versionSource = yield* decodeVersionSource(repo, versionSourcePath, versionSourceContent);
+  const version = readNestedString(versionSource, repo.packageVersionPath);
 
   if (!version) {
-    return yield* new ReferenceRepoSyncError({
-      message: `Unable to resolve package version for '${repo.id}' at ${repo.packageJsonPath}:${repo.packageVersionPath.join(
-        ".",
-      )}.`,
+    return yield* new ReferenceRepoVersionResolutionError({
+      repoId: repo.id,
+      sourcePath: versionSourcePath,
+      packageVersionPath: repo.packageVersionPath,
     });
   }
 
@@ -134,11 +222,20 @@ export const planReferenceRepoSync = Effect.fn("planReferenceRepoSync")(function
 
 const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRepoSyncPlan) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const errorContext = {
+    repoId: plan.repo.id,
+    action: plan.action,
+    repository: plan.repo.repository,
+    ref: plan.ref,
+    rootDir,
+    argumentCount: plan.args.length,
+  } as const;
   const child = yield* spawner.spawn(ChildProcess.make("git", plan.args, { cwd: rootDir })).pipe(
     Effect.mapError(
       (cause) =>
-        new ReferenceRepoSyncError({
-          message: `Unable to start git subtree ${plan.action} for '${plan.repo.id}'.`,
+        new ReferenceRepoGitSubtreeError({
+          ...errorContext,
+          operation: "spawn",
           cause,
         }),
     ),
@@ -153,16 +250,21 @@ const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRe
   ).pipe(
     Effect.mapError(
       (cause) =>
-        new ReferenceRepoSyncError({
-          message: `Unable to run git subtree ${plan.action} for '${plan.repo.id}'.`,
+        new ReferenceRepoGitSubtreeError({
+          ...errorContext,
+          operation: "communicate",
           cause,
         }),
     ),
   );
 
   if (exitCode !== 0) {
-    return yield* new ReferenceRepoSyncError({
-      message: `git subtree ${plan.action} failed for '${plan.repo.id}' with exit code ${exitCode}.\n${stderr.trim()}`,
+    return yield* new ReferenceRepoGitSubtreeError({
+      ...errorContext,
+      operation: "exit",
+      exitCode,
+      stdoutLength: stdout.length,
+      stderrLength: stderr.length,
     });
   }
 
