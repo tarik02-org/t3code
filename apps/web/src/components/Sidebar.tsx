@@ -3581,7 +3581,7 @@ export default function Sidebar() {
   }, []);
   const sidebarIsVisible = isMobile ? openMobile : open;
   const sidebarWasVisibleRef = useRef(false);
-  const previousRouteThreadKeyRef = useRef(routeThreadKey);
+  const lastRouteThreadKeyRef = useRef(routeThreadKey);
   const sidebarNavigationThreadKeyRef = useRef<string | null>(null);
   const markSidebarThreadNavigation = useCallback((threadKey: string) => {
     sidebarNavigationThreadKeyRef.current = threadKey;
@@ -3669,12 +3669,15 @@ export default function Sidebar() {
   );
   useLayoutEffect(() => {
     const sidebarBecameVisible = sidebarIsVisible && !sidebarWasVisibleRef.current;
-    const routeThreadChanged = previousRouteThreadKeyRef.current !== routeThreadKey;
+    const routeThreadChanged =
+      routeThreadKey !== null && lastRouteThreadKeyRef.current !== routeThreadKey;
     const routeChangedFromSidebar =
       routeThreadChanged && sidebarNavigationThreadKeyRef.current === routeThreadKey;
 
     sidebarWasVisibleRef.current = sidebarIsVisible;
-    previousRouteThreadKeyRef.current = routeThreadKey;
+    if (routeThreadKey !== null) {
+      lastRouteThreadKeyRef.current = routeThreadKey;
+    }
     if (routeThreadChanged) {
       sidebarNavigationThreadKeyRef.current = null;
     }
