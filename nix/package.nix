@@ -103,7 +103,7 @@ stdenv.mkDerivation (finalAttrs: {
   meta = {
     description = "Remote control for coding agents";
     homepage = "https://github.com/tarik02/t3code";
-    license = lib.licenses.asl20;
+    license = lib.licenses.mit;
     mainProgram = "t3";
     platforms = [ "x86_64-linux" ];
   };
