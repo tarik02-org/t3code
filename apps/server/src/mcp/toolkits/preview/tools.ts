@@ -104,7 +104,7 @@ export const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics, action history, and a PNG screenshot.",
+      "Inspect a page before interacting. Returns every frame with its frameIndex, page text, semantic elements, diagnostics, action history, and a PNG screenshot.",
     parameters: PreviewAutomationTabTargetInput,
     success: PreviewAutomationSnapshot,
     failure: PreviewAutomationError,
@@ -115,7 +115,7 @@ export const PreviewSnapshotTool = readonlyBrowserTool(
 export const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
     description:
-      "Click exactly one target in the tab selected by tabId, or this agent session's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together.",
+      "Click exactly one target. Locator/selector targets are searched across every frame unless frameIndex is supplied; x and y target the main viewport.",
     parameters: PreviewAutomationClickInput,
     success: Schema.Null,
     failure: PreviewAutomationError,
@@ -126,7 +126,7 @@ export const PreviewClickTool = browserTool(
 export const PreviewTypeTool = browserTool(
   Tool.make("preview_type", {
     description:
-      "Insert literal text into one input in the tab selected by tabId, or this agent session's current tab when omitted. Prefer a Playwright locator; set clear=true to replace existing text.",
+      "Insert literal text into one input, searching every frame unless frameIndex is supplied. Prefer a Playwright locator; set clear=true to replace existing text.",
     parameters: PreviewAutomationTypeInput,
     success: Schema.Null,
     failure: PreviewAutomationError,
@@ -137,7 +137,7 @@ export const PreviewTypeTool = browserTool(
 export const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
     description:
-      "Press one keyboard key in the tab selected by tabId, or this agent session's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}.",
+      "Press one keyboard key in the active frame, or focus frameIndex first. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}.",
     parameters: PreviewAutomationPressInput,
     success: Schema.Null,
     failure: PreviewAutomationError,
@@ -148,7 +148,7 @@ export const PreviewPressTool = browserTool(
 export const PreviewScrollTool = safeBrowserTool(
   Tool.make("preview_scroll", {
     description:
-      "Scroll the tab selected by tabId, or this agent session's current tab when omitted. Positive deltaY scrolls down and positive deltaX scrolls right; a locator/selector targets a container.",
+      "Scroll a frame viewport or container. Locator/selector targets are searched across every frame; frameIndex targets a specific frame.",
     parameters: PreviewAutomationScrollInput,
     success: Schema.Null,
     failure: PreviewAutomationError,
@@ -159,7 +159,7 @@ export const PreviewScrollTool = safeBrowserTool(
 export const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Evaluate JavaScript in the tab selected by tabId, or this agent session's current tab when omitted. Returns a serializable result up to 64 KB; the expression may mutate page state.",
+      "Evaluate JavaScript in frameIndex (main frame 0 by default). Returns a serializable result up to 64 KB; the expression may mutate page state.",
     parameters: PreviewAutomationEvaluateInput,
     success: Schema.Unknown,
     failure: PreviewAutomationError,
@@ -170,7 +170,7 @@ export const PreviewEvaluateTool = browserTool(
 export const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
-      "Wait in the tab selected by tabId, or this agent session's current tab when omitted, until all supplied locator, selector, text, and URL conditions match.",
+      "Wait until one frame satisfies every supplied locator, selector, text, and URL condition; frameIndex restricts the search.",
     parameters: PreviewAutomationWaitForInput,
     success: Schema.Null,
     failure: PreviewAutomationError,

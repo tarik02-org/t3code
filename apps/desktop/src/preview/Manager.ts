@@ -5,6 +5,8 @@
  * elements live in the renderer; we only attach listeners and forward state
  * here). Single layer-scoped browser session partition.
  */
+import * as NodeCrypto from "node:crypto";
+
 import type {
   DesktopPreviewAnnotationTheme,
   DesktopPreviewColorScheme,
@@ -35,6 +37,7 @@ import {
   nativeImage,
   shell,
   webContents,
+  webFrameMain,
 } from "electron";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -56,6 +59,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
+  ANNOTATION_SELECTION_CLAIMED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
   CANCEL_PICK_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
@@ -101,6 +105,7 @@ const MAX_EVALUATION_BYTES = 64_000;
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
+const MAX_PREVIEW_TITLE_LENGTH = 512;
 const DIAGNOSTIC_BUFFER_LIMIT = 200;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
@@ -124,6 +129,28 @@ const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
   ring: "oklch(0.488 0.217 264)",
   fontSans: "system-ui, sans-serif",
   fontMono: "ui-monospace, monospace",
+};
+
+const sendToPreviewFrames = (
+  wc: Electron.WebContents,
+  channel: string,
+  ...args: ReadonlyArray<unknown>
+): void => {
+  for (const frame of wc.mainFrame.framesInSubtree) {
+    if (!frame.isDestroyed()) frame.send(channel, ...args);
+  }
+};
+
+const startPickInPreviewFrames = (
+  wc: Electron.WebContents,
+  theme: DesktopPreviewAnnotationTheme,
+  sessionId: string,
+): void => {
+  for (const frame of wc.mainFrame.framesInSubtree) {
+    if (!frame.isDestroyed()) {
+      frame.send(START_PICK_CHANNEL, theme, sessionId, String(frame.frameTreeNodeId));
+    }
+  }
 };
 
 const artifactSiteSlug = (rawUrl: string): string => {
@@ -298,6 +325,7 @@ interface ManagedListeners {
 
 interface PickSession {
   readonly cancel: Effect.Effect<void>;
+  readonly sessionId: string;
 }
 
 interface BrowserControlSession {
@@ -999,6 +1027,30 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }),
     );
 
+  const previewFrames = (
+    wc: Electron.WebContents,
+    frameIndex?: number,
+  ): ReadonlyArray<{ readonly frame: Electron.WebFrameMain; readonly frameIndex: number }> => {
+    const frames = wc.mainFrame.framesInSubtree
+      .map((frame, index) => ({ frame, frameIndex: index }))
+      .filter(({ frame }) => !frame.isDestroyed());
+    return frameIndex === undefined
+      ? frames
+      : frames.filter((candidate) => candidate.frameIndex === frameIndex);
+  };
+
+  const evaluateInFrame = Effect.fn("PreviewManager.evaluateInFrame")(function* <A>(
+    tabId: string,
+    wc: Electron.WebContents,
+    frame: Electron.WebFrameMain,
+    operation: string,
+    expression: string,
+  ) {
+    return (yield* attemptPromise({ operation, tabId, webContentsId: wc.id }, () =>
+      frame.executeJavaScript(expression, true),
+    )) as A;
+  });
+
   const automationLocator = (input: {
     readonly selector?: string | undefined;
     readonly locator?: string | undefined;
@@ -1044,6 +1096,99 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* evaluateWithDebugger(tabId, send, expression, true);
   });
 
+  const ensurePlaywrightInjectedInFrame = Effect.fn(
+    "PreviewManager.ensurePlaywrightInjectedInFrame",
+  )(function* (tabId: string, wc: Electron.WebContents, frame: Electron.WebFrameMain) {
+    const installed = yield* evaluateInFrame<boolean>(
+      tabId,
+      wc,
+      frame,
+      "ensurePlaywrightInjectedInFrame.check",
+      "Boolean(globalThis.__t3PlaywrightInjected)",
+    );
+    if (installed) return;
+    const expression = yield* playwrightInstallExpression.pipe(
+      Effect.mapError(
+        (cause) =>
+          new PreviewOperationError({
+            operation: "ensurePlaywrightInjectedInFrame",
+            tabId,
+            webContentsId: wc.id,
+            cause,
+          }),
+      ),
+    );
+    yield* evaluateInFrame(tabId, wc, frame, "ensurePlaywrightInjectedInFrame.install", expression);
+  });
+
+  const requireAutomationFrame = Effect.fn("PreviewManager.requireAutomationFrame")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+    frameIndex = 0,
+  ) {
+    const target = previewFrames(wc, frameIndex)[0];
+    if (target) return target;
+    return yield* new PreviewAutomationTargetNotFoundError({
+      operation: "frame",
+      tabId,
+      selectorKind: "focused-element",
+    });
+  });
+
+  const findAutomationTargetFrame = Effect.fn("PreviewManager.findAutomationTargetFrame")(
+    function* (
+      tabId: string,
+      wc: Electron.WebContents,
+      operation: string,
+      input: {
+        readonly selector?: string | undefined;
+        readonly locator?: string | undefined;
+        readonly frameIndex?: number | undefined;
+      },
+    ) {
+      const locator = automationLocator(input)!;
+      const locatorJson = yield* encodeJson(
+        { operation: `${operation}.encodeLocator`, tabId, webContentsId: wc.id },
+        locator,
+      );
+      for (const target of previewFrames(wc, input.frameIndex)) {
+        yield* ensurePlaywrightInjectedInFrame(tabId, wc, target.frame);
+        const result = yield* evaluateInFrame<
+          { found: true } | { invalidSelector: true; message: string } | { notFound: true }
+        >(
+          tabId,
+          wc,
+          target.frame,
+          `${operation}.findTarget`,
+          `(() => {
+          try {
+            const injected = globalThis.__t3PlaywrightInjected;
+            const element = injected.querySelector(injected.parseSelector(${locatorJson}), document, true);
+            return element ? { found: true } : { notFound: true };
+          } catch (error) {
+            return { invalidSelector: true, message: String(error) };
+          }
+        })()`,
+        );
+        if ("invalidSelector" in result) {
+          return yield* new PreviewAutomationInvalidSelectorError({
+            operation,
+            tabId,
+            ...automationSelectorDiagnostics(input),
+            reasonLength: result.message.length,
+            cause: result,
+          });
+        }
+        if ("found" in result) return target;
+      }
+      return yield* new PreviewAutomationTargetNotFoundError({
+        operation,
+        tabId,
+        ...automationSelectorDiagnostics(input),
+      });
+    },
+  );
+
   const cancelPickElement = Effect.fn("PreviewManager.cancelPickElement")(function* (
     tabId: string,
   ) {
@@ -1075,7 +1220,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const computeNavStatus = (wc: Electron.WebContents): PreviewNavStatus => {
     const url = wc.getURL();
-    const title = wc.getTitle();
+    const title = wc.getTitle().slice(0, MAX_PREVIEW_TITLE_LENGTH);
     if (url === "" || url === "about:blank") return { kind: "Idle" };
     if (wc.isLoading()) return { kind: "Loading", url, title };
     return { kind: "Success", url, title };
@@ -1180,7 +1325,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           navStatus: {
             kind: "LoadFailed",
             url: validatedUrl || wc.getURL(),
-            title: wc.getTitle(),
+            title: wc.getTitle().slice(0, MAX_PREVIEW_TITLE_LENGTH),
             code,
             description,
           },
@@ -1361,7 +1506,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       yield* update(tabId, { zoomFactor });
       yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
-        wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
+        sendToPreviewFrames(wc, ANNOTATION_THEME_CHANNEL, annotationTheme),
       );
       return;
     }
@@ -1426,7 +1571,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const { state: registered, pendingUrl } = registration.value;
     yield* emit(tabId, registered);
     yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
-      wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
+      sendToPreviewFrames(wc, ANNOTATION_THEME_CHANNEL, annotationTheme),
     );
     const latestNavStatus = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.navStatus;
     if (
@@ -1554,7 +1699,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 tabId: tab.tabId,
                 webContentsId: tab.webContentsId,
               },
-              () => wc.send(ANNOTATION_THEME_CHANNEL, theme),
+              () => sendToPreviewFrames(wc, ANNOTATION_THEME_CHANNEL, theme),
             ).pipe(Effect.ignore);
       },
       { discard: true },
@@ -1565,13 +1710,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const wc = yield* requireWebContents(tabId);
     yield* cancelPickElement(tabId);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
+    const sessionId = NodeCrypto.randomUUID();
     return yield* Effect.callback<PreviewAnnotationPayload | null, PreviewManagerError>(
       (resume) => {
         const cleanup = Effect.fn("PreviewManager.cleanupPickElement")(function* () {
           yield* attempt({ operation: "pickElement.cleanup", tabId, webContentsId: wc.id }, () => {
             wc.ipc.removeListener(ELEMENT_PICKED_CHANNEL, onMessage);
+            wc.ipc.removeListener(ANNOTATION_SELECTION_CLAIMED_CHANNEL, onSelectionClaimed);
             wc.off("destroyed", onDestroyed);
             wc.off("did-start-navigation", onNavigated);
+            wc.off("did-frame-finish-load", onFrameLoaded);
           }).pipe(Effect.ignore);
           yield* Ref.update(pickSessionsRef, (sessions) =>
             replaceMap(sessions, (copy) => {
@@ -1585,6 +1733,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const active = (yield* Ref.get(pickSessionsRef)).get(tabId);
           if (!active || active.cancel !== cancel) return;
           yield* cleanup();
+          if (payload === null && !wc.isDestroyed()) {
+            yield* attempt(
+              { operation: "pickElement.cancelFrames", tabId, webContentsId: wc.id },
+              () => sendToPreviewFrames(wc, CANCEL_PICK_CHANNEL),
+            ).pipe(Effect.ignore);
+          }
           resume(Effect.succeed(payload));
         });
         const settle = (payload: PreviewAnnotationPayload | null) => {
@@ -1603,7 +1757,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   tabId,
                   webContentsId: activeWc.id,
                 },
-                () => activeWc.send(CANCEL_PICK_CHANNEL),
+                () => sendToPreviewFrames(activeWc, CANCEL_PICK_CHANNEL),
               ).pipe(Effect.ignore);
             }
           }
@@ -1627,11 +1781,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 attempt(
                   { operation: "pickElement.captureComplete", tabId, webContentsId: wc.id },
                   () => {
-                    if (!wc.isDestroyed()) wc.send(ANNOTATION_CAPTURED_CHANNEL);
+                    if (!wc.isDestroyed()) {
+                      sendToPreviewFrames(wc, ANNOTATION_CAPTURED_CHANNEL);
+                    }
                   },
                 ).pipe(Effect.ignore),
               ),
             ),
+          );
+        };
+        const onSelectionClaimed = (
+          _event: Electron.IpcMainEvent,
+          claimedSessionId: string,
+          keepFrameId: string,
+          keepTargetIds: ReadonlyArray<string>,
+        ): void => {
+          if (claimedSessionId !== sessionId) return;
+          runFork(
+            attempt({ operation: "pickElement.claimSelection", tabId, webContentsId: wc.id }, () =>
+              sendToPreviewFrames(
+                wc,
+                ANNOTATION_SELECTION_CLAIMED_CHANNEL,
+                sessionId,
+                keepFrameId,
+                keepTargetIds,
+              ),
+            ).pipe(Effect.ignore),
           );
         };
         const onDestroyed = () => settle(null);
@@ -1643,19 +1818,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ) => {
           if (isMainFrame) settle(null);
         };
+        const onFrameLoaded = (
+          _event: Electron.Event,
+          isMainFrame: boolean,
+          frameProcessId: number,
+          frameRoutingId: number,
+        ): void => {
+          if (isMainFrame) return;
+          const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+          if (!frame) return;
+          runFork(
+            Ref.get(pickSessionsRef).pipe(
+              Effect.flatMap((sessions) => {
+                if (sessions.get(tabId)?.sessionId !== sessionId || frame.isDestroyed()) {
+                  return Effect.void;
+                }
+                return attempt(
+                  { operation: "pickElement.startFrame", tabId, webContentsId: wc.id },
+                  () =>
+                    frame.send(
+                      START_PICK_CHANNEL,
+                      annotationTheme,
+                      sessionId,
+                      String(frame.frameTreeNodeId),
+                    ),
+                ).pipe(Effect.ignore);
+              }),
+            ),
+          );
+        };
         const registerPickElement = Effect.fn("PreviewManager.registerPickElement")(function* () {
-          yield* attempt({ operation: "pickElement.register", tabId, webContentsId: wc.id }, () => {
-            wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
-            wc.once("destroyed", onDestroyed);
-            wc.once("did-start-navigation", onNavigated);
-            if (!wc.isFocused()) wc.focus();
-            wc.send(START_PICK_CHANNEL, annotationTheme);
-          });
           yield* Ref.update(pickSessionsRef, (sessions) =>
             replaceMap(sessions, (copy) => {
-              copy.set(tabId, { cancel });
+              copy.set(tabId, { cancel, sessionId });
             }),
           );
+          yield* attempt({ operation: "pickElement.register", tabId, webContentsId: wc.id }, () => {
+            wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
+            wc.ipc.on(ANNOTATION_SELECTION_CLAIMED_CHANNEL, onSelectionClaimed);
+            wc.once("destroyed", onDestroyed);
+            wc.on("did-start-navigation", onNavigated);
+            wc.on("did-frame-finish-load", onFrameLoaded);
+            if (!wc.isFocused()) wc.focus();
+            startPickInPreviewFrames(wc, annotationTheme, sessionId);
+          });
         });
         runFork(
           registerPickElement().pipe(
@@ -1917,68 +2123,96 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         concurrency: 2,
         discard: true,
       });
-      const page = yield* evaluateWithDebugger<{
+      const snapshotExpression = `(() => {
+        const selectorFor = (element) => {
+          if (element.id) return "#" + CSS.escape(element.id);
+          for (const attribute of ["data-testid", "name"]) {
+            const value = element.getAttribute(attribute);
+            if (value) return element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]";
+          }
+          const buildParts = (current, parts = []) => {
+            if (!current || current.nodeType !== Node.ELEMENT_NODE || parts.length >= 8) {
+              return parts;
+            }
+            const parent = current.parentElement;
+            const siblings = parent
+              ? Array.from(parent.children).filter((child) => child.tagName === current.tagName)
+              : [];
+            const base = current.tagName.toLowerCase();
+            const part = siblings.length > 1
+              ? base + ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")"
+              : base;
+            return buildParts(parent, [part, ...parts]);
+          };
+          return buildParts(element).join(" > ");
+        };
+        const visible = (element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+        };
+        const elements = Array.from(document.querySelectorAll(
+          "a[href],button,input,textarea,select,[role],[tabindex]"
+        )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            tag: element.tagName.toLowerCase(),
+            role: element.getAttribute("role"),
+            name: element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "",
+            selector: selectorFor(element),
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height
+          };
+        });
+        return {
+          url: location.href,
+          title: document.title,
+          loading: document.readyState !== "complete",
+          visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
+          interactiveElements: elements
+        };
+      })()`;
+      type FramePage = {
         url: string;
         title: string;
         loading: boolean;
         visibleText: string;
-        interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
-      }>(
+        interactiveElements: ReadonlyArray<
+          Omit<PreviewAutomationSnapshot["interactiveElements"][number], "frameIndex">
+        >;
+      };
+      const frames = previewFrames(wc);
+      const mainFrame = yield* requireAutomationFrame(tabId, wc);
+      const mainPage = yield* evaluateInFrame<FramePage>(
         tabId,
-        send,
-        `(() => {
-          const selectorFor = (element) => {
-            if (element.id) return "#" + CSS.escape(element.id);
-            for (const attribute of ["data-testid", "name"]) {
-              const value = element.getAttribute(attribute);
-              if (value) return element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]";
-            }
-            const buildParts = (current, parts = []) => {
-              if (!current || current.nodeType !== Node.ELEMENT_NODE || parts.length >= 8) {
-                return parts;
-              }
-              const parent = current.parentElement;
-              const siblings = parent
-                ? Array.from(parent.children).filter((child) => child.tagName === current.tagName)
-                : [];
-              const base = current.tagName.toLowerCase();
-              const part = siblings.length > 1
-                ? base + ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")"
-                : base;
-              return buildParts(parent, [part, ...parts]);
-            };
-            return buildParts(element).join(" > ");
-          };
-          const visible = (element) => {
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
-          };
-          const elements = Array.from(document.querySelectorAll(
-            "a[href],button,input,textarea,select,[role],[tabindex]"
-          )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
-            const rect = element.getBoundingClientRect();
-            return {
-              tag: element.tagName.toLowerCase(),
-              role: element.getAttribute("role"),
-              name: element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "",
-              selector: selectorFor(element),
-              x: rect.x,
-              y: rect.y,
-              width: rect.width,
-              height: rect.height
-            };
-          });
-          return {
-            url: location.href,
-            title: document.title,
-            loading: document.readyState !== "complete",
-            visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
-            interactiveElements: elements
-          };
-        })()`,
-        true,
+        wc,
+        mainFrame.frame,
+        "automationSnapshot.mainFrame",
+        snapshotExpression,
       );
+      const childPages = yield* Effect.forEach(
+        frames.slice(1),
+        (target) =>
+          evaluateInFrame<FramePage>(
+            tabId,
+            wc,
+            target.frame,
+            "automationSnapshot.childFrame",
+            snapshotExpression,
+          ).pipe(
+            Effect.option,
+            Effect.map((page) => ({ target, page })),
+          ),
+        { concurrency: 4 },
+      );
+      const pages = [
+        { target: mainFrame, page: mainPage },
+        ...childPages.flatMap(({ target, page }) =>
+          Option.isSome(page) ? [{ target, page: page.value }] : [],
+        ),
+      ];
       const [accessibility, sourceImage, diagnostics, timelines] = yield* Effect.all([
         send("Accessibility.getFullAXTree"),
         attemptPromise(
@@ -2000,7 +2234,28 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const size = image.getSize();
       const browserDiagnostics = diagnostics.get(wc.id);
       return {
-        ...page,
+        url: mainPage.url,
+        title: mainPage.title,
+        loading: pages.some(({ page }) => page.loading),
+        frames: frames.map(({ frame, frameIndex }) => ({
+          index: frameIndex,
+          url: frame.url,
+          name: frame.name,
+        })),
+        visibleText: pages
+          .map(
+            ({ target, page }) => `[frame ${target.frameIndex}: ${page.url}]\n${page.visibleText}`,
+          )
+          .join("\n\n")
+          .slice(0, MAX_VISIBLE_TEXT_LENGTH),
+        interactiveElements: pages
+          .flatMap(({ target, page }) =>
+            page.interactiveElements.map((element) => ({
+              ...element,
+              frameIndex: target.frameIndex,
+            })),
+          )
+          .slice(0, MAX_INTERACTIVE_ELEMENTS),
         accessibilityTree: accessibility,
         consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
         networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
@@ -2154,17 +2409,71 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     yield* withControlSession(tabId, wc, "click", (send) =>
-      performAutomationClick(tabId, input, send),
+      Effect.gen(function* () {
+        const locator = automationLocator(input);
+        if (!locator) return yield* performAutomationClick(tabId, input, send);
+        const target = yield* findAutomationTargetFrame(tabId, wc, "click", input);
+        if (target.frame === wc.mainFrame) {
+          return yield* performAutomationClick(tabId, input, send);
+        }
+        const locatorJson = yield* encodeJson(
+          { operation: "automationClick.encodeFrameLocator", tabId, webContentsId: wc.id },
+          locator,
+        );
+        const result = yield* evaluateInFrame<
+          { ok: true } | { invalidSelector: true; message: string } | { notFound: true }
+        >(
+          tabId,
+          wc,
+          target.frame,
+          "automationClick.frame",
+          `(() => {
+            try {
+              const injected = globalThis.__t3PlaywrightInjected;
+              const element = injected.querySelector(injected.parseSelector(${locatorJson}), document, true);
+              if (!element) return { notFound: true };
+              const visible = injected.elementState(element, "visible");
+              const enabled = injected.elementState(element, "enabled");
+              if (!visible.matches || !enabled.matches) return { notFound: true };
+              element.scrollIntoView({ block: "center", inline: "center" });
+              element.focus({ preventScroll: true });
+              element.click();
+              return { ok: true };
+            } catch (error) {
+              return { invalidSelector: true, message: String(error) };
+            }
+          })()`,
+        );
+        if ("invalidSelector" in result) {
+          return yield* new PreviewAutomationInvalidSelectorError({
+            operation: "click",
+            tabId,
+            ...automationSelectorDiagnostics(input),
+            reasonLength: result.message.length,
+            cause: result,
+          });
+        }
+        if ("notFound" in result) {
+          return yield* new PreviewAutomationTargetNotFoundError({
+            operation: "click",
+            tabId,
+            ...automationSelectorDiagnostics(input),
+          });
+        }
+      }),
     );
   });
 
   const typeIntoAutomationTarget = Effect.fn("PreviewManager.typeIntoAutomationTarget")(function* (
     tabId: string,
+    wc: Electron.WebContents,
     send: SendCommand,
     input: PreviewAutomationTypeInput,
   ) {
     const locator = automationLocator(input);
-    if (locator) yield* ensurePlaywrightInjected(tabId, send);
+    const target = locator
+      ? yield* findAutomationTargetFrame(tabId, wc, "type", input)
+      : yield* requireAutomationFrame(tabId, wc, input.frameIndex);
     const locatorJson = locator
       ? yield* encodeJson({ operation: "automationType.encodeLocator", tabId }, locator)
       : null;
@@ -2172,73 +2481,78 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "automationType.encodeText", tabId },
       input.text,
     );
-    const result = yield* evaluateWithDebugger<
+    const expression = `(() => {
+        try {
+          const element = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : "document.activeElement"};
+          if (!element) return { notFound: true };
+          const textControl =
+            element instanceof HTMLTextAreaElement ||
+            (element instanceof HTMLInputElement &&
+              !new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]).has(element.type));
+          const editable = textControl || element.isContentEditable;
+          if (!editable || element.disabled || element.readOnly) return { notEditable: true };
+          element.focus();
+          if (document.activeElement !== element) return { notEditable: true };
+          const clear = ${input.clear ?? false};
+          if (clear) {
+            if (textControl) {
+              element.select();
+            } else {
+              const range = document.createRange();
+              range.selectNodeContents(element);
+              const selection = document.getSelection();
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+            }
+          }
+          const text = ${textJson};
+          let inserted = true;
+          if (text.length > 0) {
+            inserted = document.execCommand("insertText", false, text);
+          } else if (clear) {
+            document.execCommand("delete", false);
+            const cleared = textControl
+              ? element.value.length === 0
+              : (element.textContent ?? "").length === 0;
+            if (!cleared) {
+              if (textControl) {
+                const prototype = element instanceof HTMLTextAreaElement
+                  ? HTMLTextAreaElement.prototype
+                  : HTMLInputElement.prototype;
+                const valueSetter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+                if (valueSetter) valueSetter.call(element, "");
+                else element.value = "";
+              } else {
+                element.replaceChildren();
+              }
+              element.dispatchEvent(new InputEvent("input", {
+                bubbles: true,
+                inputType: "deleteContentBackward",
+              }));
+            }
+          }
+          if (!inserted) return { notEditable: true };
+          element.dispatchEvent(new Event("change", { bubbles: true }));
+          return { ok: true };
+        } catch (error) {
+          return { invalidSelector: true, message: String(error) };
+        }
+      })()`;
+    type TypeResult =
       | { ok: true }
       | { invalidSelector: true; message: string }
       | { notEditable: true }
-      | { notFound: true }
-    >(
-      tabId,
-      send,
-      `(() => {
-          try {
-            const element = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : "document.activeElement"};
-            if (!element) return { notFound: true };
-            const textControl =
-              element instanceof HTMLTextAreaElement ||
-              (element instanceof HTMLInputElement &&
-                !new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]).has(element.type));
-            const editable = textControl || element.isContentEditable;
-            if (!editable || element.disabled || element.readOnly) return { notEditable: true };
-            element.focus();
-            if (document.activeElement !== element) return { notEditable: true };
-            const clear = ${input.clear ?? false};
-            if (clear) {
-              if (textControl) {
-                element.select();
-              } else {
-                const range = document.createRange();
-                range.selectNodeContents(element);
-                const selection = document.getSelection();
-                selection?.removeAllRanges();
-                selection?.addRange(range);
-              }
-            }
-            const text = ${textJson};
-            let inserted = true;
-            if (text.length > 0) {
-              inserted = document.execCommand("insertText", false, text);
-            } else if (clear) {
-              document.execCommand("delete", false);
-              const cleared = textControl
-                ? element.value.length === 0
-                : (element.textContent ?? "").length === 0;
-              if (!cleared) {
-                if (textControl) {
-                  const prototype = element instanceof HTMLTextAreaElement
-                    ? HTMLTextAreaElement.prototype
-                    : HTMLInputElement.prototype;
-                  const valueSetter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-                  if (valueSetter) valueSetter.call(element, "");
-                  else element.value = "";
-                } else {
-                  element.replaceChildren();
-                }
-                element.dispatchEvent(new InputEvent("input", {
-                  bubbles: true,
-                  inputType: "deleteContentBackward",
-                }));
-              }
-            }
-            if (!inserted) return { notEditable: true };
-            element.dispatchEvent(new Event("change", { bubbles: true }));
-            return { ok: true };
-          } catch (error) {
-            return { invalidSelector: true, message: String(error) };
-          }
-        })()`,
-      true,
-    );
+      | { notFound: true };
+    const result =
+      target.frame === wc.mainFrame
+        ? yield* evaluateWithDebugger<TypeResult>(tabId, send, expression, true)
+        : yield* evaluateInFrame<TypeResult>(
+            tabId,
+            wc,
+            target.frame,
+            "automationType.frame",
+            expression,
+          );
     if ("invalidSelector" in result) {
       return yield* new PreviewAutomationInvalidSelectorError({
         operation: "type",
@@ -2265,13 +2579,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const performAutomationType = Effect.fn("PreviewManager.performAutomationType")(function* (
     tabId: string,
+    wc: Electron.WebContents,
     input: PreviewAutomationTypeInput,
     send: SendCommand,
   ) {
     // CDP Input.insertText silently drops text until Electron has activated a hidden
     // guest WebContents with a pointer event. Editing in the page runtime keeps
     // background automation deterministic without stealing foreground app focus.
-    yield* typeIntoAutomationTarget(tabId, send, input);
+    yield* typeIntoAutomationTarget(tabId, wc, send, input);
   });
 
   const automationType = Effect.fn("PreviewManager.automationType")(function* (
@@ -2280,7 +2595,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     yield* withControlSession(tabId, wc, "type", (send) =>
-      performAutomationType(tabId, input, send),
+      performAutomationType(tabId, wc, input, send),
     );
   });
 
@@ -2292,6 +2607,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     sendCleanup: SendCommand,
   ) {
     yield* prepareAutomationInput(send, false);
+    if (input.frameIndex !== undefined) {
+      const target = yield* requireAutomationFrame(tabId, wc, input.frameIndex);
+      yield* evaluateInFrame(
+        tabId,
+        wc,
+        target.frame,
+        "automationPress.focusFrame",
+        "window.focus(); document.activeElement?.focus(); null",
+      );
+    }
     const keySequence = makePreviewAutomationKeySequence(input, {
       isMac: hostPlatform === "darwin",
     });
@@ -2348,32 +2673,42 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const performAutomationScroll = Effect.fn("PreviewManager.performAutomationScroll")(function* (
     tabId: string,
+    wc: Electron.WebContents,
     input: PreviewAutomationScrollInput,
     send: SendCommand,
   ) {
     yield* send("Runtime.enable");
     const locator = automationLocator(input);
-    if (locator) yield* ensurePlaywrightInjected(tabId, send);
+    const target = locator
+      ? yield* findAutomationTargetFrame(tabId, wc, "scroll", input)
+      : yield* requireAutomationFrame(tabId, wc, input.frameIndex);
     const locatorJson = locator
       ? yield* encodeJson({ operation: "automationScroll.encodeLocator", tabId }, locator)
       : null;
-    const result = yield* evaluateWithDebugger<
-      { ok: true } | { invalidSelector: true; message: string } | { notFound: true }
-    >(
-      tabId,
-      send,
-      `(() => {
-        try {
-          const target = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : "window"};
-          if (!target) return { notFound: true };
-          target.scrollBy({ left: ${input.deltaX ?? 0}, top: ${input.deltaY ?? 0}, behavior: "instant" });
-          return { ok: true };
-        } catch (error) {
-          return { invalidSelector: true, message: String(error) };
-        }
-      })()`,
-      true,
-    );
+    const expression = `(() => {
+      try {
+        const target = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()` : "window"};
+        if (!target) return { notFound: true };
+        target.scrollBy({ left: ${input.deltaX ?? 0}, top: ${input.deltaY ?? 0}, behavior: "instant" });
+        return { ok: true };
+      } catch (error) {
+        return { invalidSelector: true, message: String(error) };
+      }
+    })()`;
+    type ScrollResult =
+      | { ok: true }
+      | { invalidSelector: true; message: string }
+      | { notFound: true };
+    const result =
+      target.frame === wc.mainFrame
+        ? yield* evaluateWithDebugger<ScrollResult>(tabId, send, expression, true)
+        : yield* evaluateInFrame<ScrollResult>(
+            tabId,
+            wc,
+            target.frame,
+            "automationScroll.frame",
+            expression,
+          );
     if ("invalidSelector" in result) {
       return yield* new PreviewAutomationInvalidSelectorError({
         operation: "scroll",
@@ -2398,20 +2733,35 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     yield* withControlSession(tabId, wc, "scroll", (send) =>
-      performAutomationScroll(tabId, input, send),
+      performAutomationScroll(tabId, wc, input, send),
     );
   });
 
   const performAutomationEvaluate = Effect.fn("PreviewManager.performAutomationEvaluate")(
-    function* (tabId: string, input: PreviewAutomationEvaluateInput, send: SendCommand) {
+    function* (
+      tabId: string,
+      wc: Electron.WebContents,
+      input: PreviewAutomationEvaluateInput,
+      send: SendCommand,
+    ) {
       yield* send("Runtime.enable");
-      const value = yield* evaluateWithDebugger(
-        tabId,
-        send,
-        input.expression,
-        input.returnByValue ?? true,
-        input.awaitPromise ?? true,
-      );
+      const target = yield* requireAutomationFrame(tabId, wc, input.frameIndex);
+      const value =
+        target.frame === wc.mainFrame
+          ? yield* evaluateWithDebugger(
+              tabId,
+              send,
+              input.expression,
+              input.returnByValue ?? true,
+              input.awaitPromise ?? true,
+            )
+          : yield* evaluateInFrame(
+              tabId,
+              wc,
+              target.frame,
+              "automationEvaluate.frame",
+              input.expression,
+            );
       const serialized = yield* encodeJson(
         { operation: "automationEvaluate.encodeResult", tabId },
         value,
@@ -2434,19 +2784,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     return yield* withControlSession(tabId, wc, "evaluate", (send) =>
-      performAutomationEvaluate(tabId, input, send),
+      performAutomationEvaluate(tabId, wc, input, send),
     );
   });
 
   const performAutomationWaitFor = Effect.fn("PreviewManager.performAutomationWaitFor")(function* (
     tabId: string,
+    wc: Electron.WebContents,
     input: PreviewAutomationWaitForInput,
     send: SendCommand,
   ) {
     const timeoutMs = input.timeoutMs ?? 15_000;
     yield* send("Runtime.enable");
     const locator = automationLocator(input);
-    if (locator) yield* ensurePlaywrightInjected(tabId, send);
     const [locatorJson, textJson, urlIncludesJson] = yield* Effect.all([
       locator
         ? encodeJson({ operation: "automationWaitFor.encodeLocator", tabId }, locator)
@@ -2458,39 +2808,42 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ? encodeJson({ operation: "automationWaitFor.encodeUrl", tabId }, input.urlIncludes)
         : Effect.succeed(null),
     ]);
+    const expression = `(() => {
+      try {
+        const selectorMatched = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, false) !== null; })()` : "true"};
+        const textMatched = ${textJson ? `(document.body?.innerText || "").includes(${textJson})` : "true"};
+        const urlMatched = ${urlIncludesJson ? `location.href.includes(${urlIncludesJson})` : "true"};
+        return { matched: selectorMatched && textMatched && urlMatched };
+      } catch (error) {
+        return { invalidSelector: true, message: String(error) };
+      }
+    })()`;
+    if (input.frameIndex !== undefined) {
+      yield* requireAutomationFrame(tabId, wc, input.frameIndex);
+    }
     const deadline = (yield* currentMillis) + timeoutMs;
     while ((yield* currentMillis) <= deadline) {
-      const result = yield* evaluateWithDebugger<
-        { matched: boolean } | { invalidSelector: true; message: string }
-      >(
-        tabId,
-        send,
-        `(() => {
-              try {
-                const selectorMatched = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, false) !== null; })()` : "true"};
-                const textMatched = ${
-                  textJson ? `(document.body?.innerText || "").includes(${textJson})` : "true"
-                };
-                const urlMatched = ${
-                  urlIncludesJson ? `location.href.includes(${urlIncludesJson})` : "true"
-                };
-                return { matched: selectorMatched && textMatched && urlMatched };
-              } catch (error) {
-                return { invalidSelector: true, message: String(error) };
-              }
-            })()`,
-        true,
-      );
-      if ("invalidSelector" in result) {
-        return yield* new PreviewAutomationInvalidSelectorError({
-          operation: "waitFor",
-          tabId,
-          ...automationSelectorDiagnostics(input),
-          reasonLength: result.message.length,
-          cause: result,
-        });
+      for (const target of previewFrames(wc, input.frameIndex)) {
+        if (locator) yield* ensurePlaywrightInjectedInFrame(tabId, wc, target.frame);
+        const result =
+          target.frame === wc.mainFrame
+            ? yield* evaluateWithDebugger<
+                { matched: boolean } | { invalidSelector: true; message: string }
+              >(tabId, send, expression, true)
+            : yield* evaluateInFrame<
+                { matched: boolean } | { invalidSelector: true; message: string }
+              >(tabId, wc, target.frame, "automationWaitFor.frame", expression);
+        if ("invalidSelector" in result) {
+          return yield* new PreviewAutomationInvalidSelectorError({
+            operation: "waitFor",
+            tabId,
+            ...automationSelectorDiagnostics(input),
+            reasonLength: result.message.length,
+            cause: result,
+          });
+        }
+        if (result.matched) return;
       }
-      if (result.matched) return;
       yield* Effect.sleep(100);
     }
     return yield* new PreviewAutomationTimeoutError({
@@ -2505,7 +2858,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     yield* withControlSession(tabId, wc, "waitFor", (send) =>
-      performAutomationWaitFor(tabId, input, send),
+      performAutomationWaitFor(tabId, wc, input, send),
     );
   });
 
