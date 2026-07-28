@@ -766,64 +766,42 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  let latestAroundRequestId = 0;
   const loadMessagesAround = Effect.fn("EnvironmentThreadState.loadMessagesAround")(function* (
     messageId: MessageId,
   ) {
+    const requestId = ++latestAroundRequestId;
     const current = yield* SubscriptionRef.get(state);
-    if (current.history.kind === "disabled" || current.history.loading !== null) {
+    if (current.history.kind === "disabled") {
       return false;
-    }
-    const cachedPage = yield* historyCache
-      .loadAround(environmentId, threadId, messageId, THREAD_HISTORY_AROUND_PAGE_SIZE)
-      .pipe(
-        Effect.catchTags({
-          ConnectionPersistenceError: (error) =>
-            Effect.logWarning("Could not load cached thread messages around the target.").pipe(
-              Effect.annotateLogs({
-                environmentId,
-                threadId,
-                error: error.message,
-              }),
-              Effect.as(Option.none<OrchestrationThreadHistoryPage>()),
-            ),
-        }),
-      );
-    if (Option.isSome(cachedPage)) {
-      const currentLiveThread = yield* Ref.get(liveThread);
-      if (Option.isNone(currentLiveThread)) {
-        return false;
-      }
-      const totalMessages = Math.max(
-        cachedPage.value.messageHistory.totalMessages,
-        currentLiveThread.value.messageHistory?.totalMessages ??
-          currentLiveThread.value.messages.length,
-      );
-      const history: EnvironmentThreadHistoryState = {
-        ...current.history,
-        window: {
-          ...cachedPage.value,
-          messageHistory: {
-            ...cachedPage.value.messageHistory,
-            hasMoreAfter: cachedPage.value.messageHistory.endIndex < totalMessages,
-            totalMessages,
-          },
-        },
-      };
-      yield* SubscriptionRef.set(state, {
-        ...current,
-        data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
-        history,
-      });
-      return true;
     }
     yield* SubscriptionRef.set(state, {
       ...current,
       history: { ...current.history, loading: "around" },
     });
     return yield* Effect.gen(function* () {
-      const prepared = yield* preparedConnection;
-      const page = yield* snapshotLoader.loadMessagesAround(prepared, threadId, messageId);
-      if (Option.isNone(page)) {
+      const cachedPage = yield* historyCache
+        .loadAround(environmentId, threadId, messageId, THREAD_HISTORY_AROUND_PAGE_SIZE)
+        .pipe(
+          Effect.catchTags({
+            ConnectionPersistenceError: (error) =>
+              Effect.logWarning("Could not load cached thread messages around the target.").pipe(
+                Effect.annotateLogs({
+                  environmentId,
+                  threadId,
+                  error: error.message,
+                }),
+                Effect.as(Option.none<OrchestrationThreadHistoryPage>()),
+              ),
+          }),
+        );
+      const page = Option.isSome(cachedPage)
+        ? cachedPage
+        : yield* Effect.gen(function* () {
+            const prepared = yield* preparedConnection;
+            return yield* snapshotLoader.loadMessagesAround(prepared, threadId, messageId);
+          });
+      if (Option.isNone(page) || requestId !== latestAroundRequestId) {
         return false;
       }
 
@@ -836,21 +814,40 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ) {
         return false;
       }
+      const totalMessages = Math.max(
+        page.value.messageHistory.totalMessages,
+        latestLiveThread.value.messageHistory?.totalMessages ??
+          latestLiveThread.value.messages.length,
+      );
+      const window = Option.isSome(cachedPage)
+        ? {
+            ...page.value,
+            messageHistory: {
+              ...page.value.messageHistory,
+              hasMoreAfter: page.value.messageHistory.endIndex < totalMessages,
+              totalMessages,
+            },
+          }
+        : page.value;
       const history: EnvironmentThreadHistoryState = {
         ...latest.history,
-        window: page.value,
+        window,
       };
       yield* SubscriptionRef.set(state, {
         ...latest,
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
-      yield* cacheHistoryPage(page.value);
+      if (Option.isNone(cachedPage)) {
+        yield* cacheHistoryPage(page.value);
+      }
       return true;
     }).pipe(
       Effect.ensuring(
         SubscriptionRef.update(state, (latest) =>
-          latest.history.kind === "ready" && latest.history.loading === "around"
+          requestId === latestAroundRequestId &&
+          latest.history.kind === "ready" &&
+          latest.history.loading === "around"
             ? {
                 ...latest,
                 history: { ...latest.history, loading: null },
@@ -1233,8 +1230,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
         ),
       scheduler,
       concurrency: {
-        mode: "latest",
-        key: ({ environmentId, input }) => threadKey({ environmentId, threadId: input.threadId }),
+        mode: "parallel",
       },
     }),
   };

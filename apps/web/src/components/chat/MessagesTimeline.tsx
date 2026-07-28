@@ -490,14 +490,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         <div
           ref={setTimelineViewportElement}
           className="relative h-full min-h-0"
-          onKeyDownCapture={progressiveHistory.beginUserNavigation}
-          onPointerDownCapture={progressiveHistory.beginScrollbarPointerNavigation}
+          onPointerDownCapture={progressiveHistory.beginPointerNavigation}
           onTouchMoveCapture={progressiveHistory.beginUserNavigation}
           onWheelCapture={progressiveHistory.beginUserNavigation}
         >
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
+            {...(messageHistory === undefined
+              ? {}
+              : {
+                  dataVersion: `${messageHistory.startIndex}:${messageHistory.endIndex}:${Math.round(progressiveHistory.historyBeforeSize)}`,
+                })}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             renderItem={renderItem}
@@ -536,6 +540,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 : false
             }
             onScroll={progressiveHistory.handleScroll}
+            onMetricsChange={progressiveHistory.onListMetricsChange}
             {...(messageHistory === undefined
               ? {}
               : {

@@ -135,15 +135,21 @@ const encodeStoredShellSnapshot = Schema.encodeEffect(StoredShellSnapshotJson);
 const decodeStoredThreadSnapshot = Schema.decodeUnknownEffect(StoredThreadSnapshotJson);
 const encodeStoredThreadSnapshot = Schema.encodeEffect(StoredThreadSnapshotJson);
 const decodeStoredThreadHistoryThread = Schema.decodeUnknownEffect(StoredThreadHistoryThread);
-const decodeStoredThreadHistoryMessages = Schema.decodeUnknownEffect(
-  Schema.Array(StoredThreadHistoryMessage),
-);
-const decodeStoredThreadHistoryActivities = Schema.decodeUnknownEffect(
-  Schema.Array(StoredThreadHistoryActivity),
-);
-const decodeStoredThreadHistoryPlans = Schema.decodeUnknownEffect(
-  Schema.Array(StoredThreadHistoryPlan),
-);
+const decodeStoredThreadHistoryMessage = Schema.decodeUnknownEffect(StoredThreadHistoryMessage);
+const decodeStoredThreadHistoryMessages = (values: ReadonlyArray<unknown>) =>
+  Effect.forEach(values, (value) => decodeStoredThreadHistoryMessage(value), {
+    concurrency: "unbounded",
+  });
+const decodeStoredThreadHistoryActivity = Schema.decodeUnknownEffect(StoredThreadHistoryActivity);
+const decodeStoredThreadHistoryActivities = (values: ReadonlyArray<unknown>) =>
+  Effect.forEach(values, (value) => decodeStoredThreadHistoryActivity(value), {
+    concurrency: "unbounded",
+  });
+const decodeStoredThreadHistoryPlan = Schema.decodeUnknownEffect(StoredThreadHistoryPlan);
+const decodeStoredThreadHistoryPlans = (values: ReadonlyArray<unknown>) =>
+  Effect.forEach(values, (value) => decodeStoredThreadHistoryPlan(value), {
+    concurrency: "unbounded",
+  });
 const decodeStoredServerConfig = Schema.decodeUnknownEffect(StoredServerConfigJson);
 const encodeStoredServerConfig = Schema.encodeEffect(StoredServerConfigJson);
 const decodeStoredVcsRefs = Schema.decodeUnknownEffect(StoredVcsRefsJson);
@@ -467,11 +473,9 @@ const loadThreadHistoryPage = Effect.fn("web.connectionStorage.loadThreadHistory
       THREAD_HISTORY_PLAN_POSITION_INDEX_NAME,
     ),
   ]);
-  const [messageRecords, activityRecords, planRecords] = yield* Effect.all([
-    decodeStoredThreadHistoryMessages(rawMessages),
-    decodeStoredThreadHistoryActivities(rawActivities),
-    decodeStoredThreadHistoryPlans(rawPlans),
-  ]);
+  const messageRecords = yield* decodeStoredThreadHistoryMessages(rawMessages);
+  const activityRecords = yield* decodeStoredThreadHistoryActivities(rawActivities);
+  const planRecords = yield* decodeStoredThreadHistoryPlans(rawPlans);
   if (
     messageRecords.length !== endIndex - startIndex ||
     messageRecords.some(

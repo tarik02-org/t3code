@@ -46,6 +46,8 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Fork-only goal persistence is stored in a sidecar database named `state-tarik02.sqlite`.
 - The web client keeps fetched thread-history rows in an unbounded, normalized sidecar IndexedDB
   cache. Messages, activities, and plans are stored once and reused for covered history ranges.
+  Cached records are schema-decoded independently so large activity batches cannot stall on a
+  cooperative runtime yield.
 
 ### Goals UI
 
@@ -68,23 +70,21 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   windows retain every message, cap work telemetry per segment, and only display activity for turns
   represented by the active message window. Viewport navigation, minimap jumps, and unloaded spacers
   share one fixed per-message scroll axis and load the nearest landmark window through a trailing
-  throttle instead of chaining relative before/after page loads. The content container keeps the
-  full-history extent fixed while the trailing spacer absorbs measured segment height. Legend List
-  position stabilization is disabled for these threads, and its cached window geometry is refreshed
-  when a segment moves without interrupting an active smooth scroll.
-  Paginated history responses use the same client-facing activity payload projection as full thread
-  snapshots, and failed segment requests release their pending navigation target instead of leaving
-  the virtual loader locked. Minimap jumps begin scrolling through virtual history immediately while
-  the segment loads, then align the loaded target with a smooth correction instead of teleporting
-  the viewport after the response. When smooth motion is unavailable, the estimated-position
-  fallback still moves inline skeletons into the viewport before exact alignment. Scrollbar movement
-  keeps a logical viewport anchor, while minimap jumps keep a concrete message anchor; segment swaps
-  and layout resizes reconcile against that anchor without changing the fixed scroll extent. The
-  programmatic seek ends with the scroll motion, not the segment request, and manual input replaces
-  it with a logical anchor so a slow request cannot lock the scrollbar. Segment reconciliation does
-  not run while the native scrollbar thumb is held, and cold minimap requests begin in a separate
-  task after the seek starts. Around-window requests keep one active load and coalesce intermediate
-  targets to the latest requested position.
+  throttle instead of chaining relative before/after page loads. Unloaded ranges keep their fixed
+  virtual size while the active segment contributes its measured height. Segment changes use Legend
+  List's data version instead of manually clearing its layout caches.
+- Paginated history responses use the same client-facing activity payload projection as full thread
+  snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
+  The persisted activity remains unchanged.
+- Failed segment requests release their pending navigation target instead of leaving the virtual
+  loader locked. Minimap jumps position virtual history immediately while the segment loads, then use
+  the loaded row position for a smooth exact correction. Any keyboard, pointer, touch, or wheel input
+  cancels that motion and removes the concrete target before the browser scrolls. The resulting real
+  scroll selects the next logical segment without restoring an older viewport position. Holding the
+  native scrollbar thumb suppresses target alignment but never pauses throttled data loading.
+  Synchronous offset writes avoid delayed programmatic scrolls taking control back from the user.
+  Overlapping explicit jumps may fetch concurrently, but only the latest request can replace the
+  active segment.
 - Desktop context-menu style is configurable.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.
