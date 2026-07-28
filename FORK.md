@@ -51,7 +51,10 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 ### UX Changes
 
-- Thread detail snapshots load a bounded message tail and older messages use keyset pagination.
+- Thread detail snapshots keep a bounded live tail. Historical browsing uses bounded,
+  bidirectional keyset windows, while the web minimap samples landmarks across the full thread and
+  loads the selected segment on demand. Historical windows retain every message and cap work
+  telemetry per segment.
 - Desktop context-menu style is configurable.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.

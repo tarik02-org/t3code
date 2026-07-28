@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type OrchestrationThreadHistoryOutline,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
@@ -184,8 +185,15 @@ interface MessagesTimelineProps {
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
   hasPreviousMessages?: boolean;
+  hasNextMessages?: boolean;
   isLoadingPreviousMessages?: boolean;
+  isLoadingNextMessages?: boolean;
   onLoadPreviousMessages?: () => void;
+  onLoadNextMessages?: () => void;
+  historyOutline?: OrchestrationThreadHistoryOutline | null;
+  historyTargetMessageId?: MessageId | null;
+  onSelectHistoryMessage?: (messageId: MessageId) => void;
+  onHistoryTargetReady?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,8 +230,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   hasPreviousMessages = false,
+  hasNextMessages = false,
   isLoadingPreviousMessages = false,
+  isLoadingNextMessages = false,
   onLoadPreviousMessages,
+  onLoadNextMessages,
+  historyOutline = null,
+  historyTargetMessageId = null,
+  onSelectHistoryMessage,
+  onHistoryTargetReady,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -329,7 +344,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
-  const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
+  const minimapItems = useMemo(
+    () => deriveTimelineMinimapItems(rows, historyOutline),
+    [historyOutline, rows],
+  );
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
   );
@@ -375,7 +393,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
-      if (!strip) {
+      if (!strip || item.rowIndex === null) {
         continue;
       }
 
@@ -394,6 +412,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const frame = requestAnimationFrame(handleScroll);
     return () => cancelAnimationFrame(frame);
   }, [handleScroll, rows.length]);
+
+  useEffect(() => {
+    if (historyTargetMessageId === null) {
+      return;
+    }
+    const rowIndex = rows.findIndex(
+      (row) => row.kind === "message" && row.message.id === historyTargetMessageId,
+    );
+    if (rowIndex < 0) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      void listRef.current?.scrollToIndex({
+        index: rowIndex,
+        animated: false,
+        viewOffset: 24,
+      });
+      onHistoryTargetReady?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [historyTargetMessageId, listRef, onHistoryTargetReady, rows]);
 
   useEffect(() => {
     if (!timelineViewportElement) {
@@ -500,7 +539,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
             contentInsetEndAdjustment={contentInsetEndAdjustment}
             maintainScrollAtEnd={
-              anchoredEndSpace
+              anchoredEndSpace || hasNextMessages
                 ? false
                 : {
                     animated: false,
@@ -515,35 +554,33 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               data: true,
               size: false,
             }}
+            onStartReached={hasPreviousMessages ? onLoadPreviousMessages : undefined}
+            onStartReachedThreshold={0.8}
+            onEndReached={hasNextMessages ? onLoadNextMessages : undefined}
+            onEndReachedThreshold={0.8}
             onScroll={handleScroll}
             className={cn(
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
             ListHeaderComponent={
-              hasPreviousMessages ? (
-                <div
-                  className={cn(
-                    "flex items-center justify-center",
-                    topFadeEnabled ? "min-h-10 sm:min-h-12" : "min-h-3 sm:min-h-4",
-                  )}
-                >
-                  <button
-                    type="button"
-                    disabled={isLoadingPreviousMessages}
-                    onClick={onLoadPreviousMessages}
-                    className="my-2 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground disabled:cursor-wait disabled:opacity-60"
-                  >
-                    {isLoadingPreviousMessages
-                      ? "Loading earlier messages..."
-                      : "Load earlier messages"}
-                  </button>
+              isLoadingPreviousMessages ? (
+                <div className="flex min-h-10 items-center justify-center sm:min-h-12">
+                  <span className="text-muted-foreground text-xs">Loading earlier messages...</span>
                 </div>
               ) : (
                 <div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />
               )
             }
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
+            ListFooterComponent={
+              isLoadingNextMessages ? (
+                <div className="flex min-h-10 items-center justify-center">
+                  <span className="text-muted-foreground text-xs">Loading newer messages...</span>
+                </div>
+              ) : (
+                TIMELINE_LIST_FOOTER
+              )
+            }
           />
           <TimelineMinimap
             items={minimapItems}
@@ -553,11 +590,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             stripMap={minimapStripMap}
             onSelect={(item) => {
               onManualNavigation();
-              void listRef.current?.scrollToIndex({
-                index: item.rowIndex,
-                animated: true,
-                viewOffset: 24,
-              });
+              if (item.rowIndex === null) {
+                onSelectHistoryMessage?.(item.id);
+              } else {
+                void listRef.current?.scrollToIndex({
+                  index: item.rowIndex,
+                  animated: true,
+                  viewOffset: 24,
+                });
+              }
             }}
           />
         </div>
@@ -575,8 +616,8 @@ function getItemType(item: MessagesTimelineRow) {
 }
 
 interface TimelineMinimapItem {
-  readonly id: string;
-  readonly rowIndex: number;
+  readonly id: MessageId;
+  readonly rowIndex: number | null;
   readonly userText: string | null;
   readonly assistantText: string | null;
 }
@@ -591,7 +632,29 @@ interface TimelinePositionState {
 
 function deriveTimelineMinimapItems(
   rows: ReadonlyArray<MessagesTimelineRow>,
+  outline: OrchestrationThreadHistoryOutline | null,
 ): TimelineMinimapItem[] {
+  if (outline !== null) {
+    const rowIndexByMessageId = new Map<MessageId, number>();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (row?.kind === "message" && row.message.role === "user") {
+        rowIndexByMessageId.set(row.message.id, index);
+      }
+    }
+    return outline.landmarks.map((landmark) => {
+      const rowIndex = rowIndexByMessageId.get(landmark.messageId) ?? null;
+      return {
+        id: landmark.messageId,
+        rowIndex,
+        userText: compactMinimapPreview(landmark.preview),
+        assistantText:
+          rowIndex === null
+            ? null
+            : compactMinimapPreview(resolveFinalAssistantTextForTurn(rows, rowIndex)),
+      };
+    });
+  }
   const items: TimelineMinimapItem[] = [];
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
@@ -600,7 +663,7 @@ function deriveTimelineMinimapItems(
     }
 
     items.push({
-      id: row.id,
+      id: row.message.id,
       rowIndex: index,
       userText: compactMinimapPreview(row.message.text),
       assistantText: compactMinimapPreview(resolveFinalAssistantTextForTurn(rows, index)),

@@ -62,7 +62,9 @@ export interface ThreadDetailScreenProps {
   /** Message sync status for the selected thread (drives the composer status pill). */
   readonly threadSyncStatus?: EnvironmentThreadStatus;
   readonly hasPreviousMessages?: boolean;
+  readonly hasNextMessages?: boolean;
   readonly isLoadingPreviousMessages?: boolean;
+  readonly isLoadingNextMessages?: boolean;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
@@ -81,6 +83,7 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onLoadPreviousMessages?: () => void;
+  readonly onLoadNextMessages?: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateThreadInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -374,8 +377,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             usesAutomaticContentInsets={props.usesAutomaticContentInsets}
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
             hasPreviousMessages={props.hasPreviousMessages}
+            hasNextMessages={props.hasNextMessages}
             isLoadingPreviousMessages={props.isLoadingPreviousMessages}
+            isLoadingNextMessages={props.isLoadingNextMessages}
             onLoadPreviousMessages={props.onLoadPreviousMessages}
+            onLoadNextMessages={props.onLoadNextMessages}
             skills={selectedProviderSkills}
           />
         </View>

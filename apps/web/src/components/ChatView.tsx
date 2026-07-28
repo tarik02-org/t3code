@@ -66,6 +66,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
@@ -1139,6 +1140,12 @@ function ChatViewContent(props: ChatViewProps) {
   const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
     reportFailure: false,
   });
+  const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
+    reportFailure: false,
+  });
+  const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
+    reportFailure: false,
+  });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1164,6 +1171,14 @@ function ChatViewContent(props: ChatViewProps) {
     routeKind === "server" ? routeThreadRef : props.draftId;
   const serverThread = useThread(routeThreadRef);
   const environmentThreadState = useEnvironmentThread(environmentId, threadId);
+  const liveServerThread = Option.getOrNull(environmentThreadState.liveData);
+  const [historyTarget, setHistoryTarget] = useState<{
+    readonly threadKey: string;
+    readonly messageId: MessageId | null;
+  }>({ threadKey: routeThreadKey, messageId: null });
+  if (historyTarget.threadKey !== routeThreadKey) {
+    setHistoryTarget({ threadKey: routeThreadKey, messageId: null });
+  }
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore(
     (store) => store.threadLastVisitedAtById[routeThreadKey],
@@ -1405,12 +1420,38 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const operationalThread = isServerThread ? liveServerThread : activeThread;
   const handleLoadPreviousMessages = useCallback(() => {
     void loadPreviousMessages({
       environmentId,
       input: { threadId },
     });
   }, [environmentId, loadPreviousMessages, threadId]);
+  const handleLoadNextMessages = useCallback(() => {
+    void loadNextMessages({
+      environmentId,
+      input: { threadId },
+    });
+  }, [environmentId, loadNextMessages, threadId]);
+  const handleSelectHistoryMessage = useCallback(
+    (messageId: MessageId) => {
+      if (
+        environmentThreadState.history.kind !== "ready" ||
+        environmentThreadState.history.loading !== null
+      ) {
+        return;
+      }
+      setHistoryTarget({ threadKey: routeThreadKey, messageId });
+      void loadMessagesAround({
+        environmentId,
+        input: { threadId, messageId },
+      });
+    },
+    [environmentId, environmentThreadState.history, loadMessagesAround, routeThreadKey, threadId],
+  );
+  const handleHistoryTargetReady = useCallback(() => {
+    setHistoryTarget((current) => ({ ...current, messageId: null }));
+  }, []);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
     : localDraftError;
@@ -1921,14 +1962,15 @@ function ChatViewContent(props: ChatViewProps) {
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const operationalActivities = operationalThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
   const pendingApprovals = useMemo(
-    () => derivePendingApprovals(threadActivities),
-    [threadActivities],
+    () => derivePendingApprovals(operationalActivities),
+    [operationalActivities],
   );
   const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadActivities),
-    [threadActivities],
+    () => derivePendingUserInputs(operationalActivities),
+    [operationalActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
@@ -1968,10 +2010,10 @@ function ChatViewContent(props: ChatViewProps) {
       return null;
     }
     return findLatestProposedPlan(
-      activeThread?.proposedPlans ?? [],
+      operationalThread?.proposedPlans ?? [],
       activeLatestTurn?.turnId ?? null,
     );
-  }, [activeLatestTurn?.turnId, activeThread?.proposedPlans, latestTurnSettled]);
+  }, [activeLatestTurn?.turnId, latestTurnSettled, operationalThread?.proposedPlans]);
   const sidebarProposedPlan = useMemo(
     () =>
       findSidebarProposedPlan({
@@ -1983,8 +2025,8 @@ function ChatViewContent(props: ChatViewProps) {
     [activeLatestTurn, activeThread?.id, latestTurnSettled, threadPlanCatalog],
   );
   const activePlan = useMemo(
-    () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
-    [activeLatestTurn?.turnId, threadActivities],
+    () => deriveActivePlanState(operationalActivities, activeLatestTurn?.turnId ?? undefined),
+    [activeLatestTurn?.turnId, operationalActivities],
   );
   const planSidebarLabel =
     sidebarProposedPlan || interactionMode === "plan"
@@ -5876,8 +5918,26 @@ function ChatViewContent(props: ChatViewProps) {
                 hideEmptyPlaceholder={isDraftHeroState}
                 topFadeEnabled={!hasTimelineTopBanner}
                 hasPreviousMessages={activeThread.messageHistory?.hasMoreBefore === true}
-                isLoadingPreviousMessages={environmentThreadState.loadingPreviousMessages === true}
+                hasNextMessages={activeThread.messageHistory?.hasMoreAfter === true}
+                isLoadingPreviousMessages={
+                  environmentThreadState.history.kind === "ready" &&
+                  (environmentThreadState.history.loading === "before" ||
+                    environmentThreadState.history.loading === "around")
+                }
+                isLoadingNextMessages={
+                  environmentThreadState.history.kind === "ready" &&
+                  environmentThreadState.history.loading === "after"
+                }
                 onLoadPreviousMessages={handleLoadPreviousMessages}
+                onLoadNextMessages={handleLoadNextMessages}
+                historyOutline={
+                  environmentThreadState.history.kind === "ready"
+                    ? environmentThreadState.history.outline
+                    : null
+                }
+                historyTargetMessageId={historyTarget.messageId}
+                onSelectHistoryMessage={handleSelectHistoryMessage}
+                onHistoryTargetReady={handleHistoryTargetReady}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

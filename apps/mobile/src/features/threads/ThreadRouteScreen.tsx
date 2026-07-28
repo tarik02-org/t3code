@@ -199,6 +199,9 @@ function ThreadRouteContent(
   const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
     reportFailure: false,
   });
+  const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
+    reportFailure: false,
+  });
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -326,6 +329,15 @@ function ThreadRouteContent(
       input: { threadId: selectedThread.id },
     });
   }, [loadPreviousMessages, selectedThread]);
+  const handleLoadNextMessages = useCallback(() => {
+    if (selectedThread === null) {
+      return;
+    }
+    void loadNextMessages({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+  }, [loadNextMessages, selectedThread]);
 
   /* ─── Git action progress (for overlay banner) ──────────────────── */
   const gitActionProgressTarget = useMemo(
@@ -774,7 +786,15 @@ function ThreadRouteContent(
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
           hasPreviousMessages={selectedThreadDetail?.messageHistory?.hasMoreBefore === true}
-          isLoadingPreviousMessages={selectedThreadDetailState.loadingPreviousMessages === true}
+          hasNextMessages={selectedThreadDetail?.messageHistory?.hasMoreAfter === true}
+          isLoadingPreviousMessages={
+            selectedThreadDetailState.history.kind === "ready" &&
+            selectedThreadDetailState.history.loading === "before"
+          }
+          isLoadingNextMessages={
+            selectedThreadDetailState.history.kind === "ready" &&
+            selectedThreadDetailState.history.loading === "after"
+          }
           activeThreadBusy={composer.activeThreadBusy}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
@@ -792,6 +812,7 @@ function ThreadRouteContent(
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onLoadPreviousMessages={handleLoadPreviousMessages}
+          onLoadNextMessages={handleLoadNextMessages}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
           onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}

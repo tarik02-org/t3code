@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { ApprovalRequestId, type ProviderApprovalDecision } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
@@ -14,7 +15,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
 import { appAtomRegistry } from "./atom-registry";
-import { useSelectedThreadDetail } from "./use-thread-detail";
+import { useSelectedThreadDetailState } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
 import { useAtomCommand } from "./use-atom-command";
 
@@ -63,7 +64,7 @@ export function useSelectedThreadRequests() {
     "thread user input response",
   );
   const { selectedThread: selectedThreadShell } = useThreadSelection();
-  const selectedThread = useSelectedThreadDetail();
+  const selectedThread = Option.getOrNull(useSelectedThreadDetailState().liveData);
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
   const [respondingApprovalId, setRespondingApprovalId] = useState<ApprovalRequestId | null>(null);
   const [respondingUserInputId, setRespondingUserInputId] = useState<ApprovalRequestId | null>(

@@ -189,6 +189,9 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
         ),
       ),
     loadPreviousMessages: () => Effect.succeed(Option.none()),
+    loadNextMessages: () => Effect.succeed(Option.none()),
+    loadMessagesAround: () => Effect.succeed(Option.none()),
+    loadHistoryOutline: () => Effect.succeed(Option.none()),
   });
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: TARGET,
