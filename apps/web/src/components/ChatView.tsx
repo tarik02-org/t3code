@@ -1417,10 +1417,7 @@ function ChatViewContent(props: ChatViewProps) {
   const operationalThread = isServerThread ? liveServerThread : activeThread;
   const handleSelectHistoryMessage = useCallback(
     (messageId: MessageId) => {
-      if (
-        environmentThreadState.history.kind !== "ready" ||
-        environmentThreadState.history.loading !== null
-      ) {
+      if (environmentThreadState.history.kind !== "ready") {
         return;
       }
       setHistoryTarget({ threadKey: routeThreadKey, messageId });

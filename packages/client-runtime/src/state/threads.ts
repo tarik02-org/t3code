@@ -1233,7 +1233,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
         ),
       scheduler,
       concurrency: {
-        mode: "singleFlight",
+        mode: "latest",
         key: ({ environmentId, input }) => threadKey({ environmentId, threadId: input.threadId }),
       },
     }),
