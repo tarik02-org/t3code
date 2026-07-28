@@ -34,6 +34,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import { MAX_THREAD_ACTIVITIES } from "@t3tools/shared/orchestrationLimits";
 
 import {
   isPersistenceError,
@@ -483,6 +484,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH ranked_activity_ids AS MATERIALIZED (
+          SELECT
+            activity_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY sequence DESC, created_at DESC, activity_id DESC
+            ) AS activity_rank
+          FROM projection_thread_activities
+        )
         SELECT
           activity_id AS "activityId",
           thread_id AS "threadId",
@@ -494,6 +504,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence,
           created_at AS "createdAt"
         FROM projection_thread_activities
+        WHERE activity_id IN (
+          SELECT activity_id
+          FROM ranked_activity_ids
+          WHERE activity_rank <= ${MAX_THREAD_ACTIVITIES}
+        )
         ORDER BY
           thread_id ASC,
           sequence ASC,
@@ -864,6 +879,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at AS "createdAt"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
+          AND activity_id IN (
+            SELECT activity_id
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+            ORDER BY sequence DESC, created_at DESC, activity_id DESC
+            LIMIT ${MAX_THREAD_ACTIVITIES}
+          )
         ORDER BY
           sequence ASC,
           created_at ASC,

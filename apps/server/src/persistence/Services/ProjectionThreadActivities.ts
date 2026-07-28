@@ -44,6 +44,13 @@ export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
 export type DeleteProjectionThreadActivitiesInput =
   typeof DeleteProjectionThreadActivitiesInput.Type;
 
+export const DeleteProjectionThreadActivitiesAfterRevertInput = Schema.Struct({
+  threadId: ThreadId,
+  turnCount: NonNegativeInt,
+});
+export type DeleteProjectionThreadActivitiesAfterRevertInput =
+  typeof DeleteProjectionThreadActivitiesAfterRevertInput.Type;
+
 /**
  * ProjectionThreadActivityRepositoryShape - Service API for projected thread activity.
  */
@@ -72,6 +79,13 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadActivitiesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Delete activity rows belonging to turns after a checkpoint revert.
+   */
+  readonly deleteAfterRevert: (
+    input: DeleteProjectionThreadActivitiesAfterRevertInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

@@ -53,6 +53,8 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - Desktop context-menu style is configurable.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
+- Sidebar thread detail prewarming is disabled to avoid speculative hydration.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.
 - Threads can be archived with middle click.
 - Terminal selection has a copy action.
+- Thread detail snapshots and live clients retain the latest 500 activity entries. Message history remains complete.

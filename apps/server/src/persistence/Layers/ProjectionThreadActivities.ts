@@ -9,6 +9,7 @@ import * as Struct from "effect/Struct";
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
+  DeleteProjectionThreadActivitiesAfterRevertInput,
   DeleteProjectionThreadActivitiesInput,
   ListProjectionThreadActivitiesInput,
   ProjectionThreadActivity,
@@ -106,6 +107,24 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const deleteProjectionThreadActivityRowsAfterRevert = SqlSchema.void({
+    Request: DeleteProjectionThreadActivitiesAfterRevertInput,
+    execute: ({ threadId, turnCount }) =>
+      sql`
+        DELETE FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NOT NULL
+          AND turn_id NOT IN (
+            SELECT turn_id
+            FROM projection_turns
+            WHERE thread_id = ${threadId}
+              AND turn_id IS NOT NULL
+              AND checkpoint_turn_count IS NOT NULL
+              AND checkpoint_turn_count <= ${turnCount}
+          )
+      `,
+  });
+
   const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadActivityRow(row).pipe(
       Effect.mapError(
@@ -146,10 +165,18 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const deleteAfterRevert: ProjectionThreadActivityRepositoryShape["deleteAfterRevert"] = (input) =>
+    deleteProjectionThreadActivityRowsAfterRevert(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadActivityRepository.deleteAfterRevert:query"),
+      ),
+    );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    deleteAfterRevert,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
 

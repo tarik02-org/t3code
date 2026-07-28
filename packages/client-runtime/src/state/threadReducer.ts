@@ -12,6 +12,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { MAX_THREAD_ACTIVITIES } from "@t3tools/shared/orchestrationLimits";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -30,7 +31,7 @@ const checkpointOrder = O.mapInput(
 );
 
 const activityOrder = O.combineAll<OrchestrationThreadActivity>([
-  O.mapInput(O.Number, (a) => a.sequence ?? Number.MAX_SAFE_INTEGER),
+  O.mapInput(O.Number, (a) => a.sequence ?? -1),
   O.mapInput(O.String, (a) => a.createdAt),
   O.mapInput(O.String, (a) => a.id),
 ]);
@@ -531,6 +532,7 @@ export function applyThreadDetailEvent(
         Arr.filter((activity) => activity.id !== event.payload.activity.id),
         Arr.append(event.payload.activity),
         Arr.sort(activityOrder),
+        Arr.takeRight(MAX_THREAD_ACTIVITIES),
       );
 
       return {
