@@ -24,7 +24,14 @@ import {
   AuthWebSocketTicketResult,
   ServerAuthSessionMethod,
 } from "./auth.ts";
-import { AuthSessionId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  AuthSessionId,
+  IsoDateTime,
+  MessageId,
+  PositiveInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
@@ -32,6 +39,8 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadMessagePage,
+  ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT,
 } from "./orchestration.ts";
 import {
   RelayCloudEnvironmentHealthRequest,
@@ -457,6 +466,18 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
 
+const EnvironmentOrchestrationThreadSnapshotQuery = Schema.Struct({
+  messageLimit: Schema.optional(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT)),
+  ),
+});
+
+const EnvironmentOrchestrationThreadMessagesQuery = Schema.Struct({
+  beforeCreatedAt: IsoDateTime,
+  beforeMessageId: MessageId,
+  limit: PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT)),
+});
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
@@ -476,7 +497,17 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
     HttpApiEndpoint.get("threadSnapshot", "/api/orchestration/threads/:threadId", {
       headers: OptionalBearerHeaders,
       params: EnvironmentOrchestrationThreadSnapshotParams,
+      query: EnvironmentOrchestrationThreadSnapshotQuery,
       success: OrchestrationThreadDetailSnapshot,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("threadMessages", "/api/orchestration/threads/:threadId/messages", {
+      headers: OptionalBearerHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      query: EnvironmentOrchestrationThreadMessagesQuery,
+      success: OrchestrationThreadMessagePage,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )

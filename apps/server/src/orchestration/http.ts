@@ -61,7 +61,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           const snapshot = yield* projectionSnapshotQuery
-            .getThreadDetailSnapshot(args.params.threadId)
+            .getThreadDetailSnapshot(args.params.threadId, args.query.messageLimit)
             .pipe(
               Effect.catch((cause) =>
                 failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
@@ -71,6 +71,31 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             return yield* failEnvironmentNotFound("thread_not_found");
           }
           return projectThreadDetailSnapshot(snapshot.value);
+        }),
+      )
+      .handle(
+        "threadMessages",
+        Effect.fn("environment.orchestration.threadMessages")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const page = yield* projectionSnapshotQuery
+            .getThreadMessagePage({
+              threadId: args.params.threadId,
+              before: {
+                createdAt: args.query.beforeCreatedAt,
+                messageId: args.query.beforeMessageId,
+              },
+              limit: args.query.limit,
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+              ),
+            );
+          if (Option.isNone(page)) {
+            return yield* failEnvironmentNotFound("thread_not_found");
+          }
+          return page.value;
         }),
       )
       .handle(

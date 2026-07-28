@@ -140,6 +140,9 @@ export interface ThreadFeedProps {
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
+  readonly hasPreviousMessages?: boolean;
+  readonly isLoadingPreviousMessages?: boolean;
+  readonly onLoadPreviousMessages?: () => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
 }
 
@@ -1792,7 +1795,27 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onScroll={handleScroll}
             scrollEventThrottle={16}
             ListHeaderComponent={
-              usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />
+              props.hasPreviousMessages ? (
+                <View
+                  className="items-center justify-center"
+                  style={usesNativeAutomaticInsets ? undefined : { paddingTop: topContentInset }}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={props.isLoadingPreviousMessages}
+                    onPress={props.onLoadPreviousMessages}
+                    className="my-2 rounded-full border border-border bg-card px-3 py-1.5 disabled:opacity-60"
+                  >
+                    <Text className="text-muted-foreground text-xs">
+                      {props.isLoadingPreviousMessages
+                        ? "Loading earlier messages..."
+                        : "Load earlier messages"}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : usesNativeAutomaticInsets ? null : (
+                <View style={{ height: topContentInset }} />
+              )
             }
             contentContainerStyle={{
               paddingTop: 12,

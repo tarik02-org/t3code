@@ -14,6 +14,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   ThreadId,
@@ -363,6 +364,20 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT = 200;
+
+export const OrchestrationThreadMessageCursor = Schema.Struct({
+  createdAt: IsoDateTime,
+  messageId: MessageId,
+});
+export type OrchestrationThreadMessageCursor = typeof OrchestrationThreadMessageCursor.Type;
+
+export const OrchestrationThreadMessageHistory = Schema.Struct({
+  hasMoreBefore: Schema.Boolean,
+  cursor: Schema.NullOr(OrchestrationThreadMessageCursor),
+});
+export type OrchestrationThreadMessageHistory = typeof OrchestrationThreadMessageHistory.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -393,6 +408,7 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   messages: Schema.Array(OrchestrationMessage),
+  messageHistory: Schema.optional(OrchestrationThreadMessageHistory),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -518,6 +534,9 @@ export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShel
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  messageLimit: Schema.optionalKey(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT)),
+  ),
   /**
    * When provided, the server skips the initial snapshot frame and instead
    * replays events after this sequence before streaming live events. Clients
@@ -539,6 +558,12 @@ export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   thread: OrchestrationThread,
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
+
+export const OrchestrationThreadMessagePage = Schema.Struct({
+  messages: Schema.Array(OrchestrationMessage),
+  messageHistory: OrchestrationThreadMessageHistory,
+});
+export type OrchestrationThreadMessagePage = typeof OrchestrationThreadMessagePage.Type;
 
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),

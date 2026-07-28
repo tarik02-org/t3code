@@ -21,11 +21,15 @@ import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
-import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
+import { THREAD_MESSAGE_PAGE_SIZE, ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
-import { followStreamInEnvironment } from "./runtime.ts";
+import {
+  createAtomCommandScheduler,
+  createEnvironmentCommand,
+  followStreamInEnvironment,
+} from "./runtime.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
@@ -81,11 +85,43 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
   const awaitingCompletion = yield* Ref.make(false);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
+  const preparedConnection = SubscriptionRef.get(supervisor.prepared).pipe(
+    Effect.flatMap(
+      Option.match({
+        onSome: Effect.succeed,
+        onNone: () =>
+          SubscriptionRef.changes(supervisor.prepared).pipe(
+            Stream.filter(Option.isSome),
+            Stream.map((value) => value.value),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          ),
+      }),
+    ),
+  );
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
-    yield* cache.saveThread(environmentId, snapshot).pipe(
+    const persistedSnapshot =
+      snapshot.thread.messageHistory !== undefined &&
+      snapshot.thread.messages.length > THREAD_MESSAGE_PAGE_SIZE
+        ? {
+            ...snapshot,
+            thread: {
+              ...snapshot.thread,
+              messages: snapshot.thread.messages.slice(-THREAD_MESSAGE_PAGE_SIZE),
+              messageHistory: {
+                hasMoreBefore: true,
+                cursor: {
+                  createdAt: snapshot.thread.messages.at(-THREAD_MESSAGE_PAGE_SIZE)!.createdAt,
+                  messageId: snapshot.thread.messages.at(-THREAD_MESSAGE_PAGE_SIZE)!.id,
+                },
+              },
+            },
+          }
+        : snapshot;
+    yield* cache.saveThread(environmentId, persistedSnapshot).pipe(
       Effect.catch((error) =>
         Effect.logWarning("Could not persist the thread cache.").pipe(
           Effect.annotateLogs({
@@ -157,6 +193,50 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
       yield* Queue.offer(persistence, { snapshotSequence, thread });
     }
+  });
+
+  const loadPreviousMessages = Effect.gen(function* () {
+    const current = yield* SubscriptionRef.get(state);
+    if (Option.isNone(current.data)) {
+      return;
+    }
+    const messageHistory = current.data.value.messageHistory;
+    const cursor = messageHistory?.cursor;
+    if (
+      messageHistory === undefined ||
+      !messageHistory.hasMoreBefore ||
+      cursor === null ||
+      cursor === undefined ||
+      current.loadingPreviousMessages === true
+    ) {
+      return;
+    }
+
+    yield* SubscriptionRef.set(state, { ...current, loadingPreviousMessages: true });
+    yield* Effect.gen(function* () {
+      const prepared = yield* preparedConnection;
+      const page = yield* snapshotLoader.loadPreviousMessages(prepared, threadId, cursor);
+      if (Option.isNone(page)) {
+        return;
+      }
+
+      const latest = yield* SubscriptionRef.get(state);
+      if (Option.isNone(latest.data)) {
+        return;
+      }
+      yield* setThread({
+        ...latest.data.value,
+        messages: [...page.value.messages, ...latest.data.value.messages],
+        messageHistory: page.value.messageHistory,
+      });
+    }).pipe(
+      Effect.ensuring(
+        SubscriptionRef.update(state, (latest) => ({
+          ...latest,
+          loadingPreviousMessages: false,
+        })),
+      ),
+    );
   });
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
@@ -248,26 +328,25 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           Effect.map((config) => config.threadResumeCompletionMarker === true),
           Effect.orElseSucceed(() => false),
         );
+        const supportsMessagePagination = yield* session.initialConfig.pipe(
+          Effect.map((config) => config.threadMessagePagination === true),
+          Effect.orElseSucceed(() => false),
+        );
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
         let current = yield* SubscriptionRef.get(state);
-        if (Option.isNone(current.data) && current.status !== "deleted") {
-          const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
-            Effect.flatMap(
-              Option.match({
-                onSome: Effect.succeed,
-                onNone: () =>
-                  SubscriptionRef.changes(supervisor.prepared).pipe(
-                    Stream.filter(Option.isSome),
-                    Stream.map((value) => value.value),
-                    Stream.runHead,
-                    Effect.map(Option.getOrThrow),
-                  ),
-              }),
-            ),
+        if (
+          current.status !== "deleted" &&
+          (Option.isNone(current.data) ||
+            (supportsMessagePagination && current.data.value.messageHistory === undefined))
+        ) {
+          const prepared = yield* preparedConnection;
+          const httpSnapshot = yield* snapshotLoader.load(
+            prepared,
+            threadId,
+            supportsMessagePagination ? THREAD_MESSAGE_PAGE_SIZE : undefined,
           );
-          const httpSnapshot = yield* snapshotLoader.load(prepared, threadId);
           if (Option.isSome(httpSnapshot)) {
             yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
             current = yield* SubscriptionRef.get(state);
@@ -286,6 +365,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
         return {
           threadId,
+          ...(supportsMessagePagination ? { messageLimit: THREAD_MESSAGE_PAGE_SIZE } : {}),
           ...(canResume ? { afterSequence: sequence } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
         };
@@ -310,13 +390,42 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     ),
   );
 
-  return state;
+  return Object.assign(state, { loadPreviousMessages });
 });
 
-export function threadStateChanges(environmentId: EnvironmentIdType, threadId: ThreadIdType) {
+type EnvironmentThreadStateSubscription =
+  SubscriptionRef.SubscriptionRef<EnvironmentThreadState> & {
+    readonly loadPreviousMessages: Effect.Effect<void>;
+  };
+
+export function threadStateChanges(
+  environmentId: EnvironmentIdType,
+  threadId: ThreadIdType,
+  subscriptions?: Map<string, EnvironmentThreadStateSubscription>,
+) {
+  const key = threadKey({ environmentId, threadId });
   return followStreamInEnvironment(
     environmentId,
-    Stream.unwrap(makeEnvironmentThreadState(threadId).pipe(Effect.map(SubscriptionRef.changes))),
+    Stream.unwrap(
+      makeEnvironmentThreadState(threadId).pipe(
+        Effect.flatMap((subscription) =>
+          subscriptions === undefined
+            ? Effect.succeed(SubscriptionRef.changes(subscription))
+            : Effect.acquireRelease(
+                Effect.sync(() => {
+                  subscriptions.set(key, subscription);
+                  return subscription;
+                }),
+                (registered) =>
+                  Effect.sync(() => {
+                    if (subscriptions.get(key) === registered) {
+                      subscriptions.delete(key);
+                    }
+                  }),
+              ).pipe(Effect.map(SubscriptionRef.changes)),
+        ),
+      ),
+    ),
   );
 }
 
@@ -326,10 +435,12 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     E
   >,
 ) {
+  const subscriptions = new Map<string, EnvironmentThreadStateSubscription>();
+  const scheduler = createAtomCommandScheduler();
   const family = Atom.family((key: string) => {
     const { environmentId, threadId } = parseThreadKey(key);
     return runtime
-      .atom(threadStateChanges(environmentId, threadId), {
+      .atom(threadStateChanges(environmentId, threadId, subscriptions), {
         initialValue: EMPTY_ENVIRONMENT_THREAD_STATE,
       })
       .pipe(
@@ -341,6 +452,26 @@ export function createEnvironmentThreadStateAtoms<R, E>(
   return {
     stateAtom: (environmentId: EnvironmentIdType, threadId: ThreadIdType) =>
       family(threadKey({ environmentId, threadId })),
+    loadPreviousMessages: createEnvironmentCommand(runtime, {
+      label: "environment-data:thread:load-previous-messages",
+      execute: (input: { readonly threadId: ThreadIdType }) =>
+        EnvironmentSupervisor.pipe(
+          Effect.flatMap((supervisor) => {
+            const subscription = subscriptions.get(
+              threadKey({
+                environmentId: supervisor.target.environmentId,
+                threadId: input.threadId,
+              }),
+            );
+            return subscription?.loadPreviousMessages ?? Effect.void;
+          }),
+        ),
+      scheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => threadKey({ environmentId, threadId: input.threadId }),
+      },
+    }),
   };
 }
 

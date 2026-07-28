@@ -51,6 +51,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 ### UX Changes
 
+- Thread detail snapshots load a bounded message tail and older messages use keyset pagination.
 - Desktop context-menu style is configurable.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.

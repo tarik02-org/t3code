@@ -1101,6 +1101,7 @@ const makeWsRpcLayer = (
           settings,
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
+          threadMessagePagination: true,
         };
       });
 
@@ -1425,7 +1426,7 @@ const makeWsRpcLayer = (
               }
 
               const snapshot = yield* projectionSnapshotQuery
-                .getThreadDetailSnapshot(input.threadId)
+                .getThreadDetailSnapshot(input.threadId, input.messageLimit)
                 .pipe(
                   Effect.mapError(
                     (cause) =>

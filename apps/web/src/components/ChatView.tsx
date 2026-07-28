@@ -206,7 +206,7 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
-import { threadEnvironment } from "../state/threads";
+import { environmentThreads, threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
@@ -1136,6 +1136,9 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
+  const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
+    reportFailure: false,
+  });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1160,6 +1163,7 @@ function ChatViewContent(props: ChatViewProps) {
   const composerDraftTarget: ScopedThreadRef | DraftId =
     routeKind === "server" ? routeThreadRef : props.draftId;
   const serverThread = useThread(routeThreadRef);
+  const environmentThreadState = useEnvironmentThread(environmentId, threadId);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore(
     (store) => store.threadLastVisitedAtById[routeThreadKey],
@@ -1401,6 +1405,12 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const handleLoadPreviousMessages = useCallback(() => {
+    void loadPreviousMessages({
+      environmentId,
+      input: { threadId },
+    });
+  }, [environmentId, loadPreviousMessages, threadId]);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
     : localDraftError;
@@ -5865,6 +5875,9 @@ function ChatViewContent(props: ChatViewProps) {
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState}
                 topFadeEnabled={!hasTimelineTopBanner}
+                hasPreviousMessages={activeThread.messageHistory?.hasMoreBefore === true}
+                isLoadingPreviousMessages={environmentThreadState.loadingPreviousMessages === true}
+                onLoadPreviousMessages={handleLoadPreviousMessages}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

@@ -204,6 +204,7 @@ describe("OrchestrationEngine", () => {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+          getThreadMessagePage: () => Effect.die("unused"),
         }),
       ),
       Layer.provide(

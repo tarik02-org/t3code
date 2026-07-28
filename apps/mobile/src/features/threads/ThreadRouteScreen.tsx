@@ -58,7 +58,7 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreads, threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -196,6 +196,9 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
+    reportFailure: false,
+  });
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -314,6 +317,15 @@ function ThreadRouteContent(
     }
     onReconnectEnvironment(environmentId);
   }, [environmentId, onReconnectEnvironment]);
+  const handleLoadPreviousMessages = useCallback(() => {
+    if (selectedThread === null) {
+      return;
+    }
+    void loadPreviousMessages({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+  }, [loadPreviousMessages, selectedThread]);
 
   /* ─── Git action progress (for overlay banner) ──────────────────── */
   const gitActionProgressTarget = useMemo(
@@ -761,6 +773,8 @@ function ThreadRouteContent(
           draftAttachments={composer.draftAttachments}
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
+          hasPreviousMessages={selectedThreadDetail?.messageHistory?.hasMoreBefore === true}
+          isLoadingPreviousMessages={selectedThreadDetailState.loadingPreviousMessages === true}
           activeThreadBusy={composer.activeThreadBusy}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
@@ -777,6 +791,7 @@ function ThreadRouteContent(
           onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
+          onLoadPreviousMessages={handleLoadPreviousMessages}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
           onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}

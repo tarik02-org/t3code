@@ -7,6 +7,7 @@ export interface EnvironmentThreadState {
   readonly data: Option.Option<OrchestrationThread>;
   readonly status: EnvironmentThreadStatus;
   readonly error: Option.Option<string>;
+  readonly loadingPreviousMessages?: boolean;
 }
 
 export const EMPTY_ENVIRONMENT_THREAD_STATE: EnvironmentThreadState = {

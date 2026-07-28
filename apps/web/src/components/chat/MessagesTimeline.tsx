@@ -147,8 +147,6 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
-const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
-const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 
@@ -185,6 +183,9 @@ interface MessagesTimelineProps {
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
+  hasPreviousMessages?: boolean;
+  isLoadingPreviousMessages?: boolean;
+  onLoadPreviousMessages?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onManualNavigation,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
+  hasPreviousMessages = false,
+  isLoadingPreviousMessages = false,
+  onLoadPreviousMessages,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -516,7 +520,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
-            ListHeaderComponent={topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER}
+            ListHeaderComponent={
+              hasPreviousMessages ? (
+                <div
+                  className={cn(
+                    "flex items-center justify-center",
+                    topFadeEnabled ? "min-h-10 sm:min-h-12" : "min-h-3 sm:min-h-4",
+                  )}
+                >
+                  <button
+                    type="button"
+                    disabled={isLoadingPreviousMessages}
+                    onClick={onLoadPreviousMessages}
+                    className="my-2 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {isLoadingPreviousMessages
+                      ? "Loading earlier messages..."
+                      : "Load earlier messages"}
+                  </button>
+                </div>
+              ) : (
+                <div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />
+              )
+            }
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
           <TimelineMinimap

@@ -4,17 +4,20 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   OrchestrationCheckpointFile,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadMessagePage,
   ProjectScript,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
   type OrchestrationMessage,
+  type OrchestrationThreadMessageCursor,
   type OrchestrationProjectShell,
   type OrchestrationProposedPlan,
   type OrchestrationProject,
@@ -119,6 +122,16 @@ const ProjectIdLookupInput = Schema.Struct({
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
+});
+const ThreadMessageLimitLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  fetchLimit: PositiveInt,
+});
+const ThreadMessagePageLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeCreatedAt: IsoDateTime,
+  beforeMessageId: MessageId,
+  fetchLimit: PositiveInt,
 });
 const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
@@ -264,8 +277,109 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
       : toPersistenceSqlError(sqlOperation)(cause);
 }
 
+function mapThreadMessageRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
+): OrchestrationMessage {
+  const message = {
+    id: row.messageId,
+    role: row.role,
+    text: row.text,
+    turnId: row.turnId,
+    streaming: row.isStreaming === 1,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+  if (row.attachments !== null) {
+    return Object.assign(message, { attachments: row.attachments });
+  }
+  return message;
+}
+
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const getActiveThreadForMessagePage = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadIdLookupRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+          AND deleted_at IS NULL
+          AND archived_at IS NULL
+        LIMIT 1
+      `,
+  });
+  const listThreadMessageRowsBefore = SqlSchema.findAll({
+    Request: ThreadMessagePageLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, beforeCreatedAt, beforeMessageId, fetchLimit }) =>
+      sql`
+        SELECT *
+        FROM (
+          SELECT
+            message_id AS "messageId",
+            thread_id AS "threadId",
+            turn_id AS "turnId",
+            role,
+            text,
+            attachments_json AS "attachments",
+            is_streaming AS "isStreaming",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+            AND (created_at, message_id) < (${beforeCreatedAt}, ${beforeMessageId})
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ${fetchLimit}
+        )
+        ORDER BY "createdAt" ASC, "messageId" ASC
+      `,
+  });
+  const getProjectionThreadMessagePage = Effect.fn(
+    "ProjectionSnapshotQuery.getProjectionThreadMessagePage",
+  )(function* (input: {
+    readonly threadId: ThreadId;
+    readonly before: OrchestrationThreadMessageCursor;
+    readonly limit: number;
+  }) {
+    const [thread, rows] = yield* Effect.all([
+      getActiveThreadForMessagePage({ threadId: input.threadId }),
+      listThreadMessageRowsBefore({
+        threadId: input.threadId,
+        beforeCreatedAt: input.before.createdAt,
+        beforeMessageId: input.before.messageId,
+        fetchLimit: input.limit + 1,
+      }),
+    ]).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getProjectionThreadMessagePage:query",
+          "ProjectionSnapshotQuery.getProjectionThreadMessagePage:decodeRows",
+        ),
+      ),
+    );
+    if (Option.isNone(thread)) {
+      return Option.none<OrchestrationThreadMessagePage>();
+    }
+
+    const hasMoreBefore = rows.length > input.limit;
+    const pageRows = hasMoreBefore ? rows.slice(1) : rows;
+    const firstRow = pageRows[0];
+    return Option.some({
+      messages: pageRows.map(mapThreadMessageRow),
+      messageHistory: {
+        hasMoreBefore,
+        cursor:
+          firstRow === undefined
+            ? null
+            : {
+                createdAt: firstRow.createdAt,
+                messageId: firstRow.messageId,
+              },
+      },
+    });
+  });
   const projectionThreadGoalRepository = yield* ProjectionThreadGoalRepository;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const repositoryIdentityResolutionConcurrency = 4;
@@ -824,6 +938,32 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const listLatestThreadMessageRowsByThread = SqlSchema.findAll({
+    Request: ThreadMessageLimitLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, fetchLimit }) =>
+      sql`
+        SELECT *
+        FROM (
+          SELECT
+            message_id AS "messageId",
+            thread_id AS "threadId",
+            turn_id AS "turnId",
+            role,
+            text,
+            attachments_json AS "attachments",
+            is_streaming AS "isStreaming",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ${fetchLimit}
+        )
+        ORDER BY "createdAt" ASC, "messageId" ASC
       `,
   });
 
@@ -1968,7 +2108,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetail = (threadId: ThreadId, messageLimit?: number) =>
     Effect.gen(function* () {
       const [
         threadRow,
@@ -1992,7 +2132,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listThreadMessageRowsByThread({ threadId }).pipe(
+        (messageLimit === undefined
+          ? listThreadMessageRowsByThread({ threadId })
+          : listLatestThreadMessageRowsByThread({
+              threadId,
+              fetchLimit: messageLimit + 1,
+            })
+        ).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:listMessages:query",
@@ -2046,6 +2192,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         return Option.none<OrchestrationThread>();
       }
 
+      const hasMoreMessagesBefore = messageLimit !== undefined && messageRows.length > messageLimit;
+      const visibleMessageRows = hasMoreMessagesBefore ? messageRows.slice(1) : messageRows;
+      const firstMessageRow = visibleMessageRows[0];
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -2065,21 +2214,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedAt: threadRow.value.snoozedAt,
         deletedAt: null,
         goal: threadRow.value.goal,
-        messages: messageRows.map((row) => {
-          const message = {
-            id: row.messageId,
-            role: row.role,
-            text: row.text,
-            turnId: row.turnId,
-            streaming: row.isStreaming === 1,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-          };
-          if (row.attachments !== null) {
-            return Object.assign(message, { attachments: row.attachments });
-          }
-          return message;
-        }),
+        messages: visibleMessageRows.map(mapThreadMessageRow),
+        ...(messageLimit === undefined
+          ? {}
+          : {
+              messageHistory: {
+                hasMoreBefore: hasMoreMessagesBefore,
+                cursor:
+                  firstMessageRow === undefined
+                    ? null
+                    : {
+                        createdAt: firstMessageRow.createdAt,
+                        messageId: firstMessageRow.messageId,
+                      },
+              },
+            }),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities: activityRows.map((row) => {
           const activity = {
@@ -2117,8 +2266,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       );
     });
 
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+    getThreadDetail(threadId);
+
   const getThreadDetailSnapshot: ProjectionSnapshotQueryShape["getThreadDetailSnapshot"] = (
     threadId,
+    messageLimit,
   ) =>
     // Read the thread detail and the snapshot sequence within a single
     // transaction so the sequence is consistent with the returned state; a
@@ -2128,7 +2281,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          const thread = yield* getThreadDetailById(threadId);
+          const thread = yield* getThreadDetail(threadId, messageLimit);
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
@@ -2146,6 +2299,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const getThreadMessagePage: ProjectionSnapshotQueryShape["getThreadMessagePage"] = (input) =>
+    getProjectionThreadMessagePage(input);
+
   return {
     getCommandReadModel,
     getSnapshot,
@@ -2161,6 +2317,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadShellById,
     getThreadDetailById,
     getThreadDetailSnapshot,
+    getThreadMessagePage,
   } satisfies ProjectionSnapshotQueryShape;
 });
 
