@@ -98,18 +98,19 @@ export function useProgressiveTimelineHistory({
   const anchorRef = useRef<ViewportAnchor | null>(null);
   const pendingRequestRef = useRef<PendingHistoryRequest | null>(null);
   const resolvedLogicalAnchorRef = useRef<ResolvedLogicalAnchor | null>(null);
-  const programmaticScrollRef = useRef<"instant" | "message" | "aligning" | null>(null);
+  const programmaticScrollRef = useRef<"instant" | "seeking" | "aligning" | null>(null);
   const pointerActiveRef = useRef(false);
   const loadTimeoutRef = useRef<number | null>(null);
   const lastLoadAtRef = useRef(0);
-  const reconcileFrameRef = useRef<number | null>(null);
+  const reconcileTimeoutRef = useRef<number | null>(null);
   const reconcileAnchorRef = useRef<() => void>(() => {});
-  const releaseProgrammaticScrollFrameRef = useRef<number | null>(null);
+  const releaseProgrammaticScrollTimeoutRef = useRef<number | null>(null);
   const alignmentCleanupRef = useRef<(() => void) | null>(null);
   const historyBeforeSpacerRef = useRef<HTMLDivElement>(null);
   const historyAfterSpacerRef = useRef<HTMLDivElement>(null);
   const historyBeforeSkeletonsRef = useRef<HTMLDivElement>(null);
   const historyAfterSkeletonsRef = useRef<HTMLDivElement>(null);
+  const historyInitializedRef = useRef(false);
   const clearedWindowKeyRef = useRef<string | null>(null);
   const [layoutMeasurement, setLayoutMeasurement] = useState<HistoryLayoutMeasurement | null>(null);
   const loadedMessageIds = useMemo(
@@ -182,29 +183,86 @@ export function useProgressiveTimelineHistory({
   }, [listRef, messageHistory]);
 
   const releaseInstantScroll = useCallback(() => {
-    if (releaseProgrammaticScrollFrameRef.current !== null) {
-      cancelAnimationFrame(releaseProgrammaticScrollFrameRef.current);
+    if (releaseProgrammaticScrollTimeoutRef.current !== null) {
+      window.clearTimeout(releaseProgrammaticScrollTimeoutRef.current);
     }
-    releaseProgrammaticScrollFrameRef.current = requestAnimationFrame(() => {
-      releaseProgrammaticScrollFrameRef.current = null;
+    releaseProgrammaticScrollTimeoutRef.current = window.setTimeout(() => {
+      releaseProgrammaticScrollTimeoutRef.current = null;
       if (programmaticScrollRef.current === "instant") {
         programmaticScrollRef.current = null;
       }
-    });
+    }, 0);
   }, []);
 
   const queueReconciliation = useCallback(() => {
-    if (reconcileFrameRef.current !== null) {
+    if (reconcileTimeoutRef.current !== null) {
       return;
     }
-    reconcileFrameRef.current = requestAnimationFrame(() => {
-      reconcileFrameRef.current = null;
+    reconcileTimeoutRef.current = window.setTimeout(() => {
+      reconcileTimeoutRef.current = null;
       reconcileAnchorRef.current();
-    });
+    }, 0);
   }, []);
+
+  const positionHistorySkeletons = useCallback(
+    (scrollTop: number, scrollHeight: number) => {
+      const renderedHistoryBeforeSize =
+        historyBeforeSpacerRef.current?.offsetHeight ?? historyBeforeSize;
+      const renderedHistoryAfterSize =
+        historyAfterSpacerRef.current?.offsetHeight ?? historyAfterSize;
+      const historyBeforeSkeletons = historyBeforeSkeletonsRef.current;
+      if (historyBeforeSkeletons !== null) {
+        const offset = Math.min(
+          Math.max(
+            0,
+            Math.floor(scrollTop / HISTORY_SKELETON_PERIOD) * HISTORY_SKELETON_PERIOD -
+              HISTORY_SKELETON_PERIOD,
+          ),
+          Math.max(
+            0,
+            Math.floor(
+              (renderedHistoryBeforeSize - HISTORY_SKELETON_PERIOD) / HISTORY_SKELETON_PERIOD,
+            ) * HISTORY_SKELETON_PERIOD,
+          ),
+        );
+        const transform = `translateY(${offset}px)`;
+        if (historyBeforeSkeletons.style.transform !== transform) {
+          historyBeforeSkeletons.style.transform = transform;
+        }
+      }
+      const historyAfterSkeletons = historyAfterSkeletonsRef.current;
+      if (historyAfterSkeletons !== null) {
+        const scrollWithinHistory = Math.max(
+          0,
+          scrollTop - (scrollHeight - renderedHistoryAfterSize),
+        );
+        const offset = Math.min(
+          Math.max(
+            0,
+            Math.floor(scrollWithinHistory / HISTORY_SKELETON_PERIOD) * HISTORY_SKELETON_PERIOD -
+              HISTORY_SKELETON_PERIOD,
+          ),
+          Math.max(
+            0,
+            Math.floor(
+              (renderedHistoryAfterSize - HISTORY_SKELETON_PERIOD) / HISTORY_SKELETON_PERIOD,
+            ) * HISTORY_SKELETON_PERIOD,
+          ),
+        );
+        const transform = `translateY(${offset}px)`;
+        if (historyAfterSkeletons.style.transform !== transform) {
+          historyAfterSkeletons.style.transform = transform;
+        }
+      }
+    },
+    [historyAfterSize, historyBeforeSize],
+  );
 
   const reconcileAnchor = useCallback(() => {
     if (messageHistory === undefined || timelineViewportElement === null) {
+      return false;
+    }
+    if (pointerActiveRef.current) {
       return false;
     }
     const list = listRef.current;
@@ -234,9 +292,8 @@ export function useProgressiveTimelineHistory({
         const target = timelineViewportElement.querySelector<HTMLElement>(
           `[data-message-id="${CSS.escape(alignmentMessageId)}"]`,
         );
-        const loadedRowsContainer =
-          historyBeforeSpacerRef.current?.parentElement?.nextElementSibling;
-        if (target === null || loadedRowsContainer === null || loadedRowsContainer === undefined) {
+        const beforeSpacer = historyBeforeSpacerRef.current;
+        if (target === null || beforeSpacer === null) {
           return false;
         }
         const nextBeforeSize = Math.max(
@@ -245,8 +302,7 @@ export function useProgressiveTimelineHistory({
             totalHistorySize - loadedSize,
             scrollNode.scrollTop +
               anchor.viewportOffset -
-              (target.getBoundingClientRect().top -
-                loadedRowsContainer.getBoundingClientRect().top),
+              (target.getBoundingClientRect().top - beforeSpacer.getBoundingClientRect().bottom),
           ),
         );
         if (Math.abs(historyBeforeSize - nextBeforeSize) > 1) {
@@ -268,6 +324,7 @@ export function useProgressiveTimelineHistory({
       );
       if (Math.abs(scrollNode.scrollTop - scrollTop) > 1) {
         programmaticScrollRef.current = "instant";
+        positionHistorySkeletons(scrollTop, scrollNode.scrollHeight);
         void list.scrollToOffset({ offset: scrollTop, animated: false });
         releaseInstantScroll();
         queueReconciliation();
@@ -280,6 +337,9 @@ export function useProgressiveTimelineHistory({
       `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
     );
     if (target === null) {
+      return false;
+    }
+    if (programmaticScrollRef.current === "seeking") {
       return false;
     }
 
@@ -300,6 +360,7 @@ export function useProgressiveTimelineHistory({
     if (pendingRequestRef.current?.kind !== "message") {
       clearAlignmentWait();
       programmaticScrollRef.current = "instant";
+      positionHistorySkeletons(scrollTop, scrollNode.scrollHeight);
       void list.scrollToOffset({ offset: scrollTop, animated: false });
       releaseInstantScroll();
       queueReconciliation();
@@ -313,13 +374,18 @@ export function useProgressiveTimelineHistory({
     programmaticScrollRef.current = "aligning";
     const finishAlignment = () => {
       clearAlignmentWait();
-      if (programmaticScrollRef.current === "aligning") {
-        programmaticScrollRef.current = "message";
+      if (programmaticScrollRef.current !== "aligning") {
+        return;
+      }
+      programmaticScrollRef.current = null;
+      pendingRequestRef.current = null;
+      if (historyTargetMessageId === anchor.messageId) {
+        onHistoryTargetReady?.();
       }
       queueReconciliation();
     };
     scrollNode.addEventListener("scrollend", finishAlignment, { once: true });
-    const timeout = window.setTimeout(finishAlignment, 500);
+    const timeout = window.setTimeout(finishAlignment, 750);
     alignmentCleanupRef.current = () => {
       window.clearTimeout(timeout);
       scrollNode.removeEventListener("scrollend", finishAlignment);
@@ -335,6 +401,7 @@ export function useProgressiveTimelineHistory({
     loadedSize,
     messageHistory,
     onHistoryTargetReady,
+    positionHistorySkeletons,
     queueReconciliation,
     releaseInstantScroll,
     timelineViewportElement,
@@ -481,62 +548,19 @@ export function useProgressiveTimelineHistory({
     const scrollTop = scrollNode?.scrollTop ?? state.scroll ?? 0;
     const scrollLength = scrollNode?.clientHeight ?? state.scrollLength ?? 0;
     const scrollBottom = scrollTop + scrollLength;
-    const renderedHistoryBeforeSize =
-      historyBeforeSpacerRef.current?.offsetHeight ?? historyBeforeSize;
-    const renderedHistoryAfterSize =
-      historyAfterSpacerRef.current?.offsetHeight ?? historyAfterSize;
-    const loadedHistoryEnd =
-      (scrollNode?.scrollHeight ?? state.contentLength ?? 0) - renderedHistoryAfterSize;
-    const historyBeforeSkeletons = historyBeforeSkeletonsRef.current;
-    if (historyBeforeSkeletons !== null) {
-      const offset = Math.min(
-        Math.max(
-          0,
-          Math.floor(scrollTop / HISTORY_SKELETON_PERIOD) * HISTORY_SKELETON_PERIOD -
-            HISTORY_SKELETON_PERIOD,
-        ),
-        Math.max(
-          0,
-          Math.floor(
-            (renderedHistoryBeforeSize - HISTORY_SKELETON_PERIOD) / HISTORY_SKELETON_PERIOD,
-          ) * HISTORY_SKELETON_PERIOD,
-        ),
-      );
-      const transform = `translateY(${offset}px)`;
-      if (historyBeforeSkeletons.style.transform !== transform) {
-        historyBeforeSkeletons.style.transform = transform;
-      }
-    }
-    const historyAfterSkeletons = historyAfterSkeletonsRef.current;
-    if (historyAfterSkeletons !== null) {
-      const scrollWithinHistory = Math.max(0, scrollTop - loadedHistoryEnd);
-      const offset = Math.min(
-        Math.max(
-          0,
-          Math.floor(scrollWithinHistory / HISTORY_SKELETON_PERIOD) * HISTORY_SKELETON_PERIOD -
-            HISTORY_SKELETON_PERIOD,
-        ),
-        Math.max(
-          0,
-          Math.floor(
-            (renderedHistoryAfterSize - HISTORY_SKELETON_PERIOD) / HISTORY_SKELETON_PERIOD,
-          ) * HISTORY_SKELETON_PERIOD,
-        ),
-      );
-      const transform = `translateY(${offset}px)`;
-      if (historyAfterSkeletons.style.transform !== transform) {
-        historyAfterSkeletons.style.transform = transform;
-      }
-    }
+    positionHistorySkeletons(scrollTop, scrollNode?.scrollHeight ?? state.contentLength ?? 0);
 
-    if (messageHistory !== undefined && programmaticScrollRef.current === null) {
-      captureLogicalAnchor();
-      scheduleHistoryLoad();
-    } else if (
-      programmaticScrollRef.current === "message" ||
-      programmaticScrollRef.current === "aligning"
+    if (
+      messageHistory !== undefined &&
+      historyInitializedRef.current &&
+      programmaticScrollRef.current === null
     ) {
-      queueReconciliation();
+      if (anchorRef.current?.kind === "message") {
+        queueReconciliation();
+      } else {
+        captureLogicalAnchor();
+        scheduleHistoryLoad();
+      }
     }
 
     for (const item of minimapItems) {
@@ -559,39 +583,43 @@ export function useProgressiveTimelineHistory({
       strip.dataset.inView = inView ? "true" : "false";
     }
   }, [
-    captureLogicalAnchor,
-    historyAfterSize,
     historyBeforeSize,
     listRef,
     messageHistory,
     minimapItems,
     minimapStripMap,
     onIsAtEndChange,
+    positionHistorySkeletons,
     queueReconciliation,
     scheduleHistoryLoad,
   ]);
 
   const beginUserNavigation = useCallback(() => {
-    const anchor = anchorRef.current;
     clearAlignmentWait();
     programmaticScrollRef.current = null;
-    if (anchor?.kind === "message" && historyTargetMessageId === anchor.messageId) {
-      onHistoryTargetReady?.();
-    }
+    pendingRequestRef.current = null;
+    onHistoryTargetReady?.();
     captureLogicalAnchor();
     onManualNavigation();
-  }, [
-    captureLogicalAnchor,
-    clearAlignmentWait,
-    historyTargetMessageId,
-    onHistoryTargetReady,
-    onManualNavigation,
-  ]);
+  }, [captureLogicalAnchor, clearAlignmentWait, onHistoryTargetReady, onManualNavigation]);
 
   const beginScrollbarPointerNavigation = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
+    (event: globalThis.PointerEvent | PointerEvent<HTMLDivElement>) => {
       const scrollNode = listRef.current?.getScrollableNode();
-      if (event.target !== scrollNode) {
+      if (scrollNode === undefined || event.button !== 0 || pointerActiveRef.current) {
+        return;
+      }
+      const rect = scrollNode.getBoundingClientRect();
+      const sideGutterWidth = Math.max(0, (scrollNode.offsetWidth - scrollNode.clientWidth) / 2);
+      if (
+        event.target !== scrollNode &&
+        !(
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom &&
+          (event.clientX <= rect.left + sideGutterWidth ||
+            event.clientX >= rect.right - sideGutterWidth)
+        )
+      ) {
         return;
       }
       pointerActiveRef.current = true;
@@ -607,7 +635,8 @@ export function useProgressiveTimelineHistory({
     pointerActiveRef.current = false;
     captureLogicalAnchor();
     scheduleHistoryLoad();
-  }, [captureLogicalAnchor, scheduleHistoryLoad]);
+    queueReconciliation();
+  }, [captureLogicalAnchor, queueReconciliation, scheduleHistoryLoad]);
 
   const selectHistoryTarget = useCallback(
     (item: TimelineHistoryNavigationTarget) => {
@@ -624,6 +653,13 @@ export function useProgressiveTimelineHistory({
       }
 
       clearAlignmentWait();
+      if (loadTimeoutRef.current !== null) {
+        window.clearTimeout(loadTimeoutRef.current);
+        loadTimeoutRef.current = null;
+      }
+      const supersedesHistoryRequest =
+        historyTargetMessageId !== null && historyTargetMessageId !== item.id;
+      onHistoryTargetReady?.();
       anchorRef.current = {
         kind: "message",
         messageId: item.id,
@@ -633,43 +669,86 @@ export function useProgressiveTimelineHistory({
         kind: "message",
         messageId: item.id,
       };
-      programmaticScrollRef.current = "message";
+      programmaticScrollRef.current = "seeking";
 
       const list = listRef.current;
       const scrollNode = list?.getScrollableNode();
       if (list === null || list === undefined || scrollNode === undefined) {
+        programmaticScrollRef.current = null;
         return;
       }
+      const estimatedScrollTop =
+        item.messageIndex === null
+          ? null
+          : Math.max(
+              0,
+              Math.min(
+                scrollNode.scrollHeight - scrollNode.clientHeight,
+                item.messageIndex * VIRTUAL_MESSAGE_SIZE - MESSAGE_VIEWPORT_OFFSET,
+              ),
+            );
       if (item.rowIndex !== null) {
         void list.scrollToIndex({
           index: item.rowIndex,
           animated: true,
           viewOffset: MESSAGE_VIEWPORT_OFFSET,
         });
-        queueReconciliation();
-        return;
+      } else if (estimatedScrollTop !== null) {
+        scrollNode.scrollTo({ behavior: "smooth", top: estimatedScrollTop });
       }
-      if (item.messageIndex !== null) {
-        scrollNode.scrollTo({
-          behavior: "smooth",
-          top: Math.max(
-            0,
-            Math.min(
-              scrollNode.scrollHeight - scrollNode.clientHeight,
-              item.messageIndex * VIRTUAL_MESSAGE_SIZE - MESSAGE_VIEWPORT_OFFSET,
-            ),
-          ),
+      if (item.rowIndex === null || supersedesHistoryRequest) {
+        window.setTimeout(() => {
+          if (
+            pendingRequestRef.current?.kind === "message" &&
+            pendingRequestRef.current.messageId === item.id
+          ) {
+            onSelectHistoryMessage?.(item.id);
+          }
         });
       }
-      onSelectHistoryMessage?.(item.id);
+
+      if (item.rowIndex === null && estimatedScrollTop === null) {
+        programmaticScrollRef.current = null;
+        return;
+      }
+
+      const finishSeek = () => {
+        clearAlignmentWait();
+        if (programmaticScrollRef.current !== "seeking") {
+          return;
+        }
+        if (
+          estimatedScrollTop !== null &&
+          Math.abs(scrollNode.scrollTop - estimatedScrollTop) >
+            Math.max(8, scrollNode.clientHeight * 0.02)
+        ) {
+          programmaticScrollRef.current = "instant";
+          positionHistorySkeletons(estimatedScrollTop, scrollNode.scrollHeight);
+          void list.scrollToOffset({ offset: estimatedScrollTop, animated: false });
+          releaseInstantScroll();
+        } else {
+          programmaticScrollRef.current = null;
+        }
+        queueReconciliation();
+      };
+      scrollNode.addEventListener("scrollend", finishSeek, { once: true });
+      const timeout = window.setTimeout(finishSeek, 750);
+      alignmentCleanupRef.current = () => {
+        window.clearTimeout(timeout);
+        scrollNode.removeEventListener("scrollend", finishSeek);
+      };
     },
     [
       clearAlignmentWait,
+      historyTargetMessageId,
       listRef,
       messageHistory,
+      onHistoryTargetReady,
       onManualNavigation,
       onSelectHistoryMessage,
+      positionHistorySkeletons,
       queueReconciliation,
+      releaseInstantScroll,
     ],
   );
 
@@ -678,13 +757,22 @@ export function useProgressiveTimelineHistory({
       return;
     }
     const beforeSpacer = historyBeforeSpacerRef.current;
-    const loadedRowsContainer = beforeSpacer?.parentElement?.nextElementSibling;
-    if (loadedRowsContainer === null || loadedRowsContainer === undefined) {
+    const afterSpacer = historyAfterSpacerRef.current;
+    const loadedRowsContainer = afterSpacer?.parentElement?.previousElementSibling;
+    if (
+      beforeSpacer === null ||
+      afterSpacer === null ||
+      loadedRowsContainer === null ||
+      loadedRowsContainer === undefined
+    ) {
       return;
     }
 
     const measure = () => {
-      const loadedSize = loadedRowsContainer.getBoundingClientRect().height;
+      const loadedSize = Math.max(
+        0,
+        afterSpacer.getBoundingClientRect().top - beforeSpacer.getBoundingClientRect().bottom,
+      );
       setLayoutMeasurement((current) =>
         current?.windowKey === historyWindowKey && Math.abs(current.loadedSize - loadedSize) <= 1
           ? current
@@ -702,6 +790,8 @@ export function useProgressiveTimelineHistory({
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(loadedRowsContainer);
+    observer.observe(beforeSpacer);
+    observer.observe(afterSpacer);
     return () => {
       observer.disconnect();
     };
@@ -723,8 +813,30 @@ export function useProgressiveTimelineHistory({
     if (list === null || list === undefined || scrollNode === undefined) {
       return;
     }
-    if (anchorRef.current === null) {
-      captureLogicalAnchor();
+    if (!historyInitializedRef.current) {
+      const initialScrollTop = messageHistory.hasMoreAfter
+        ? Math.min(
+            historyBeforeSize,
+            Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight),
+          )
+        : Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+      anchorRef.current = {
+        kind: "logical",
+        messageIndex: Math.max(
+          0,
+          Math.min(
+            messageHistory.totalMessages - 1,
+            (initialScrollTop + scrollNode.clientHeight / 2) / VIRTUAL_MESSAGE_SIZE,
+          ),
+        ),
+        viewportOffset: scrollNode.clientHeight / 2,
+      };
+      if (Math.abs(scrollNode.scrollTop - initialScrollTop) > 1) {
+        programmaticScrollRef.current = "instant";
+        void list.scrollToOffset({ offset: initialScrollTop, animated: false });
+        releaseInstantScroll();
+      }
+      historyInitializedRef.current = true;
     }
     scheduleHistoryLoad();
     if (clearedWindowKeyRef.current !== historyWindowKey) {
@@ -733,21 +845,21 @@ export function useProgressiveTimelineHistory({
     }
     queueReconciliation();
 
-    const frame = requestAnimationFrame(() => {
+    const timeout = window.setTimeout(() => {
       const anchor = anchorRef.current;
       if (
-        anchor?.kind !== "logical" ||
-        anchor.messageIndex < messageHistory.startIndex ||
-        anchor.messageIndex >= messageHistory.endIndex
+        anchor === null ||
+        (anchor.kind === "logical" &&
+          (anchor.messageIndex < messageHistory.startIndex ||
+            anchor.messageIndex >= messageHistory.endIndex)) ||
+        (anchor.kind === "message" && !loadedMessageIds.includes(anchor.messageId))
       ) {
         return;
       }
-      const loadedRowsContainer = historyBeforeSpacerRef.current?.parentElement?.nextElementSibling;
-      if (loadedRowsContainer === null || loadedRowsContainer === undefined) {
-        return;
-      }
       const viewportRect = scrollNode.getBoundingClientRect();
-      const viewportContainsRenderedRow = Array.from(loadedRowsContainer.children).some((row) => {
+      const viewportContainsRenderedRow = Array.from(
+        timelineViewportElement?.querySelectorAll<HTMLElement>("[data-timeline-root]") ?? [],
+      ).some((row) => {
         const rowRect = row.getBoundingClientRect();
         return rowRect.bottom > viewportRect.top && rowRect.top < viewportRect.bottom;
       });
@@ -762,21 +874,22 @@ export function useProgressiveTimelineHistory({
       });
       void list.scrollToOffset({ offset: scrollTop, animated: false });
       releaseInstantScroll();
-    });
+    }, 0);
     return () => {
-      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
     };
   }, [
-    captureLogicalAnchor,
     historyAfterSize,
     historyBeforeSize,
     historyWindowKey,
     listRef,
+    loadedMessageIds,
     messageHistory,
     queueReconciliation,
     releaseInstantScroll,
     rows.length,
     scheduleHistoryLoad,
+    timelineViewportElement,
   ]);
 
   useEffect(() => {
@@ -798,7 +911,7 @@ export function useProgressiveTimelineHistory({
       onHistoryTargetReady?.();
       return;
     }
-    const frame = requestAnimationFrame(() => {
+    const timeout = window.setTimeout(() => {
       if (!reconcileAnchor()) {
         return;
       }
@@ -810,8 +923,8 @@ export function useProgressiveTimelineHistory({
       pendingRequestRef.current = null;
       onHistoryTargetReady?.();
       scheduleHistoryLoad();
-    });
-    return () => cancelAnimationFrame(frame);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [
     historyLoadInProgress,
     historyWindowKey,
@@ -845,13 +958,15 @@ export function useProgressiveTimelineHistory({
   }, [queueReconciliation, timelineViewportElement]);
 
   useEffect(() => {
+    window.addEventListener("pointerdown", beginScrollbarPointerNavigation, true);
     window.addEventListener("pointerup", finishScrollbarPointerNavigation);
     window.addEventListener("pointercancel", finishScrollbarPointerNavigation);
     return () => {
+      window.removeEventListener("pointerdown", beginScrollbarPointerNavigation, true);
       window.removeEventListener("pointerup", finishScrollbarPointerNavigation);
       window.removeEventListener("pointercancel", finishScrollbarPointerNavigation);
     };
-  }, [finishScrollbarPointerNavigation]);
+  }, [beginScrollbarPointerNavigation, finishScrollbarPointerNavigation]);
 
   useEffect(
     () => () => {
@@ -860,13 +975,13 @@ export function useProgressiveTimelineHistory({
         window.clearTimeout(loadTimeoutRef.current);
         loadTimeoutRef.current = null;
       }
-      if (reconcileFrameRef.current !== null) {
-        cancelAnimationFrame(reconcileFrameRef.current);
-        reconcileFrameRef.current = null;
+      if (reconcileTimeoutRef.current !== null) {
+        window.clearTimeout(reconcileTimeoutRef.current);
+        reconcileTimeoutRef.current = null;
       }
-      if (releaseProgrammaticScrollFrameRef.current !== null) {
-        cancelAnimationFrame(releaseProgrammaticScrollFrameRef.current);
-        releaseProgrammaticScrollFrameRef.current = null;
+      if (releaseProgrammaticScrollTimeoutRef.current !== null) {
+        window.clearTimeout(releaseProgrammaticScrollTimeoutRef.current);
+        releaseProgrammaticScrollTimeoutRef.current = null;
       }
     },
     [clearAlignmentWait],

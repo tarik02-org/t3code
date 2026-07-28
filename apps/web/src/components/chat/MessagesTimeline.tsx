@@ -16,6 +16,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -394,7 +395,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       : undefined;
   }, [anchorMessageId, handleAnchorReady, handleAnchorSizeChanged, rows]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!timelineViewportElement) {
       return;
     }
@@ -408,13 +409,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth));
     };
 
-    const frame = requestAnimationFrame(measure);
+    measure();
 
     const observer = new ResizeObserver(measure);
     observer.observe(timelineViewportElement);
 
     return () => {
-      cancelAnimationFrame(frame);
       observer.disconnect();
     };
   }, [timelineViewportElement, rows.length]);
@@ -509,7 +509,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   ? 48
                   : 16
             }
-            initialScrollAtEnd
+            initialScrollAtEnd={messageHistory === undefined}
+            {...(messageHistory === undefined
+              ? {}
+              : { initialScrollOffset: progressiveHistory.historyBeforeSize })}
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
             contentInsetEndAdjustment={contentInsetEndAdjustment}
             maintainScrollAtEnd={

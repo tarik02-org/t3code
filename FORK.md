@@ -76,10 +76,15 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   snapshots, and failed segment requests release their pending navigation target instead of leaving
   the virtual loader locked. Minimap jumps begin scrolling through virtual history immediately while
   the segment loads, then align the loaded target with a smooth correction instead of teleporting
-  the viewport after the response. Scrollbar movement keeps a logical viewport anchor, while minimap
-  jumps keep a concrete message anchor; segment swaps and layout resizes reconcile against that
-  anchor without changing the fixed scroll extent. Around-window requests keep one active load and
-  coalesce intermediate targets to the latest requested position.
+  the viewport after the response. When smooth motion is unavailable, the estimated-position
+  fallback still moves inline skeletons into the viewport before exact alignment. Scrollbar movement
+  keeps a logical viewport anchor, while minimap jumps keep a concrete message anchor; segment swaps
+  and layout resizes reconcile against that anchor without changing the fixed scroll extent. The
+  programmatic seek ends with the scroll motion, not the segment request, and manual input replaces
+  it with a logical anchor so a slow request cannot lock the scrollbar. Segment reconciliation does
+  not run while the native scrollbar thumb is held, and cold minimap requests begin in a separate
+  task after the seek starts. Around-window requests keep one active load and coalesce intermediate
+  targets to the latest requested position.
 - Desktop context-menu style is configurable.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.

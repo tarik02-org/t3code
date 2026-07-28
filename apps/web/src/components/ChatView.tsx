@@ -1446,7 +1446,9 @@ function ChatViewContent(props: ChatViewProps) {
     [environmentId, environmentThreadState.history, loadMessagesAround, routeThreadKey, threadId],
   );
   const handleHistoryTargetReady = useCallback(() => {
-    setHistoryTarget((current) => ({ ...current, messageId: null }));
+    setHistoryTarget((current) =>
+      current.messageId === null ? current : { ...current, messageId: null },
+    );
   }, []);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
