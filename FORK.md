@@ -23,6 +23,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - macOS passkey entitlements are only enabled when Apple notarization/profile configuration is present.
 - Windows releases can sign with the static certificate when Azure Trusted Signing is not configured.
 - Fork GitHub Actions jobs use GitHub-hosted runners instead of upstream private or third-party runner pools.
+- Fork test runs limit package task concurrency to two to avoid starving tests on GitHub-hosted runners.
 - Web dist release archives are built as hosted static apps and carry the release channel.
 
 ### Nix Package
