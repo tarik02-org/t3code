@@ -1137,12 +1137,6 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
-  const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
-    reportFailure: false,
-  });
-  const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
-    reportFailure: false,
-  });
   const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
     reportFailure: false,
   });
@@ -1421,18 +1415,6 @@ function ChatViewContent(props: ChatViewProps) {
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const operationalThread = isServerThread ? liveServerThread : activeThread;
-  const handleLoadPreviousMessages = useCallback(() => {
-    void loadPreviousMessages({
-      environmentId,
-      input: { threadId },
-    });
-  }, [environmentId, loadPreviousMessages, threadId]);
-  const handleLoadNextMessages = useCallback(() => {
-    void loadNextMessages({
-      environmentId,
-      input: { threadId },
-    });
-  }, [environmentId, loadNextMessages, threadId]);
   const handleSelectHistoryMessage = useCallback(
     (messageId: MessageId) => {
       if (
@@ -1445,6 +1427,15 @@ function ChatViewContent(props: ChatViewProps) {
       void loadMessagesAround({
         environmentId,
         input: { threadId, messageId },
+      }).then((result) => {
+        if (result._tag === "Success" && result.value) {
+          return;
+        }
+        setHistoryTarget((current) =>
+          current.threadKey === routeThreadKey && current.messageId === messageId
+            ? { ...current, messageId: null }
+            : current,
+        );
       });
     },
     [environmentId, environmentThreadState.history, loadMessagesAround, routeThreadKey, threadId],
@@ -5917,8 +5908,9 @@ function ChatViewContent(props: ChatViewProps) {
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState}
                 topFadeEnabled={!hasTimelineTopBanner}
-                hasPreviousMessages={activeThread.messageHistory?.hasMoreBefore === true}
-                hasNextMessages={activeThread.messageHistory?.hasMoreAfter === true}
+                {...(activeThread.messageHistory === undefined
+                  ? {}
+                  : { messageHistory: activeThread.messageHistory })}
                 isLoadingPreviousMessages={
                   environmentThreadState.history.kind === "ready" &&
                   (environmentThreadState.history.loading === "before" ||
@@ -5928,8 +5920,6 @@ function ChatViewContent(props: ChatViewProps) {
                   environmentThreadState.history.kind === "ready" &&
                   environmentThreadState.history.loading === "after"
                 }
-                onLoadPreviousMessages={handleLoadPreviousMessages}
-                onLoadNextMessages={handleLoadNextMessages}
                 historyOutline={
                   environmentThreadState.history.kind === "ready"
                     ? environmentThreadState.history.outline

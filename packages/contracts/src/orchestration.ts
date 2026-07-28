@@ -376,6 +376,9 @@ export type OrchestrationThreadMessageCursor = typeof OrchestrationThreadMessage
 export const OrchestrationThreadMessageHistory = Schema.Struct({
   hasMoreBefore: Schema.Boolean,
   hasMoreAfter: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  startIndex: NonNegativeInt,
+  endIndex: NonNegativeInt,
+  totalMessages: NonNegativeInt,
   cursor: Schema.NullOr(OrchestrationThreadMessageCursor),
 });
 export type OrchestrationThreadMessageHistory = typeof OrchestrationThreadMessageHistory.Type;
@@ -383,6 +386,7 @@ export type OrchestrationThreadMessageHistory = typeof OrchestrationThreadMessag
 export const OrchestrationThreadHistoryLandmark = Schema.Struct({
   messageId: MessageId,
   ordinal: NonNegativeInt,
+  messageIndex: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   preview: Schema.String,
 });

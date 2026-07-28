@@ -1,7 +1,9 @@
 import {
   type EnvironmentId,
+  type MessageId,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
+  type OrchestrationThreadHistoryPage,
   type ServerConfig,
   type ThreadId,
   type VcsListRefsResult,
@@ -26,6 +28,8 @@ export class ConnectionPersistenceError extends Schema.TaggedErrorClass<Connecti
       "load-thread",
       "save-thread",
       "remove-thread",
+      "load-thread-history",
+      "save-thread-history",
       "load-server-config",
       "save-server-config",
       "load-vcs-refs",
@@ -107,6 +111,58 @@ export class EnvironmentCacheStore extends Context.Service<
     ) => Effect.Effect<void, ConnectionPersistenceError>;
   }
 >()("@t3tools/client-runtime/platform/persistence/EnvironmentCacheStore") {}
+
+export interface ThreadHistoryCacheLookup {
+  readonly page: Option.Option<OrchestrationThreadHistoryPage>;
+  readonly requestLimit: number;
+}
+
+export class ThreadHistoryCacheStore extends Context.Reference<{
+  readonly loadPrevious: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    endIndex: number,
+    limit: number,
+  ) => Effect.Effect<ThreadHistoryCacheLookup, ConnectionPersistenceError>;
+  readonly loadNext: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    startIndex: number,
+    limit: number,
+  ) => Effect.Effect<ThreadHistoryCacheLookup, ConnectionPersistenceError>;
+  readonly loadAround: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    limit: number,
+  ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ConnectionPersistenceError>;
+  readonly loadTotalMessages: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<number>, ConnectionPersistenceError>;
+  readonly save: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    page: OrchestrationThreadHistoryPage,
+  ) => Effect.Effect<void, ConnectionPersistenceError>;
+  readonly remove: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  ) => Effect.Effect<void, ConnectionPersistenceError>;
+  readonly clear: (environmentId: EnvironmentId) => Effect.Effect<void, ConnectionPersistenceError>;
+}>("@t3tools/client-runtime/platform/persistence/ThreadHistoryCacheStore", {
+  defaultValue: () => ({
+    loadPrevious: (_environmentId, _threadId, _endIndex, limit) =>
+      Effect.succeed({ page: Option.none(), requestLimit: limit }),
+    loadNext: (_environmentId, _threadId, _startIndex, limit) =>
+      Effect.succeed({ page: Option.none(), requestLimit: limit }),
+    loadAround: () => Effect.succeed(Option.none()),
+    loadTotalMessages: () => Effect.succeed(Option.none()),
+    save: () => Effect.void,
+    remove: () => Effect.void,
+    clear: () => Effect.void,
+  }),
+}) {}
 
 export class EnvironmentOwnedDataCleanup extends Context.Reference<{
   readonly clear: (environmentId: EnvironmentId) => Effect.Effect<void>;

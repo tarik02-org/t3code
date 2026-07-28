@@ -21,9 +21,13 @@ import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
-import { EnvironmentCacheStore } from "../platform/persistence.ts";
+import { EnvironmentCacheStore, ThreadHistoryCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
-import { THREAD_MESSAGE_PAGE_SIZE, ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
+import {
+  THREAD_HISTORY_AROUND_PAGE_SIZE,
+  THREAD_MESSAGE_PAGE_SIZE,
+  ThreadSnapshotLoader,
+} from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
@@ -58,20 +62,39 @@ function shouldPersistThread(thread: OrchestrationThread): boolean {
 }
 
 function boundLiveThread(thread: OrchestrationThread): OrchestrationThread {
-  if (thread.messageHistory === undefined || thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE) {
+  if (thread.messageHistory === undefined) {
     return thread;
   }
-  const messages = thread.messages.slice(-THREAD_MESSAGE_PAGE_SIZE);
+  const messages =
+    thread.messages.length > THREAD_MESSAGE_PAGE_SIZE
+      ? thread.messages.slice(-THREAD_MESSAGE_PAGE_SIZE)
+      : thread.messages;
   const firstMessage = messages[0];
   if (firstMessage === undefined) {
     return thread;
   }
+  const visibleTurnIds = new Set(
+    messages.flatMap((message) => (message.turnId === null ? [] : [message.turnId])),
+  );
+  const activeTurnId = thread.session?.activeTurnId ?? null;
+  if (activeTurnId !== null) {
+    visibleTurnIds.add(activeTurnId);
+  }
   return {
     ...thread,
     messages,
+    activities: thread.activities.filter(
+      (activity) =>
+        activity.createdAt >= firstMessage.createdAt &&
+        (activity.turnId === null || visibleTurnIds.has(activity.turnId)),
+    ),
+    proposedPlans: thread.proposedPlans.filter((plan) => plan.createdAt >= firstMessage.createdAt),
     messageHistory: {
-      hasMoreBefore: true,
-      hasMoreAfter: false,
+      hasMoreBefore: thread.messageHistory.endIndex - messages.length > 0,
+      hasMoreAfter: thread.messageHistory.endIndex < thread.messageHistory.totalMessages,
+      startIndex: thread.messageHistory.endIndex - messages.length,
+      endIndex: thread.messageHistory.endIndex,
+      totalMessages: thread.messageHistory.totalMessages,
       cursor: {
         createdAt: firstMessage.createdAt,
         messageId: firstMessage.id,
@@ -83,8 +106,6 @@ function boundLiveThread(thread: OrchestrationThread): OrchestrationThread {
 function mergeThreadHistoryPages(input: {
   readonly older: OrchestrationThreadHistoryPage;
   readonly newer: OrchestrationThreadHistoryPage;
-  readonly hasMoreBefore: boolean;
-  readonly hasMoreAfter: boolean;
 }): OrchestrationThreadHistoryPage {
   const messages = [
     ...new Map(
@@ -114,13 +135,28 @@ function mergeThreadHistoryPages(input: {
       left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
   const firstMessage = messages[0];
+  const startIndex = Math.min(
+    input.older.messageHistory.startIndex,
+    input.newer.messageHistory.startIndex,
+  );
+  const endIndex = Math.max(
+    input.older.messageHistory.endIndex,
+    input.newer.messageHistory.endIndex,
+  );
+  const totalMessages = Math.max(
+    input.older.messageHistory.totalMessages,
+    input.newer.messageHistory.totalMessages,
+  );
   return {
     messages,
     activities,
     proposedPlans,
     messageHistory: {
-      hasMoreBefore: input.hasMoreBefore,
-      hasMoreAfter: input.hasMoreAfter,
+      hasMoreBefore: startIndex > 0,
+      hasMoreAfter: endIndex < totalMessages,
+      startIndex,
+      endIndex,
+      totalMessages,
       cursor:
         firstMessage === undefined
           ? null
@@ -148,6 +184,14 @@ function boundThreadHistoryPage(
   if (firstMessage === undefined || lastMessage === undefined) {
     return page;
   }
+  const startIndex =
+    preserve === "older"
+      ? page.messageHistory.startIndex
+      : page.messageHistory.endIndex - messages.length;
+  const endIndex =
+    preserve === "older"
+      ? page.messageHistory.startIndex + messages.length
+      : page.messageHistory.endIndex;
   return {
     messages,
     activities: page.activities.filter(
@@ -158,8 +202,11 @@ function boundThreadHistoryPage(
       (plan) => plan.createdAt >= firstMessage.createdAt && plan.createdAt <= lastMessage.createdAt,
     ),
     messageHistory: {
-      hasMoreBefore: preserve === "newer" ? true : page.messageHistory.hasMoreBefore,
-      hasMoreAfter: preserve === "older" ? true : page.messageHistory.hasMoreAfter,
+      hasMoreBefore: startIndex > 0,
+      hasMoreAfter: endIndex < page.messageHistory.totalMessages,
+      startIndex,
+      endIndex,
+      totalMessages: page.messageHistory.totalMessages,
       cursor: {
         createdAt: firstMessage.createdAt,
         messageId: firstMessage.id,
@@ -175,17 +222,34 @@ function displayThreadHistory(
   if (history.kind === "disabled" || history.window === null) {
     return liveThread;
   }
-  if (history.window.messageHistory.hasMoreAfter) {
+  const historyTurnIds = new Set(
+    history.window.messages.flatMap((message) => (message.turnId === null ? [] : [message.turnId])),
+  );
+  const visibleHistoryWindow = {
+    ...history.window,
+    activities: history.window.activities.filter(
+      (activity) => activity.turnId === null || historyTurnIds.has(activity.turnId),
+    ),
+  };
+  if (visibleHistoryWindow.messageHistory.hasMoreAfter) {
+    const totalMessages = Math.max(
+      visibleHistoryWindow.messageHistory.totalMessages,
+      liveThread.messageHistory?.totalMessages ?? liveThread.messages.length,
+    );
     return {
       ...liveThread,
-      messages: history.window.messages,
-      activities: history.window.activities,
-      proposedPlans: history.window.proposedPlans,
-      messageHistory: history.window.messageHistory,
+      messages: visibleHistoryWindow.messages,
+      activities: visibleHistoryWindow.activities,
+      proposedPlans: visibleHistoryWindow.proposedPlans,
+      messageHistory: {
+        ...visibleHistoryWindow.messageHistory,
+        hasMoreAfter: visibleHistoryWindow.messageHistory.endIndex < totalMessages,
+        totalMessages,
+      },
     };
   }
   const merged = mergeThreadHistoryPages({
-    older: history.window,
+    older: visibleHistoryWindow,
     newer: {
       messages: liveThread.messages,
       activities: liveThread.activities,
@@ -193,11 +257,12 @@ function displayThreadHistory(
       messageHistory: liveThread.messageHistory ?? {
         hasMoreBefore: false,
         hasMoreAfter: false,
+        startIndex: 0,
+        endIndex: liveThread.messages.length,
+        totalMessages: liveThread.messages.length,
         cursor: null,
       },
     },
-    hasMoreBefore: history.window.messageHistory.hasMoreBefore,
-    hasMoreAfter: false,
   });
   return {
     ...liveThread,
@@ -213,9 +278,40 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
+  const historyCache = yield* ThreadHistoryCacheStore;
   const snapshotLoader = yield* ThreadSnapshotLoader;
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
+  const cacheHistoryPage = Effect.fn("EnvironmentThreadState.cacheHistoryPage")(function* (
+    page: OrchestrationThreadHistoryPage,
+  ) {
+    yield* historyCache.save(environmentId, threadId, page).pipe(
+      Effect.catchTags({
+        ConnectionPersistenceError: (error) =>
+          Effect.logWarning("Could not persist cached thread history.").pipe(
+            Effect.annotateLogs({
+              environmentId,
+              threadId,
+              error: error.message,
+            }),
+          ),
+      }),
+    );
+  });
+  const clearHistoryCache = Effect.fn("EnvironmentThreadState.clearHistoryCache")(function* () {
+    yield* historyCache.remove(environmentId, threadId).pipe(
+      Effect.catchTags({
+        ConnectionPersistenceError: (error) =>
+          Effect.logWarning("Could not clear cached thread history.").pipe(
+            Effect.annotateLogs({
+              environmentId,
+              threadId,
+              error: error.message,
+            }),
+          ),
+      }),
+    );
+  });
   const cached = yield* cache.loadThread(environmentId, threadId).pipe(
     Effect.catch((error) =>
       Effect.logWarning("Could not load cached thread.").pipe(
@@ -274,6 +370,19 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         ),
       ),
     );
+    const firstMessage = snapshot.thread.messages[0];
+    if (snapshot.thread.messageHistory !== undefined && firstMessage !== undefined) {
+      yield* cacheHistoryPage({
+        messages: snapshot.thread.messages,
+        activities: snapshot.thread.activities.filter(
+          (activity) => activity.createdAt >= firstMessage.createdAt,
+        ),
+        proposedPlans: snapshot.thread.proposedPlans.filter(
+          (plan) => plan.createdAt >= firstMessage.createdAt,
+        ),
+        messageHistory: snapshot.thread.messageHistory,
+      });
+    }
   });
 
   yield* Stream.fromQueue(persistence).pipe(
@@ -405,13 +514,78 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return;
     }
 
+    const historyLookup = yield* historyCache
+      .loadPrevious(environmentId, threadId, sourceHistory.startIndex, THREAD_MESSAGE_PAGE_SIZE)
+      .pipe(
+        Effect.catchTags({
+          ConnectionPersistenceError: (error) =>
+            Effect.logWarning("Could not load cached previous thread messages.").pipe(
+              Effect.annotateLogs({
+                environmentId,
+                threadId,
+                error: error.message,
+              }),
+              Effect.as({
+                page: Option.none<OrchestrationThreadHistoryPage>(),
+                requestLimit: THREAD_MESSAGE_PAGE_SIZE,
+              }),
+            ),
+        }),
+      );
+    if (Option.isSome(historyLookup.page)) {
+      const liveMessages = currentLiveThread.value.messages;
+      const firstLiveMessage = liveMessages[0];
+      const currentWindow = current.history.window ?? {
+        messages: liveMessages,
+        activities:
+          firstLiveMessage === undefined
+            ? []
+            : currentLiveThread.value.activities.filter(
+                (activity) => activity.createdAt >= firstLiveMessage.createdAt,
+              ),
+        proposedPlans:
+          firstLiveMessage === undefined
+            ? []
+            : currentLiveThread.value.proposedPlans.filter(
+                (plan) => plan.createdAt >= firstLiveMessage.createdAt,
+              ),
+        messageHistory: currentLiveThread.value.messageHistory ?? {
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+          startIndex: 0,
+          endIndex: liveMessages.length,
+          totalMessages: liveMessages.length,
+          cursor: null,
+        },
+      };
+      const window = boundThreadHistoryPage(
+        mergeThreadHistoryPages({
+          older: historyLookup.page.value,
+          newer: currentWindow,
+        }),
+        "older",
+      );
+      const history: EnvironmentThreadHistoryState = { ...current.history, window };
+      yield* SubscriptionRef.set(state, {
+        ...current,
+        data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
+        history,
+      });
+      return;
+    }
+
     yield* SubscriptionRef.set(state, {
       ...current,
       history: { ...current.history, loading: "before" },
     });
     yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
-      const page = yield* snapshotLoader.loadPreviousMessages(prepared, threadId, cursor);
+      const page = yield* snapshotLoader.loadPreviousMessages(
+        prepared,
+        threadId,
+        cursor,
+        historyLookup.requestLimit,
+      );
       if (Option.isNone(page)) {
         return;
       }
@@ -444,6 +618,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         messageHistory: latestLiveThread.value.messageHistory ?? {
           hasMoreBefore: false,
           hasMoreAfter: false,
+          startIndex: 0,
+          endIndex: liveMessages.length,
+          totalMessages: liveMessages.length,
           cursor: null,
         },
       };
@@ -451,8 +628,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         mergeThreadHistoryPages({
           older: page.value,
           newer: currentWindow,
-          hasMoreBefore: page.value.messageHistory.hasMoreBefore,
-          hasMoreAfter: currentWindow.messageHistory.hasMoreAfter,
         }),
         "older",
       );
@@ -462,6 +637,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
+      yield* cacheHistoryPage(page.value);
     }).pipe(
       Effect.ensuring(
         SubscriptionRef.update(state, (latest) =>
@@ -492,16 +668,59 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return;
     }
 
+    const historyLookup = yield* historyCache
+      .loadNext(environmentId, threadId, window.messageHistory.endIndex, THREAD_MESSAGE_PAGE_SIZE)
+      .pipe(
+        Effect.catchTags({
+          ConnectionPersistenceError: (error) =>
+            Effect.logWarning("Could not load cached next thread messages.").pipe(
+              Effect.annotateLogs({
+                environmentId,
+                threadId,
+                error: error.message,
+              }),
+              Effect.as({
+                page: Option.none<OrchestrationThreadHistoryPage>(),
+                requestLimit: THREAD_MESSAGE_PAGE_SIZE,
+              }),
+            ),
+        }),
+      );
+    if (Option.isSome(historyLookup.page)) {
+      const nextWindow = boundThreadHistoryPage(
+        mergeThreadHistoryPages({
+          older: window,
+          newer: historyLookup.page.value,
+        }),
+        "newer",
+      );
+      const history: EnvironmentThreadHistoryState = {
+        ...current.history,
+        window: nextWindow,
+      };
+      yield* SubscriptionRef.set(state, {
+        ...current,
+        data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
+        history,
+      });
+      return;
+    }
+
     yield* SubscriptionRef.set(state, {
       ...current,
       history: { ...current.history, loading: "after" },
     });
     yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
-      const page = yield* snapshotLoader.loadNextMessages(prepared, threadId, {
-        createdAt: lastMessage.createdAt,
-        messageId: lastMessage.id,
-      });
+      const page = yield* snapshotLoader.loadNextMessages(
+        prepared,
+        threadId,
+        {
+          createdAt: lastMessage.createdAt,
+          messageId: lastMessage.id,
+        },
+        historyLookup.requestLimit,
+      );
       if (Option.isNone(page)) {
         return;
       }
@@ -520,8 +739,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         mergeThreadHistoryPages({
           older: latest.history.window,
           newer: page.value,
-          hasMoreBefore: latest.history.window.messageHistory.hasMoreBefore,
-          hasMoreAfter: page.value.messageHistory.hasMoreAfter,
         }),
         "newer",
       );
@@ -534,6 +751,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
+      yield* cacheHistoryPage(page.value);
     }).pipe(
       Effect.ensuring(
         SubscriptionRef.update(state, (latest) =>
@@ -553,17 +771,60 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     const current = yield* SubscriptionRef.get(state);
     if (current.history.kind === "disabled" || current.history.loading !== null) {
-      return;
+      return false;
+    }
+    const cachedPage = yield* historyCache
+      .loadAround(environmentId, threadId, messageId, THREAD_HISTORY_AROUND_PAGE_SIZE)
+      .pipe(
+        Effect.catchTags({
+          ConnectionPersistenceError: (error) =>
+            Effect.logWarning("Could not load cached thread messages around the target.").pipe(
+              Effect.annotateLogs({
+                environmentId,
+                threadId,
+                error: error.message,
+              }),
+              Effect.as(Option.none<OrchestrationThreadHistoryPage>()),
+            ),
+        }),
+      );
+    if (Option.isSome(cachedPage)) {
+      const currentLiveThread = yield* Ref.get(liveThread);
+      if (Option.isNone(currentLiveThread)) {
+        return false;
+      }
+      const totalMessages = Math.max(
+        cachedPage.value.messageHistory.totalMessages,
+        currentLiveThread.value.messageHistory?.totalMessages ??
+          currentLiveThread.value.messages.length,
+      );
+      const history: EnvironmentThreadHistoryState = {
+        ...current.history,
+        window: {
+          ...cachedPage.value,
+          messageHistory: {
+            ...cachedPage.value.messageHistory,
+            hasMoreAfter: cachedPage.value.messageHistory.endIndex < totalMessages,
+            totalMessages,
+          },
+        },
+      };
+      yield* SubscriptionRef.set(state, {
+        ...current,
+        data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
+        history,
+      });
+      return true;
     }
     yield* SubscriptionRef.set(state, {
       ...current,
       history: { ...current.history, loading: "around" },
     });
-    yield* Effect.gen(function* () {
+    return yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
       const page = yield* snapshotLoader.loadMessagesAround(prepared, threadId, messageId);
       if (Option.isNone(page)) {
-        return;
+        return false;
       }
 
       const latest = yield* SubscriptionRef.get(state);
@@ -573,7 +834,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         latest.history.loading !== "around" ||
         Option.isNone(latestLiveThread)
       ) {
-        return;
+        return false;
       }
       const history: EnvironmentThreadHistoryState = {
         ...latest.history,
@@ -584,6 +845,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
+      yield* cacheHistoryPage(page.value);
+      return true;
     }).pipe(
       Effect.ensuring(
         SubscriptionRef.update(state, (latest) =>
@@ -601,6 +864,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
     yield* Ref.set(awaitingCompletion, false);
     yield* Ref.set(liveThread, Option.none());
+    yield* clearHistoryCache();
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
       liveData: Option.none(),
@@ -635,6 +899,26 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     if (item.kind === "snapshot") {
+      const snapshotTotalMessages =
+        item.snapshot.thread.messageHistory?.totalMessages ?? item.snapshot.thread.messages.length;
+      const cachedTotalMessages = yield* historyCache
+        .loadTotalMessages(environmentId, threadId)
+        .pipe(
+          Effect.catchTags({
+            ConnectionPersistenceError: (error) =>
+              Effect.logWarning("Could not inspect cached thread history.").pipe(
+                Effect.annotateLogs({
+                  environmentId,
+                  threadId,
+                  error: error.message,
+                }),
+                Effect.as(Option.none<number>()),
+              ),
+          }),
+        );
+      if (Option.isSome(cachedTotalMessages) && cachedTotalMessages.value > snapshotTotalMessages) {
+        yield* clearHistoryCache();
+      }
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
       return;
@@ -658,6 +942,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       const sentUserMessage =
         item.event.type === "thread.message-sent" && item.event.payload.role === "user";
       if (item.event.type === "thread.reverted") {
+        yield* clearHistoryCache();
         const current = yield* SubscriptionRef.get(state);
         const refreshOutline =
           current.history.kind === "ready" && current.history.loading !== "outline";
@@ -835,7 +1120,7 @@ type EnvironmentThreadStateSubscription =
   SubscriptionRef.SubscriptionRef<EnvironmentThreadState> & {
     readonly loadPreviousMessages: Effect.Effect<void>;
     readonly loadNextMessages: Effect.Effect<void>;
-    readonly loadMessagesAround: (messageId: MessageId) => Effect.Effect<void>;
+    readonly loadMessagesAround: (messageId: MessageId) => Effect.Effect<boolean>;
   };
 
 export function threadStateChanges(

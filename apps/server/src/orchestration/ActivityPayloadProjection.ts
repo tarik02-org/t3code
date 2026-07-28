@@ -2,6 +2,7 @@ import type {
   OrchestrationEvent,
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryPage,
 } from "@t3tools/contracts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -210,6 +211,15 @@ export function projectThreadDetailSnapshot(
       ...snapshot.thread,
       activities: snapshot.thread.activities.map(projectActivityPayload),
     },
+  };
+}
+
+export function projectThreadHistoryPage(
+  page: OrchestrationThreadHistoryPage,
+): OrchestrationThreadHistoryPage {
+  return {
+    ...page,
+    activities: page.activities.map(projectActivityPayload),
   };
 }
 

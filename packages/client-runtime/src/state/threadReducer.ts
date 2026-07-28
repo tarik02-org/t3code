@@ -316,6 +316,19 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           messages,
+          ...(thread.messageHistory !== undefined && existingMessage === undefined
+            ? {
+                messageHistory: {
+                  ...thread.messageHistory,
+                  endIndex: thread.messageHistory.endIndex + 1,
+                  totalMessages: thread.messageHistory.totalMessages + 1,
+                  cursor: thread.messageHistory.cursor ?? {
+                    createdAt: message.createdAt,
+                    messageId: message.id,
+                  },
+                },
+              }
+            : {}),
           checkpoints,
           latestTurn,
           updatedAt: event.occurredAt,

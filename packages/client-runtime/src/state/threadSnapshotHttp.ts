@@ -80,6 +80,7 @@ export const fetchEnvironmentThreadMessagesBefore = Effect.fn(
   readonly prepared: PreparedConnection;
   readonly threadId: ThreadId;
   readonly before: OrchestrationThreadMessageCursor;
+  readonly limit: number;
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
   readonly timeoutMs?: number;
 }) {
@@ -91,7 +92,7 @@ export const fetchEnvironmentThreadMessagesBefore = Effect.fn(
   );
   requestUrl.searchParams.set("beforeCreatedAt", input.before.createdAt);
   requestUrl.searchParams.set("beforeMessageId", input.before.messageId);
-  requestUrl.searchParams.set("limit", String(THREAD_MESSAGE_PAGE_SIZE));
+  requestUrl.searchParams.set("limit", String(input.limit));
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
     input.prepared.httpAuthorization,
@@ -109,7 +110,7 @@ export const fetchEnvironmentThreadMessagesBefore = Effect.fn(
         query: {
           beforeCreatedAt: input.before.createdAt,
           beforeMessageId: input.before.messageId,
-          limit: THREAD_MESSAGE_PAGE_SIZE,
+          limit: input.limit,
         },
         headers,
       }),
@@ -123,6 +124,7 @@ export const fetchEnvironmentThreadMessagesAfter = Effect.fn(
   readonly prepared: PreparedConnection;
   readonly threadId: ThreadId;
   readonly after: OrchestrationThreadMessageCursor;
+  readonly limit: number;
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
   readonly timeoutMs?: number;
 }) {
@@ -134,7 +136,7 @@ export const fetchEnvironmentThreadMessagesAfter = Effect.fn(
   );
   requestUrl.searchParams.set("afterCreatedAt", input.after.createdAt);
   requestUrl.searchParams.set("afterMessageId", input.after.messageId);
-  requestUrl.searchParams.set("limit", String(THREAD_MESSAGE_PAGE_SIZE));
+  requestUrl.searchParams.set("limit", String(input.limit));
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
     input.prepared.httpAuthorization,
@@ -152,7 +154,7 @@ export const fetchEnvironmentThreadMessagesAfter = Effect.fn(
         query: {
           afterCreatedAt: input.after.createdAt,
           afterMessageId: input.after.messageId,
-          limit: THREAD_MESSAGE_PAGE_SIZE,
+          limit: input.limit,
         },
         headers,
       }),
@@ -249,11 +251,13 @@ export class ThreadSnapshotLoader extends Context.Service<
       prepared: PreparedConnection,
       threadId: ThreadId,
       before: OrchestrationThreadMessageCursor,
+      limit: number,
     ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>>;
     readonly loadNextMessages: (
       prepared: PreparedConnection,
       threadId: ThreadId,
       after: OrchestrationThreadMessageCursor,
+      limit: number,
     ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>>;
     readonly loadMessagesAround: (
       prepared: PreparedConnection,
@@ -315,8 +319,9 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
         prepared: PreparedConnection,
         threadId: ThreadId,
         before: OrchestrationThreadMessageCursor,
+        limit: number,
       ) =>
-        fetchEnvironmentThreadMessagesBefore({ prepared, threadId, before, signer }).pipe(
+        fetchEnvironmentThreadMessagesBefore({ prepared, threadId, before, limit, signer }).pipe(
           Effect.map(Option.some<OrchestrationThreadHistoryPage>),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({
@@ -337,8 +342,9 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
         prepared: PreparedConnection,
         threadId: ThreadId,
         after: OrchestrationThreadMessageCursor,
+        limit: number,
       ) =>
-        fetchEnvironmentThreadMessagesAfter({ prepared, threadId, after, signer }).pipe(
+        fetchEnvironmentThreadMessagesAfter({ prepared, threadId, after, limit, signer }).pipe(
           Effect.map(Option.some<OrchestrationThreadHistoryPage>),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({
