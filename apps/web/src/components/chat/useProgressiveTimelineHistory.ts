@@ -71,6 +71,7 @@ interface UseProgressiveTimelineHistoryInput {
   readonly isHistoryReady: boolean;
   readonly isLoadingNextMessages: boolean;
   readonly isLoadingPreviousMessages: boolean;
+  readonly latestMessagesRequest: number;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly messageHistory: OrchestrationThreadMessageHistory | undefined;
   readonly minimapItems: ReadonlyArray<TimelineHistoryNavigationTarget>;
@@ -91,6 +92,7 @@ export function useProgressiveTimelineHistory({
   isHistoryReady,
   isLoadingNextMessages,
   isLoadingPreviousMessages,
+  latestMessagesRequest,
   listRef,
   messageHistory,
   minimapItems,
@@ -123,6 +125,7 @@ export function useProgressiveTimelineHistory({
   const historyBeforeSkeletonsRef = useRef<HTMLDivElement>(null);
   const historyAfterSkeletonsRef = useRef<HTMLDivElement>(null);
   const historyInitializedRef = useRef(false);
+  const handledLatestMessagesRequestRef = useRef(latestMessagesRequest);
   const [listHeaderSize, setListHeaderSize] = useState(0);
   const [layoutMeasurement, setLayoutMeasurement] = useState<HistoryLayoutMeasurement | null>(null);
   const messageRowIndexById = useMemo(() => {
@@ -628,6 +631,16 @@ export function useProgressiveTimelineHistory({
     });
     onManualNavigation();
   }, [onManualNavigation, releaseScrollControl]);
+
+  useLayoutEffect(() => {
+    if (handledLatestMessagesRequestRef.current === latestMessagesRequest) {
+      return;
+    }
+    handledLatestMessagesRequestRef.current = latestMessagesRequest;
+    releaseScrollControl();
+    adjacentHistoryRequestRef.current = null;
+    historyInitializedRef.current = false;
+  }, [latestMessagesRequest, releaseScrollControl]);
 
   const handleListMetricsChange = useCallback(({ headerSize }: LegendListMetrics) => {
     setListHeaderSize((current) => (Math.abs(current - headerSize) <= 1 ? current : headerSize));

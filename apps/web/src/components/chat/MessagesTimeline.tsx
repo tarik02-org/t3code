@@ -194,6 +194,7 @@ interface MessagesTimelineProps {
   messageHistory?: OrchestrationThreadMessageHistory;
   isLoadingPreviousMessages?: boolean;
   isLoadingNextMessages?: boolean;
+  latestMessagesRequest?: number;
   isHistoryReady?: boolean;
   historyOutline?: OrchestrationThreadHistoryOutline | null;
   historyTargetMessageId?: MessageId | null;
@@ -239,6 +240,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   messageHistory,
   isLoadingPreviousMessages = false,
   isLoadingNextMessages = false,
+  latestMessagesRequest = 0,
   isHistoryReady = false,
   historyOutline = null,
   historyTargetMessageId = null,
@@ -366,6 +368,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     isHistoryReady,
     isLoadingNextMessages,
     isLoadingPreviousMessages,
+    latestMessagesRequest,
     listRef,
     messageHistory,
     minimapItems,

@@ -1154,6 +1154,9 @@ function ChatViewContent(props: ChatViewProps) {
   const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
     reportFailure: false,
   });
+  const showLatestMessages = useAtomCommand(environmentThreads.showLatestMessages, {
+    reportFailure: false,
+  });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1253,6 +1256,7 @@ function ChatViewContent(props: ChatViewProps) {
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [latestMessagesRequest, setLatestMessagesRequest] = useState(0);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
@@ -3535,16 +3539,59 @@ function ChatViewContent(props: ChatViewProps) {
 
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
-  const scrollToEnd = useCallback((animated = false) => {
-    isAtEndRef.current = true;
-    timelineScrollModeRef.current = "following-end";
-    liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
-    pendingTimelineAnchorRef.current = null;
-    activeTimelineAnchorIndexRef.current = null;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    void legendListRef.current?.scrollToEnd?.({ animated });
-  }, []);
+  const scrollToEnd = useCallback(
+    (animated = false) => {
+      const userScrollGeneration = anchorUserScrollGenerationRef.current;
+      isAtEndRef.current = true;
+      timelineScrollModeRef.current = "following-end";
+      liveFollowUserScrollGenerationRef.current = userScrollGeneration;
+      pendingTimelineAnchorRef.current = null;
+      positionedTimelineAnchorRef.current = null;
+      settledTimelineAnchorRef.current = null;
+      activeTimelineAnchorIndexRef.current = null;
+      pendingAnchorScrollRestoreRef.current = null;
+      if (anchorScrollRestoreFrameRef.current !== null) {
+        cancelAnimationFrame(anchorScrollRestoreFrameRef.current);
+        anchorScrollRestoreFrameRef.current = null;
+      }
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+
+      if (activeThread?.messageHistory?.hasMoreAfter !== true) {
+        void legendListRef.current?.scrollToEnd?.({ animated });
+        return;
+      }
+
+      setLatestMessagesRequest((request) => request + 1);
+      void showLatestMessages({
+        environmentId,
+        input: { threadId },
+      }).then((result) => {
+        if (
+          result._tag !== "Success" ||
+          !result.value ||
+          liveFollowUserScrollGenerationRef.current !== userScrollGeneration
+        ) {
+          if (liveFollowUserScrollGenerationRef.current === userScrollGeneration) {
+            isAtEndRef.current = false;
+            timelineScrollModeRef.current = "free-scrolling";
+            liveFollowUserScrollGenerationRef.current = null;
+            setShowScrollToBottom(true);
+          }
+          return;
+        }
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (liveFollowUserScrollGenerationRef.current !== userScrollGeneration) {
+              return;
+            }
+            void legendListRef.current?.scrollToEnd?.({ animated: false });
+          });
+        });
+      });
+    },
+    [activeThread?.messageHistory?.hasMoreAfter, environmentId, showLatestMessages, threadId],
+  );
   useEffect(() => {
     let removeListeners: (() => void) | null = null;
     const frame = requestAnimationFrame(() => {
@@ -5972,6 +6019,7 @@ function ChatViewContent(props: ChatViewProps) {
                   environmentThreadState.history.kind === "ready" &&
                   environmentThreadState.history.loading === "after"
                 }
+                latestMessagesRequest={latestMessagesRequest}
                 isHistoryReady={environmentThreadState.status === "live"}
                 historyOutline={
                   environmentThreadState.history.kind === "ready"

@@ -492,7 +492,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  let latestHistoryWindowRequestId = 0;
   const loadPreviousMessages = Effect.gen(function* () {
+    const requestId = ++latestHistoryWindowRequestId;
     const current = yield* SubscriptionRef.get(state);
     const currentLiveThread = yield* Ref.get(liveThread);
     if (
@@ -533,6 +535,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }),
       );
     if (Option.isSome(historyLookup.page)) {
+      if (requestId !== latestHistoryWindowRequestId) {
+        return false;
+      }
       const liveMessages = currentLiveThread.value.messages;
       const firstLiveMessage = liveMessages[0];
       const currentWindow = current.history.window ?? {
@@ -593,6 +598,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       const latest = yield* SubscriptionRef.get(state);
       const latestLiveThread = yield* Ref.get(liveThread);
       if (
+        requestId !== latestHistoryWindowRequestId ||
         latest.history.kind === "disabled" ||
         latest.history.loading !== "before" ||
         Option.isNone(latestLiveThread)
@@ -654,6 +660,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   });
 
   const loadNextMessages = Effect.gen(function* () {
+    const requestId = ++latestHistoryWindowRequestId;
     const current = yield* SubscriptionRef.get(state);
     const currentLiveThread = yield* Ref.get(liveThread);
     const window = current.history.kind === "ready" ? current.history.window : null;
@@ -688,6 +695,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }),
       );
     if (Option.isSome(historyLookup.page)) {
+      if (requestId !== latestHistoryWindowRequestId) {
+        return false;
+      }
       const nextWindow = boundThreadHistoryPage(
         mergeThreadHistoryPages({
           older: window,
@@ -729,6 +739,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       const latest = yield* SubscriptionRef.get(state);
       const latestLiveThread = yield* Ref.get(liveThread);
       if (
+        requestId !== latestHistoryWindowRequestId ||
         latest.history.kind === "disabled" ||
         latest.history.loading !== "after" ||
         latest.history.window === null ||
@@ -858,6 +869,27 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         ),
       ),
     );
+  });
+
+  const showLatestMessages = Effect.gen(function* () {
+    latestAroundRequestId += 1;
+    latestHistoryWindowRequestId += 1;
+    const current = yield* SubscriptionRef.get(state);
+    const currentLiveThread = yield* Ref.get(liveThread);
+    if (current.history.kind === "disabled" || Option.isNone(currentLiveThread)) {
+      return false;
+    }
+    const history: EnvironmentThreadHistoryState = {
+      ...current.history,
+      window: null,
+      loading: current.history.loading === "outline" ? "outline" : null,
+    };
+    yield* SubscriptionRef.set(state, {
+      ...current,
+      data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
+      history,
+    });
+    return true;
   });
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
@@ -1112,6 +1144,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     loadPreviousMessages,
     loadNextMessages,
     loadMessagesAround,
+    showLatestMessages,
   });
 });
 
@@ -1120,6 +1153,7 @@ type EnvironmentThreadStateSubscription =
     readonly loadPreviousMessages: Effect.Effect<boolean>;
     readonly loadNextMessages: Effect.Effect<boolean>;
     readonly loadMessagesAround: (messageId: MessageId) => Effect.Effect<boolean>;
+    readonly showLatestMessages: Effect.Effect<boolean>;
   };
 
 export function threadStateChanges(
@@ -1215,6 +1249,23 @@ export function createEnvironmentThreadStateAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId, input }) => threadKey({ environmentId, threadId: input.threadId }),
       },
+    }),
+    showLatestMessages: createEnvironmentCommand(runtime, {
+      label: "environment-data:thread:show-latest-messages",
+      execute: (input: { readonly threadId: ThreadIdType }) =>
+        EnvironmentSupervisor.pipe(
+          Effect.flatMap((supervisor) => {
+            const subscription = subscriptions.get(
+              threadKey({
+                environmentId: supervisor.target.environmentId,
+                threadId: input.threadId,
+              }),
+            );
+            return subscription?.showLatestMessages ?? Effect.succeed(false);
+          }),
+        ),
+      scheduler,
+      concurrency: { mode: "parallel" },
     }),
     loadMessagesAround: createEnvironmentCommand(runtime, {
       label: "environment-data:thread:load-messages-around",

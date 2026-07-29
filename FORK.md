@@ -72,6 +72,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   share one fixed per-message scroll axis and load the nearest landmark window through a trailing
   throttle. When a viewport straddles the active segment boundary, the client extends that segment
   with the adjacent page and anchors a rendered message while the virtual spacer is replaced.
+  Scroll-to-end leaves historical navigation state and returns directly to the bounded live tail.
   Unloaded ranges keep their fixed virtual size while the active segment contributes its measured
   height. Segment changes use Legend List's data version instead of manually clearing its layout
   caches.
