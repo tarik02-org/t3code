@@ -56,6 +56,9 @@ function AutoSettleDaysInput({
 
 export function BetaSettingsPanel() {
   const sidebarV2Enabled = useSidebarV2Enabled();
+  const progressiveThreadHistoryEnabled = useClientSettings(
+    (settings) => settings.progressiveThreadHistoryEnabled,
+  );
   const sidebarAutoSettleAfterDays = useClientSettings(
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
@@ -64,6 +67,19 @@ export function BetaSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection title="Beta features">
+        <SettingsRow
+          title="Progressive thread history"
+          description="Load large thread histories in pages and navigate them with a timeline minimap."
+          control={
+            <Switch
+              checked={progressiveThreadHistoryEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ progressiveThreadHistoryEnabled: Boolean(checked) })
+              }
+              aria-label="Enable progressive thread history"
+            />
+          }
+        />
         <SettingsRow
           title="Sidebar v2"
           description="One flat thread list in creation order. Active work renders as rich cards; settled threads collapse to compact rows. Settling requires an up-to-date server — on older servers threads simply stay active. Switch back any time."

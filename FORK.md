@@ -65,6 +65,9 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   cache. Messages, activities, and plans are stored once and reused for covered history ranges.
   Cached records are schema-decoded independently so large activity batches cannot stall on a
   cooperative runtime yield.
+- The mobile client keeps recently fetched thread-history pages in a bounded, session-only
+  in-memory LRU. It avoids repeat requests while browsing nearby segments without adding mobile
+  database state or migrations.
 
 ### Goals UI
 
@@ -84,15 +87,17 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 ### UX Changes
 
+- Progressive thread history is a client-local beta setting and defaults to off. Disabled clients
+  use the full-history subscription and do not request bounded message pages.
 - Thread detail snapshots keep a bounded live tail. Historical browsing uses bounded,
-  bidirectional keyset windows, while the web minimap samples landmarks across the full thread and
-  loads the selected segment on demand. One LegendList owns both live and historical scrolling, and
-  its visible-content anchoring stabilizes page changes and late row measurements. The local
-  scrollbar only represents the current bounded segment; the minimap is the global
+  bidirectional keyset windows, while the web minimap indexes every user message across the full
+  thread and loads the selected segment on demand. One LegendList owns both live and historical
+  scrolling, and its visible-content anchoring stabilizes page changes and late row measurements.
+  The local scrollbar only represents the current bounded segment; the minimap is the global
   conversation-indexed scrubber. Historical windows retain every message, cap work telemetry per
   segment, and only display activity for turns represented by the active message window. Reaching a
-  segment edge loads the adjacent window without moving visible rows. Scroll-to-end returns directly
-  to the bounded live tail.
+  segment edge loads the adjacent window without moving visible rows. Scroll-to-end returns
+  directly to the bounded live tail.
 - Paginated history responses use the same client-facing activity payload projection as full thread
   snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
   The persisted activity remains unchanged.

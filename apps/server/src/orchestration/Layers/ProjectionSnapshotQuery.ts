@@ -12,7 +12,6 @@ import {
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadHistoryPage,
-  ORCHESTRATION_THREAD_HISTORY_OUTLINE_MAX_LANDMARKS,
   ProjectScript,
   TurnId,
   type OrchestrationCheckpointSummary,
@@ -151,7 +150,6 @@ const ThreadHistoryRangeLookupInput = Schema.Struct({
 });
 const ThreadHistoryOutlineLookupInput = Schema.Struct({
   threadId: ThreadId,
-  maxLandmarks: PositiveInt,
 });
 const ProjectionThreadHistoryLandmarkRowSchema = Schema.Struct({
   messageId: MessageId,
@@ -510,7 +508,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listThreadHistoryLandmarkRows = SqlSchema.findAll({
     Request: ThreadHistoryOutlineLookupInput,
     Result: ProjectionThreadHistoryLandmarkRowSchema,
-    execute: ({ threadId, maxLandmarks }) =>
+    execute: ({ threadId }) =>
       sql`
         WITH message_order AS (
           SELECT
@@ -521,7 +519,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM projection_thread_messages
           WHERE thread_id = ${threadId}
         ),
-        ranked AS (
+        user_messages AS (
           SELECT
             message_id,
             created_at,
@@ -530,38 +528,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             COUNT(*) OVER () AS total_user_messages
           FROM message_order
           WHERE role = 'user'
-        ),
-        bucketed AS (
-          SELECT
-            *,
-            CASE
-              WHEN total_user_messages <= ${maxLandmarks} THEN ordinal
-              ELSE CAST(
-                ordinal * (${maxLandmarks} - 1) / (total_user_messages - 1)
-                AS INTEGER
-              )
-            END AS bucket
-          FROM ranked
-        ),
-        sampled AS (
-          SELECT bucket, MIN(ordinal) AS ordinal
-          FROM bucketed
-          GROUP BY bucket
         )
         SELECT
-          bucketed.message_id AS "messageId",
-          bucketed.ordinal,
-          bucketed.message_index AS "messageIndex",
-          bucketed.created_at AS "createdAt",
+          user_messages.message_id AS "messageId",
+          user_messages.ordinal,
+          user_messages.message_index AS "messageIndex",
+          user_messages.created_at AS "createdAt",
           substr(messages.text, 1, 240) AS preview,
-          bucketed.total_user_messages AS "totalUserMessages"
-        FROM bucketed
-        INNER JOIN sampled
-          ON sampled.bucket = bucketed.bucket
-          AND sampled.ordinal = bucketed.ordinal
+          user_messages.total_user_messages AS "totalUserMessages"
+        FROM user_messages
         INNER JOIN projection_thread_messages AS messages
-          ON messages.message_id = bucketed.message_id
-        ORDER BY bucketed.ordinal ASC
+          ON messages.message_id = user_messages.message_id
+        ORDER BY user_messages.ordinal ASC
       `,
   });
   const loadThreadHistoryRange = Effect.fn("ProjectionSnapshotQuery.loadThreadHistoryRange")(
@@ -810,10 +788,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   )(function* (threadId: ThreadId) {
     const [thread, rows] = yield* Effect.all([
       getActiveThreadForHistory({ threadId }),
-      listThreadHistoryLandmarkRows({
-        threadId,
-        maxLandmarks: ORCHESTRATION_THREAD_HISTORY_OUTLINE_MAX_LANDMARKS,
-      }),
+      listThreadHistoryLandmarkRows({ threadId }),
     ]).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(

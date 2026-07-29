@@ -6,6 +6,7 @@ import {
   PrimaryEnvironmentAuth,
   RelayDeviceIdentity,
   SshEnvironmentGateway,
+  ThreadHistoryCacheStore,
 } from "@t3tools/client-runtime/platform";
 import {
   ConnectionBlockedError,
@@ -181,25 +182,32 @@ const providedCapabilitiesLayer = capabilitiesLayer.pipe(
   Layer.provide(Runtime.runtimeContextLayer),
 );
 
-const environmentOwnedDataCleanupLayer = Layer.succeed(
+const environmentOwnedDataCleanupLayer = Layer.effect(
   EnvironmentOwnedDataCleanup,
-  EnvironmentOwnedDataCleanup.of({
-    clear: (environmentId) =>
-      Effect.all(
-        [
-          Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
-          Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
-        ],
-        { concurrency: "unbounded", discard: true },
-      ).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not clear mobile environment-owned data.", {
-            environmentId,
-            cause,
-          }),
+  Effect.gen(function* () {
+    const historyCache = yield* ThreadHistoryCacheStore;
+    return EnvironmentOwnedDataCleanup.of({
+      clear: (environmentId) =>
+        Effect.all(
+          [
+            Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
+            Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
+            historyCache.clear(environmentId),
+          ],
+          { concurrency: "unbounded", discard: true },
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not clear mobile environment-owned data.", {
+              environmentId,
+              cause,
+            }),
+          ),
         ),
-      ),
+    });
   }),
+);
+const providedEnvironmentOwnedDataCleanupLayer = environmentOwnedDataCleanupLayer.pipe(
+  Layer.provide(Runtime.runtimeContextLayer),
 );
 
 type ConnectionPlatformLayerSource =
@@ -209,7 +217,7 @@ type ConnectionPlatformLayerSource =
   | typeof wakeupsLayer
   | typeof providedCapabilitiesLayer
   | typeof platformConnectionSourceLayer
-  | typeof environmentOwnedDataCleanupLayer;
+  | typeof providedEnvironmentOwnedDataCleanupLayer;
 
 export const connectionPlatformLayer: Layer.Layer<
   Layer.Success<ConnectionPlatformLayerSource>,
@@ -222,5 +230,5 @@ export const connectionPlatformLayer: Layer.Layer<
   wakeupsLayer,
   providedCapabilitiesLayer,
   platformConnectionSourceLayer,
-  environmentOwnedDataCleanupLayer,
+  providedEnvironmentOwnedDataCleanupLayer,
 );

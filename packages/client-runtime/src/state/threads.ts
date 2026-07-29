@@ -46,6 +46,13 @@ import {
 
 const THREAD_HISTORY_WINDOW_MAX_MESSAGES = 250;
 
+export interface EnvironmentThreadStateOptions {
+  readonly messagePagination?: {
+    readonly enabled: () => boolean;
+    readonly changes?: Stream.Stream<boolean>;
+  };
+}
+
 function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
 }
@@ -276,6 +283,7 @@ function displayThreadHistory(
 
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
+  options?: EnvironmentThreadStateOptions,
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
@@ -326,10 +334,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     ),
   );
   const cachedThread = Option.map(cached, (snapshot) => boundLiveThread(snapshot.thread));
-  const initiallyVisibleCachedThread = Option.filter(
-    cachedThread,
-    (thread) =>
-      thread.messageHistory !== undefined || thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE,
+  const initiallyMessagePaginationEnabled = options?.messagePagination?.enabled() ?? true;
+  const initiallyVisibleCachedThread = Option.filter(cachedThread, (thread) =>
+    initiallyMessagePaginationEnabled
+      ? thread.messageHistory !== undefined || thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE
+      : thread.messageHistory === undefined,
   );
   const state = yield* SubscriptionRef.make<EnvironmentThreadState>({
     data: initiallyVisibleCachedThread,
@@ -1078,6 +1087,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const snapshotResubscriptions = SubscriptionRef.changes(threadSnapshotRefreshes).pipe(
     Stream.filter((revision) => revision > 0),
   );
+  const messagePaginationResubscriptions = options?.messagePagination?.changes ?? Stream.never;
   yield* SubscriptionRef.changes(messagePaginationSupported).pipe(
     Stream.filter((supported) => supported),
     Stream.runForEach(() => loadHistoryOutline),
@@ -1093,10 +1103,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   yield* Effect.forkScoped(
     subscribeDynamicRequest(
       Effect.fn("EnvironmentThreadState.makeSubscriptionRequest")(function* (session) {
+        const messagePaginationEnabled = options?.messagePagination?.enabled() ?? true;
         const subscriptionCapabilities = yield* session.initialConfig.pipe(
           Effect.map((config) => ({
             completionMarker: config.threadResumeCompletionMarker === true,
-            messagePagination: config.threadMessagePagination === true,
+            messagePagination: messagePaginationEnabled && config.threadMessagePagination === true,
             threadDeltaSubscription:
               config.environment?.capabilities.threadDeltaSubscription === true,
           })),
@@ -1186,7 +1197,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       {
         onExpectedFailure: setStreamError,
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: Stream.merge(foregroundResubscriptions, snapshotResubscriptions),
+        resubscribe: Stream.merge(
+          foregroundResubscriptions,
+          Stream.merge(snapshotResubscriptions, messagePaginationResubscriptions),
+        ),
       },
     ).pipe(Stream.runForEach(applyItem)),
   );
@@ -1225,12 +1239,13 @@ export function threadStateChanges(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
   subscriptions?: Map<string, EnvironmentThreadStateSubscription>,
+  options?: EnvironmentThreadStateOptions,
 ) {
   const key = threadKey({ environmentId, threadId });
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
-      makeEnvironmentThreadState(threadId).pipe(
+      makeEnvironmentThreadState(threadId, options).pipe(
         Effect.flatMap((subscription) =>
           subscriptions === undefined
             ? Effect.succeed(SubscriptionRef.changes(subscription))
@@ -1257,13 +1272,14 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     EnvironmentRegistry | EnvironmentCacheStore | ThreadSnapshotLoader | R,
     E
   >,
+  options?: EnvironmentThreadStateOptions,
 ) {
   const subscriptions = new Map<string, EnvironmentThreadStateSubscription>();
   const scheduler = createAtomCommandScheduler();
   const family = Atom.family((key: string) => {
     const { environmentId, threadId } = parseThreadKey(key);
     return runtime
-      .atom(threadStateChanges(environmentId, threadId, subscriptions), {
+      .atom(threadStateChanges(environmentId, threadId, subscriptions, options), {
         initialValue: EMPTY_ENVIRONMENT_THREAD_STATE,
       })
       .pipe(

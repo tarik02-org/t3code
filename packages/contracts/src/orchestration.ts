@@ -365,7 +365,6 @@ export const OrchestrationLatestTurn = Schema.Struct({
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 export const ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT = 200;
-export const ORCHESTRATION_THREAD_HISTORY_OUTLINE_MAX_LANDMARKS = 128;
 
 export const OrchestrationThreadMessageCursor = Schema.Struct({
   createdAt: IsoDateTime,
