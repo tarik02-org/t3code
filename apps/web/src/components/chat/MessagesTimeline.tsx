@@ -370,6 +370,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     historyHeaderSize + (isLoadingPreviousMessages ? TIMELINE_HISTORY_LOADING_SIZE : 0);
   const historyAfterSize = isLoadingNextMessages ? TIMELINE_HISTORY_LOADING_SIZE : 0;
   const historyVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    anchorTo: "end",
     count: messageHistory === undefined ? 0 : rows.length,
     enabled: messageHistory !== undefined,
     estimateSize: () => 90,
@@ -588,10 +589,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             <div
               ref={setHistoryScrollElement}
               className={cn(
-                "h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
-                minimapHitStripWidth > 0
-                  ? "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                  : "scrollbar-gutter-both",
+                "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
                 topFadeEnabled && "chat-timeline-scroll-fade",
               )}
               onScroll={progressiveHistory.handleScroll}
