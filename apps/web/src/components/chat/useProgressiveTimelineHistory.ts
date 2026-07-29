@@ -82,6 +82,7 @@ export function useProgressiveTimelineHistory({
     readonly viewportOffset: number;
   } | null>(null);
   const pageRequestDirectionRef = useRef<HistoryPageDirection | null>(null);
+  const pageRequestHadLoadingRef = useRef(false);
   const manualInputRef = useRef(false);
   const manualInputTimeoutRef = useRef<number | null>(null);
   const ignoreScrollRef = useRef(false);
@@ -270,6 +271,7 @@ export function useProgressiveTimelineHistory({
 
       pendingPageAnchorRef.current = { ...anchor, direction };
       pageRequestDirectionRef.current = direction;
+      pageRequestHadLoadingRef.current = false;
       void load().then((loaded) => {
         if (pageRequestDirectionRef.current !== direction) {
           return;
@@ -277,6 +279,7 @@ export function useProgressiveTimelineHistory({
         pageRequestDirectionRef.current = null;
         if (!loaded) {
           pendingPageAnchorRef.current = null;
+          pageRequestHadLoadingRef.current = false;
         }
       });
     },
@@ -551,6 +554,7 @@ export function useProgressiveTimelineHistory({
       };
       pendingPageAnchorRef.current = null;
       pageRequestDirectionRef.current = null;
+      pageRequestHadLoadingRef.current = false;
       if (messageHistory === undefined) {
         if (item.rowIndex !== null) {
           void listRef.current?.scrollToIndex({
@@ -589,15 +593,33 @@ export function useProgressiveTimelineHistory({
     const isLoading =
       pendingAnchor.direction === "before" ? isLoadingPreviousMessages : isLoadingNextMessages;
     const pageChanged = historyWindowKey !== pendingAnchor.originWindowKey;
-    if (!isLoading && pageChanged) {
-      activeMessageAnchorRef.current = {
-        messageId: pendingAnchor.messageId,
-        viewportOffset: pendingAnchor.viewportOffset,
-      };
-      pendingPageAnchorRef.current = null;
+    if (isLoading) {
+      pageRequestHadLoadingRef.current = true;
+      if (pageChanged) {
+        cancelAlignment();
+      } else {
+        alignMessage(pendingAnchor.messageId, pendingAnchor.viewportOffset);
+      }
+      return;
     }
-    alignMessage(pendingAnchor.messageId, pendingAnchor.viewportOffset);
-  }, [alignMessage, historyWindowKey, isLoadingNextMessages, isLoadingPreviousMessages, rows]);
+    if (pageChanged || pageRequestHadLoadingRef.current) {
+      const shouldAlignSkeletonRemoval = pageRequestHadLoadingRef.current;
+      pendingPageAnchorRef.current = null;
+      pageRequestHadLoadingRef.current = false;
+      if (shouldAlignSkeletonRemoval) {
+        alignMessage(pendingAnchor.messageId, pendingAnchor.viewportOffset);
+      } else {
+        cancelAlignment();
+      }
+    }
+  }, [
+    alignMessage,
+    cancelAlignment,
+    historyWindowKey,
+    isLoadingNextMessages,
+    isLoadingPreviousMessages,
+    rows,
+  ]);
 
   useLayoutEffect(() => {
     if (historyTargetMessageId === null || messageHistory === undefined) {
@@ -623,6 +645,7 @@ export function useProgressiveTimelineHistory({
       pendingPageAnchorRef.current = null;
       activeMessageAnchorRef.current = null;
       pageRequestDirectionRef.current = null;
+      pageRequestHadLoadingRef.current = false;
       lastScrollTopRef.current = null;
       followEndRef.current = true;
     }
@@ -633,6 +656,7 @@ export function useProgressiveTimelineHistory({
       pendingPageAnchorRef.current = null;
       activeMessageAnchorRef.current = null;
       pageRequestDirectionRef.current = null;
+      pageRequestHadLoadingRef.current = false;
     }
     if (
       messageHistory === undefined ||
