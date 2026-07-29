@@ -194,10 +194,13 @@ interface MessagesTimelineProps {
   messageHistory?: OrchestrationThreadMessageHistory;
   isLoadingPreviousMessages?: boolean;
   isLoadingNextMessages?: boolean;
+  isHistoryReady?: boolean;
   historyOutline?: OrchestrationThreadHistoryOutline | null;
   historyTargetMessageId?: MessageId | null;
   onSelectHistoryMessage?: (messageId: MessageId) => void;
   onHistoryTargetReady?: () => void;
+  onLoadPreviousMessages?: () => Promise<boolean>;
+  onLoadNextMessages?: () => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,10 +239,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   messageHistory,
   isLoadingPreviousMessages = false,
   isLoadingNextMessages = false,
+  isHistoryReady = false,
   historyOutline = null,
   historyTargetMessageId = null,
   onSelectHistoryMessage,
   onHistoryTargetReady,
+  onLoadPreviousMessages,
+  onLoadNextMessages,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -357,6 +363,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const progressiveHistory = useProgressiveTimelineHistory({
     historyOutline,
     historyTargetMessageId,
+    isHistoryReady,
     isLoadingNextMessages,
     isLoadingPreviousMessages,
     listRef,
@@ -365,6 +372,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     minimapStripMap,
     onHistoryTargetReady,
     onIsAtEndChange,
+    onLoadNextMessages,
+    onLoadPreviousMessages,
     onManualNavigation,
     onSelectHistoryMessage,
     rows,
@@ -574,6 +583,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 <div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />
               )
             }
+            {...(messageHistory === undefined
+              ? {}
+              : { ListHeaderComponentStyle: { height: progressiveHistory.historyBeforeSize } })}
             ListFooterComponent={
               messageHistory !== undefined ? (
                 <div
@@ -595,6 +607,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 TIMELINE_LIST_FOOTER
               )
             }
+            {...(messageHistory === undefined
+              ? {}
+              : { ListFooterComponentStyle: { height: progressiveHistory.historyAfterSize } })}
           />
           <TimelineMinimap
             items={minimapItems}

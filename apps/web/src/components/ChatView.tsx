@@ -1148,6 +1148,12 @@ function ChatViewContent(props: ChatViewProps) {
   const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
     reportFailure: false,
   });
+  const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
+    reportFailure: false,
+  });
+  const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
+    reportFailure: false,
+  });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1450,6 +1456,20 @@ function ChatViewContent(props: ChatViewProps) {
       current.messageId === null ? current : { ...current, messageId: null },
     );
   }, []);
+  const handleLoadPreviousMessages = useCallback(async () => {
+    const result = await loadPreviousMessages({
+      environmentId,
+      input: { threadId },
+    });
+    return result._tag === "Success" && result.value;
+  }, [environmentId, loadPreviousMessages, threadId]);
+  const handleLoadNextMessages = useCallback(async () => {
+    const result = await loadNextMessages({
+      environmentId,
+      input: { threadId },
+    });
+    return result._tag === "Success" && result.value;
+  }, [environmentId, loadNextMessages, threadId]);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
     : localDraftError;
@@ -5945,12 +5965,14 @@ function ChatViewContent(props: ChatViewProps) {
                 isLoadingPreviousMessages={
                   environmentThreadState.history.kind === "ready" &&
                   (environmentThreadState.history.loading === "before" ||
-                    environmentThreadState.history.loading === "around")
+                    environmentThreadState.history.loading === "around" ||
+                    environmentThreadState.history.loading === "outline")
                 }
                 isLoadingNextMessages={
                   environmentThreadState.history.kind === "ready" &&
                   environmentThreadState.history.loading === "after"
                 }
+                isHistoryReady={environmentThreadState.status === "live"}
                 historyOutline={
                   environmentThreadState.history.kind === "ready"
                     ? environmentThreadState.history.outline
@@ -5959,6 +5981,8 @@ function ChatViewContent(props: ChatViewProps) {
                 historyTargetMessageId={historyTarget.messageId}
                 onSelectHistoryMessage={handleSelectHistoryMessage}
                 onHistoryTargetReady={handleHistoryTargetReady}
+                onLoadPreviousMessages={handleLoadPreviousMessages}
+                onLoadNextMessages={handleLoadNextMessages}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

@@ -70,9 +70,11 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   windows retain every message, cap work telemetry per segment, and only display activity for turns
   represented by the active message window. Viewport navigation, minimap jumps, and unloaded spacers
   share one fixed per-message scroll axis and load the nearest landmark window through a trailing
-  throttle instead of chaining relative before/after page loads. Unloaded ranges keep their fixed
-  virtual size while the active segment contributes its measured height. Segment changes use Legend
-  List's data version instead of manually clearing its layout caches.
+  throttle. When a viewport straddles the active segment boundary, the client extends that segment
+  with the adjacent page and anchors a rendered message while the virtual spacer is replaced.
+  Unloaded ranges keep their fixed virtual size while the active segment contributes its measured
+  height. Segment changes use Legend List's data version instead of manually clearing its layout
+  caches.
 - Paginated history responses use the same client-facing activity payload projection as full thread
   snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
   The persisted activity remains unchanged.

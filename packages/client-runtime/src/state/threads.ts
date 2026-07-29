@@ -500,7 +500,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       current.history.loading !== null ||
       Option.isNone(currentLiveThread)
     ) {
-      return;
+      return false;
     }
     const sourceHistory =
       current.history.window?.messageHistory ?? currentLiveThread.value.messageHistory;
@@ -511,7 +511,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       cursor === null ||
       cursor === undefined
     ) {
-      return;
+      return false;
     }
 
     const historyLookup = yield* historyCache
@@ -571,14 +571,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
         history,
       });
-      return;
+      return true;
     }
 
     yield* SubscriptionRef.set(state, {
       ...current,
       history: { ...current.history, loading: "before" },
     });
-    yield* Effect.gen(function* () {
+    return yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
       const page = yield* snapshotLoader.loadPreviousMessages(
         prepared,
@@ -587,7 +587,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         historyLookup.requestLimit,
       );
       if (Option.isNone(page)) {
-        return;
+        return false;
       }
 
       const latest = yield* SubscriptionRef.get(state);
@@ -597,7 +597,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         latest.history.loading !== "before" ||
         Option.isNone(latestLiveThread)
       ) {
-        return;
+        return false;
       }
       const liveMessages = latestLiveThread.value.messages;
       const firstLiveMessage = liveMessages[0];
@@ -638,6 +638,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         history,
       });
       yield* cacheHistoryPage(page.value);
+      return true;
     }).pipe(
       Effect.ensuring(
         SubscriptionRef.update(state, (latest) =>
@@ -665,7 +666,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       lastMessage === undefined ||
       Option.isNone(currentLiveThread)
     ) {
-      return;
+      return false;
     }
 
     const historyLookup = yield* historyCache
@@ -703,14 +704,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
         history,
       });
-      return;
+      return true;
     }
 
     yield* SubscriptionRef.set(state, {
       ...current,
       history: { ...current.history, loading: "after" },
     });
-    yield* Effect.gen(function* () {
+    return yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
       const page = yield* snapshotLoader.loadNextMessages(
         prepared,
@@ -722,7 +723,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         historyLookup.requestLimit,
       );
       if (Option.isNone(page)) {
-        return;
+        return false;
       }
 
       const latest = yield* SubscriptionRef.get(state);
@@ -733,7 +734,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         latest.history.window === null ||
         Option.isNone(latestLiveThread)
       ) {
-        return;
+        return false;
       }
       const nextWindow = boundThreadHistoryPage(
         mergeThreadHistoryPages({
@@ -752,6 +753,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         history,
       });
       yield* cacheHistoryPage(page.value);
+      return true;
     }).pipe(
       Effect.ensuring(
         SubscriptionRef.update(state, (latest) =>
@@ -1115,8 +1117,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
 type EnvironmentThreadStateSubscription =
   SubscriptionRef.SubscriptionRef<EnvironmentThreadState> & {
-    readonly loadPreviousMessages: Effect.Effect<void>;
-    readonly loadNextMessages: Effect.Effect<void>;
+    readonly loadPreviousMessages: Effect.Effect<boolean>;
+    readonly loadNextMessages: Effect.Effect<boolean>;
     readonly loadMessagesAround: (messageId: MessageId) => Effect.Effect<boolean>;
   };
 
@@ -1185,7 +1187,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
                 threadId: input.threadId,
               }),
             );
-            return subscription?.loadPreviousMessages ?? Effect.void;
+            return subscription?.loadPreviousMessages ?? Effect.succeed(false);
           }),
         ),
       scheduler,
@@ -1205,7 +1207,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
                 threadId: input.threadId,
               }),
             );
-            return subscription?.loadNextMessages ?? Effect.void;
+            return subscription?.loadNextMessages ?? Effect.succeed(false);
           }),
         ),
       scheduler,
