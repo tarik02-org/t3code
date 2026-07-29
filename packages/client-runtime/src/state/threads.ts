@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
@@ -339,6 +340,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   });
   const liveThread = yield* Ref.make(cachedThread);
   const historyOutlineRefreshes = yield* SubscriptionRef.make(0);
+  const threadSnapshotRefreshes = yield* SubscriptionRef.make(0);
+  const messagePaginationSupported = yield* SubscriptionRef.make(false);
+  const aroundLoadSemaphore = yield* Semaphore.make(1);
   // Seed the resume cursor from the cached snapshot so a warm cache can catch up
   // via `afterSequence` instead of re-downloading the full thread body.
   const lastSequence = yield* SubscriptionRef.make(
@@ -790,15 +794,19 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     latestHistoryWindowRequestId += 1;
     const requestId = ++latestAroundRequestId;
-    const current = yield* SubscriptionRef.get(state);
-    if (current.history.kind === "disabled") {
-      return false;
-    }
-    yield* SubscriptionRef.set(state, {
-      ...current,
-      history: { ...current.history, loading: "around" },
-    });
     return yield* Effect.gen(function* () {
+      if (requestId !== latestAroundRequestId) {
+        return false;
+      }
+
+      const current = yield* SubscriptionRef.get(state);
+      if (current.history.kind === "disabled") {
+        return false;
+      }
+      yield* SubscriptionRef.set(state, {
+        ...current,
+        history: { ...current.history, loading: "around" },
+      });
       const cachedPage = yield* historyCache
         .loadAround(environmentId, threadId, messageId, THREAD_HISTORY_AROUND_PAGE_SIZE)
         .pipe(
@@ -874,6 +882,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             : latest,
         ),
       ),
+      aroundLoadSemaphore.withPermit,
     );
   });
 
@@ -1036,6 +1045,12 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
       }
       yield* setThread(result.thread);
+      if (
+        item.event.type === "thread.reverted" &&
+        (yield* SubscriptionRef.get(messagePaginationSupported))
+      ) {
+        yield* SubscriptionRef.update(threadSnapshotRefreshes, (revision) => revision + 1);
+      }
     } else if (result.kind === "deleted") {
       yield* setDeleted();
     }
@@ -1060,7 +1075,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     onSome: (service) =>
       service.changes.pipe(Stream.filter((reason) => reason === "application-active")),
   });
-  const messagePaginationSupported = yield* SubscriptionRef.make(false);
+  const snapshotResubscriptions = SubscriptionRef.changes(threadSnapshotRefreshes).pipe(
+    Stream.filter((revision) => revision > 0),
+  );
   yield* SubscriptionRef.changes(messagePaginationSupported).pipe(
     Stream.filter((supported) => supported),
     Stream.runForEach(() => loadHistoryOutline),
@@ -1094,14 +1111,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
         const currentLiveThread = yield* Ref.get(liveThread);
-        const visibleLiveThread = supportsMessagePagination
-          ? Option.filter(
-              currentLiveThread,
-              (thread) =>
-                thread.messageHistory !== undefined ||
-                thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE,
-            )
-          : currentLiveThread;
+        const visibleLiveThread = Option.filter(currentLiveThread, (thread) =>
+          supportsMessagePagination
+            ? thread.messageHistory !== undefined ||
+              thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE
+            : thread.messageHistory === undefined,
+        );
+        if (Option.isSome(currentLiveThread) && Option.isNone(visibleLiveThread)) {
+          yield* Ref.set(liveThread, Option.none());
+          yield* clearHistoryCache();
+        }
         yield* SubscriptionRef.update(state, (current) => {
           const history: EnvironmentThreadHistoryState = supportsMessagePagination
             ? current.history.kind === "ready"
@@ -1141,7 +1160,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* SubscriptionRef.set(messagePaginationSupported, supportsMessagePagination);
 
         const sequence = yield* SubscriptionRef.get(lastSequence);
-        const canResume = Option.isSome(current.data);
+        const canResume =
+          Option.isSome(current.data) &&
+          (!supportsMessagePagination || current.data.value.messageHistory !== undefined);
         if (!supportsCompletionMarker && canResume) {
           yield* SubscriptionRef.update(state, (value) => ({
             ...value,
@@ -1165,7 +1186,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       {
         onExpectedFailure: setStreamError,
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: foregroundResubscriptions,
+        resubscribe: Stream.merge(foregroundResubscriptions, snapshotResubscriptions),
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

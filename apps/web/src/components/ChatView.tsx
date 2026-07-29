@@ -3485,21 +3485,24 @@ function ChatViewContent(props: ChatViewProps) {
       anchorScrollRestoreFrameRef.current = null;
     }
   }, []);
-  const handleTimelineManualNavigation = useCallback(() => {
-    cancelTimelineLiveFollowForUserNavigation();
-    if (environmentThreadState.history.kind === "ready") {
-      void cancelMessagesAround({
-        environmentId,
-        input: { threadId },
-      });
-    }
-  }, [
-    cancelMessagesAround,
-    cancelTimelineLiveFollowForUserNavigation,
-    environmentId,
-    environmentThreadState.history.kind,
-    threadId,
-  ]);
+  const handleTimelineManualNavigation = useCallback(
+    (cancelHistoryLoad: boolean) => {
+      cancelTimelineLiveFollowForUserNavigation();
+      if (cancelHistoryLoad && environmentThreadState.history.kind === "ready") {
+        void cancelMessagesAround({
+          environmentId,
+          input: { threadId },
+        });
+      }
+    },
+    [
+      cancelMessagesAround,
+      cancelTimelineLiveFollowForUserNavigation,
+      environmentId,
+      environmentThreadState.history.kind,
+      threadId,
+    ],
+  );
   const cancelTimelineLiveFollowForUserNavigationRef = useRef(
     cancelTimelineLiveFollowForUserNavigation,
   );

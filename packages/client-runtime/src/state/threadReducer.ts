@@ -519,6 +519,7 @@ export function applyThreadDetailEvent(
           messages,
           proposedPlans,
           activities,
+          messageHistory: undefined,
           latestTurn:
             latestCheckpoint === null
               ? null

@@ -203,7 +203,7 @@ interface MessagesTimelineProps {
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
   contentInsetEndAdjustment: number;
   onIsAtEndChange: (isAtEnd: boolean) => void;
-  onManualNavigation: () => void;
+  onManualNavigation: (cancelHistoryLoad: boolean) => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
   messageHistory?: OrchestrationThreadMessageHistory;

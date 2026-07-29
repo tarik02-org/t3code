@@ -38,7 +38,7 @@ interface UseProgressiveTimelineHistoryInput {
   readonly onIsAtEndChange: (isAtEnd: boolean) => void;
   readonly onLoadNextMessages: (() => Promise<boolean>) | undefined;
   readonly onLoadPreviousMessages: (() => Promise<boolean>) | undefined;
-  readonly onManualNavigation: () => void;
+  readonly onManualNavigation: (cancelHistoryLoad: boolean) => void;
   readonly onSelectHistoryMessage: ((messageId: MessageId) => void) | undefined;
   readonly routeThreadKey: string;
   readonly rowIndexOffset: number;
@@ -78,6 +78,7 @@ export function useProgressiveTimelineHistory({
   const positioningTargetRef = useRef<MessageId | null>(null);
   const visibleRowIdsRef = useRef<ReadonlySet<string> | null>(null);
   const pendingDataAnchorRef = useRef(false);
+  const minimapFrameRef = useRef<number | null>(null);
 
   const rowIndexByMessageId = useMemo(() => {
     const indexes = new Map<MessageId, number>();
@@ -90,7 +91,7 @@ export function useProgressiveTimelineHistory({
     return indexes;
   }, [rowIndexOffset, rows]);
   const loadedMessageIndexById = useMemo(() => {
-    const indexes = new Map<MessageId, number>();
+    const indexes = new Map<string, number>();
     let messageIndex = 0;
     for (const row of rows) {
       if (row.kind !== "message") {
@@ -162,21 +163,6 @@ export function useProgressiveTimelineHistory({
       return;
     }
     const viewport = scrollNode.getBoundingClientRect();
-    for (const item of minimapItems) {
-      const strip = minimapStripMap.get(item.id);
-      if (strip === undefined || item.rowIndex === null) {
-        continue;
-      }
-      const row = scrollNode.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(item.id)}"]`,
-      );
-      const rect = row?.getBoundingClientRect();
-      strip.dataset.inView =
-        rect !== undefined && rect.bottom > viewport.top && rect.top < viewport.bottom
-          ? "true"
-          : "false";
-    }
-
     const visibleRowIds = new Set<string>();
     for (const element of scrollNode.querySelectorAll<HTMLElement>("[data-timeline-row-id]")) {
       const rect = element.getBoundingClientRect();
@@ -191,18 +177,34 @@ export function useProgressiveTimelineHistory({
     visibleRowIdsRef.current = visibleRowIds;
 
     const viewportCenter = viewport.top + viewport.height / 2;
-    let visibleMessageId: MessageId | null = null;
+    const messageRects = new Map<string, DOMRect>();
+    let visibleMessageId: string | null = null;
     let visibleMessageDistance = Number.POSITIVE_INFINITY;
     for (const element of scrollNode.querySelectorAll<HTMLElement>("[data-message-id]")) {
       const rect = element.getBoundingClientRect();
+      const messageId = element.dataset.messageId;
+      if (messageId !== undefined) {
+        messageRects.set(messageId, rect);
+      }
       if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) {
         continue;
       }
       const distance = Math.abs((rect.top + rect.bottom) / 2 - viewportCenter);
-      if (distance < visibleMessageDistance) {
-        visibleMessageId = element.dataset.messageId as MessageId;
+      if (messageId !== undefined && distance < visibleMessageDistance) {
+        visibleMessageId = messageId;
         visibleMessageDistance = distance;
       }
+    }
+    for (const item of minimapItems) {
+      const strip = minimapStripMap.get(item.id);
+      if (strip === undefined || item.rowIndex === null) {
+        continue;
+      }
+      const rect = messageRects.get(item.id);
+      strip.dataset.inView =
+        rect !== undefined && rect.bottom > viewport.top && rect.top < viewport.bottom
+          ? "true"
+          : "false";
     }
 
     const positionMarker = minimapPositionRef.current;
@@ -253,8 +255,18 @@ export function useProgressiveTimelineHistory({
     minimapStripMap,
   ]);
 
+  const scheduleMinimapUpdate = useCallback(() => {
+    if (minimapFrameRef.current !== null) {
+      return;
+    }
+    minimapFrameRef.current = requestAnimationFrame(() => {
+      minimapFrameRef.current = null;
+      updateMinimap();
+    });
+  }, [updateMinimap]);
+
   const beginUserNavigation = useCallback(() => {
-    updateMinimap();
+    scheduleMinimapUpdate();
     manualInputRef.current = true;
     followEndRef.current = false;
     if (positioningTargetRef.current !== null) {
@@ -267,7 +279,7 @@ export function useProgressiveTimelineHistory({
     if (historyTargetMessageId !== null) {
       onHistoryTargetReady?.();
     }
-    onManualNavigation();
+    onManualNavigation(true);
     if (manualInputTimeoutRef.current !== null) {
       window.clearTimeout(manualInputTimeoutRef.current);
     }
@@ -275,7 +287,13 @@ export function useProgressiveTimelineHistory({
       manualInputTimeoutRef.current = null;
       manualInputRef.current = false;
     }, MANUAL_INPUT_IDLE_MS);
-  }, [historyTargetMessageId, listRef, onHistoryTargetReady, onManualNavigation, updateMinimap]);
+  }, [
+    historyTargetMessageId,
+    listRef,
+    onHistoryTargetReady,
+    onManualNavigation,
+    scheduleMinimapUpdate,
+  ]);
 
   const shouldRestorePosition = useCallback(
     (item: { readonly id: string }) =>
@@ -286,9 +304,9 @@ export function useProgressiveTimelineHistory({
   );
 
   useLayoutEffect(() => {
-    updateMinimap();
+    scheduleMinimapUpdate();
     pendingDataAnchorRef.current = false;
-  }, [rows, updateMinimap]);
+  }, [rows, scheduleMinimapUpdate]);
 
   const beginPointerNavigation = useCallback(() => {
     pointerActiveRef.current = true;
@@ -358,7 +376,7 @@ export function useProgressiveTimelineHistory({
         followEndRef.current = true;
       }
     }
-    updateMinimap();
+    scheduleMinimapUpdate();
     if (messageHistory === undefined || scrollNode === null || scrollNode === undefined) {
       return;
     }
@@ -376,11 +394,11 @@ export function useProgressiveTimelineHistory({
     } else if (delta > 0) {
       requestPageNearEdge("after");
     }
-  }, [listRef, messageHistory, onIsAtEndChange, requestPageNearEdge, updateMinimap]);
+  }, [listRef, messageHistory, onIsAtEndChange, requestPageNearEdge, scheduleMinimapUpdate]);
 
   const selectHistoryTarget = useCallback(
     (item: TimelineHistoryNavigationTarget) => {
-      onManualNavigation();
+      onManualNavigation(false);
       followEndRef.current = false;
       pageRequestRef.current = null;
       const rowIndex = rowIndexByMessageId.get(item.id);
@@ -459,13 +477,12 @@ export function useProgressiveTimelineHistory({
     }
 
     latestPositionPendingRef.current = false;
-    void listRef.current?.scrollToEnd({ animated: false }).then(updateMinimap);
-  }, [latestMessagesRequest, listRef, messageHistory, routeThreadKey, rows, updateMinimap]);
+    void listRef.current?.scrollToEnd({ animated: false }).then(scheduleMinimapUpdate);
+  }, [latestMessagesRequest, listRef, messageHistory, routeThreadKey, rows, scheduleMinimapUpdate]);
 
   useEffect(() => {
-    const frame = requestAnimationFrame(updateMinimap);
-    return () => cancelAnimationFrame(frame);
-  }, [updateMinimap, rows.length]);
+    scheduleMinimapUpdate();
+  }, [rows.length, scheduleMinimapUpdate]);
 
   useEffect(() => {
     const handleKeyboardNavigation = (event: KeyboardEvent) => {
@@ -502,6 +519,9 @@ export function useProgressiveTimelineHistory({
     () => () => {
       if (manualInputTimeoutRef.current !== null) {
         window.clearTimeout(manualInputTimeoutRef.current);
+      }
+      if (minimapFrameRef.current !== null) {
+        cancelAnimationFrame(minimapFrameRef.current);
       }
     },
     [],
