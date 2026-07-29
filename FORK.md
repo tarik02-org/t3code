@@ -70,12 +70,12 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   windows retain every message, cap work telemetry per segment, and only display activity for turns
   represented by the active message window. Viewport navigation, minimap jumps, and unloaded spacers
   share one fixed per-message scroll axis and load the nearest landmark window through a trailing
-  throttle. When a viewport straddles the active segment boundary, the client extends that segment
-  with the adjacent page and anchors a rendered message while the virtual spacer is replaced.
-  Scroll-to-end leaves historical navigation state and returns directly to the bounded live tail.
-  Unloaded ranges keep their fixed virtual size while the active segment contributes its measured
-  height. Segment changes use Legend List's data version instead of manually clearing its layout
-  caches, then reprocess the current offset after the new header geometry settles.
+  throttle. The historical canvas stays fixed while bounded segments change, regardless of their
+  measured height. History uses one stable native scroll element with an externally-scrolled
+  virtualizer, so segment changes never replace the scrollbar or render the complete bounded segment.
+  A loaded segment is placed around the current logical viewport anchor without changing the physical
+  scroll offset. The live tail uses its real rendered height. Scroll-to-end leaves historical
+  navigation state and returns directly to that bounded tail.
 - Paginated history responses use the same client-facing activity payload projection as full thread
   snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
   The persisted activity remains unchanged.
@@ -83,11 +83,11 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   loader locked. Minimap jumps position virtual history immediately while the segment loads, then use
   the loaded row position for a smooth exact correction. Any keyboard, pointer, touch, or wheel input
   cancels that motion and removes the concrete target before the browser scrolls. The resulting real
-  scroll selects the next logical segment without restoring an older viewport position. Holding the
-  native scrollbar thumb suppresses target alignment but never pauses throttled data loading.
-  Synchronous offset writes avoid delayed programmatic scrolls taking control back from the user.
-  Overlapping explicit jumps may fetch concurrently, but only the latest request can replace the
-  active segment.
+  scroll selects the next logical segment without restoring an older viewport position. Only actual
+  manual offset changes schedule history loads. Holding the native scrollbar thumb keeps that
+  ownership and throttled loading active until release. Synchronous offset writes avoid delayed
+  programmatic scrolls taking control back from the user. Overlapping explicit jumps may fetch
+  concurrently, but only the latest request can replace the active segment.
 - Desktop context-menu style is configurable.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.

@@ -871,6 +871,18 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  const cancelMessagesAround = Effect.gen(function* () {
+    latestAroundRequestId += 1;
+    yield* SubscriptionRef.update(state, (current) =>
+      current.history.kind === "ready" && current.history.loading === "around"
+        ? {
+            ...current,
+            history: { ...current.history, loading: null },
+          }
+        : current,
+    );
+  });
+
   const showLatestMessages = Effect.gen(function* () {
     latestAroundRequestId += 1;
     latestHistoryWindowRequestId += 1;
@@ -1144,6 +1156,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     loadPreviousMessages,
     loadNextMessages,
     loadMessagesAround,
+    cancelMessagesAround,
     showLatestMessages,
   });
 });
@@ -1153,6 +1166,7 @@ type EnvironmentThreadStateSubscription =
     readonly loadPreviousMessages: Effect.Effect<boolean>;
     readonly loadNextMessages: Effect.Effect<boolean>;
     readonly loadMessagesAround: (messageId: MessageId) => Effect.Effect<boolean>;
+    readonly cancelMessagesAround: Effect.Effect<void>;
     readonly showLatestMessages: Effect.Effect<boolean>;
   };
 
@@ -1262,6 +1276,23 @@ export function createEnvironmentThreadStateAtoms<R, E>(
               }),
             );
             return subscription?.showLatestMessages ?? Effect.succeed(false);
+          }),
+        ),
+      scheduler,
+      concurrency: { mode: "parallel" },
+    }),
+    cancelMessagesAround: createEnvironmentCommand(runtime, {
+      label: "environment-data:thread:cancel-messages-around",
+      execute: (input: { readonly threadId: ThreadIdType }) =>
+        EnvironmentSupervisor.pipe(
+          Effect.flatMap((supervisor) => {
+            const subscription = subscriptions.get(
+              threadKey({
+                environmentId: supervisor.target.environmentId,
+                threadId: input.threadId,
+              }),
+            );
+            return subscription?.cancelMessagesAround ?? Effect.void;
           }),
         ),
       scheduler,

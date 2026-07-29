@@ -1148,10 +1148,7 @@ function ChatViewContent(props: ChatViewProps) {
   const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
     reportFailure: false,
   });
-  const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
-    reportFailure: false,
-  });
-  const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
+  const cancelMessagesAround = useAtomCommand(environmentThreads.cancelMessagesAround, {
     reportFailure: false,
   });
   const showLatestMessages = useAtomCommand(environmentThreads.showLatestMessages, {
@@ -1460,20 +1457,6 @@ function ChatViewContent(props: ChatViewProps) {
       current.messageId === null ? current : { ...current, messageId: null },
     );
   }, []);
-  const handleLoadPreviousMessages = useCallback(async () => {
-    const result = await loadPreviousMessages({
-      environmentId,
-      input: { threadId },
-    });
-    return result._tag === "Success" && result.value;
-  }, [environmentId, loadPreviousMessages, threadId]);
-  const handleLoadNextMessages = useCallback(async () => {
-    const result = await loadNextMessages({
-      environmentId,
-      input: { threadId },
-    });
-    return result._tag === "Success" && result.value;
-  }, [environmentId, loadNextMessages, threadId]);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
     : localDraftError;
@@ -3482,6 +3465,21 @@ function ChatViewContent(props: ChatViewProps) {
       anchorScrollRestoreFrameRef.current = null;
     }
   }, []);
+  const handleTimelineManualNavigation = useCallback(() => {
+    cancelTimelineLiveFollowForUserNavigation();
+    if (environmentThreadState.history.kind === "ready") {
+      void cancelMessagesAround({
+        environmentId,
+        input: { threadId },
+      });
+    }
+  }, [
+    cancelMessagesAround,
+    cancelTimelineLiveFollowForUserNavigation,
+    environmentId,
+    environmentThreadState.history.kind,
+    threadId,
+  ]);
   const cancelTimelineLiveFollowForUserNavigationRef = useRef(
     cancelTimelineLiveFollowForUserNavigation,
   );
@@ -6003,7 +6001,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onAnchorSizeChanged={onTimelineAnchorSizeChanged}
                 contentInsetEndAdjustment={composerOverlayHeight}
                 onIsAtEndChange={onIsAtEndChange}
-                onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                onManualNavigation={handleTimelineManualNavigation}
                 hideEmptyPlaceholder={isDraftHeroState}
                 topFadeEnabled={!hasTimelineTopBanner}
                 {...(activeThread.messageHistory === undefined
@@ -6020,7 +6018,6 @@ function ChatViewContent(props: ChatViewProps) {
                   environmentThreadState.history.loading === "after"
                 }
                 latestMessagesRequest={latestMessagesRequest}
-                isHistoryReady={environmentThreadState.status === "live"}
                 historyOutline={
                   environmentThreadState.history.kind === "ready"
                     ? environmentThreadState.history.outline
@@ -6029,8 +6026,6 @@ function ChatViewContent(props: ChatViewProps) {
                 historyTargetMessageId={historyTarget.messageId}
                 onSelectHistoryMessage={handleSelectHistoryMessage}
                 onHistoryTargetReady={handleHistoryTargetReady}
-                onLoadPreviousMessages={handleLoadPreviousMessages}
-                onLoadNextMessages={handleLoadNextMessages}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
