@@ -258,7 +258,11 @@ export function useProgressiveTimelineHistory({
     }
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
-      if (strip === undefined || item.rowIndex === null) {
+      if (strip === undefined) {
+        continue;
+      }
+      if (item.rowIndex === null) {
+        strip.dataset.inView = "false";
         continue;
       }
       const rect = messageRects.get(item.id);
