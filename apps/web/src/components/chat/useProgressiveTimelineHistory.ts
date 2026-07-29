@@ -1,7 +1,17 @@
 import { type MessageId, type OrchestrationThreadMessageHistory } from "@t3tools/contracts";
 import { type LegendListRef } from "@legendapp/list/react";
 import { type Virtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  type TouchEvent as ReactTouchEvent,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import { resolveTimelineIsAtEnd, type MessagesTimelineRow } from "./MessagesTimeline.logic";
 
 const HISTORY_EDGE_THRESHOLD = 640;
@@ -83,6 +93,7 @@ export function useProgressiveTimelineHistory({
   const handledLatestMessagesRequestRef = useRef(latestMessagesRequest);
   const latestPositionPendingRef = useRef(false);
   const followEndRef = useRef(true);
+  const lastTouchYRef = useRef<number | null>(null);
 
   const historyWindowKey =
     messageHistory === undefined
@@ -278,6 +289,39 @@ export function useProgressiveTimelineHistory({
     ],
   );
 
+  const requestPageNearEdge = useCallback(
+    (direction: HistoryPageDirection) => {
+      if (messageHistory === undefined || historyScrollElement === null) {
+        return;
+      }
+      if (
+        direction === "before" &&
+        historyScrollElement.scrollTop <= HISTORY_EDGE_THRESHOLD &&
+        messageHistory.hasMoreBefore &&
+        !isLoadingPreviousMessages
+      ) {
+        requestPage("before");
+      } else if (
+        direction === "after" &&
+        historyScrollElement.scrollHeight -
+          historyScrollElement.clientHeight -
+          historyScrollElement.scrollTop <=
+          HISTORY_EDGE_THRESHOLD &&
+        messageHistory.hasMoreAfter &&
+        !isLoadingNextMessages
+      ) {
+        requestPage("after");
+      }
+    },
+    [
+      historyScrollElement,
+      isLoadingNextMessages,
+      isLoadingPreviousMessages,
+      messageHistory,
+      requestPage,
+    ],
+  );
+
   const updateMinimap = useCallback(() => {
     const scrollNode =
       messageHistory === undefined ? listRef.current?.getScrollableNode() : historyScrollElement;
@@ -378,6 +422,64 @@ export function useProgressiveTimelineHistory({
     }, MANUAL_INPUT_IDLE_MS);
   }, [cancelAlignment, historyTargetMessageId, onHistoryTargetReady, onManualNavigation]);
 
+  const beginPointerNavigation = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      beginUserNavigation();
+      if (event.target !== historyScrollElement) {
+        return;
+      }
+      if (historyScrollElement.scrollTop <= HISTORY_EDGE_THRESHOLD) {
+        requestPageNearEdge("before");
+      } else if (
+        historyScrollElement.scrollHeight -
+          historyScrollElement.clientHeight -
+          historyScrollElement.scrollTop <=
+        HISTORY_EDGE_THRESHOLD
+      ) {
+        requestPageNearEdge("after");
+      }
+    },
+    [beginUserNavigation, historyScrollElement, requestPageNearEdge],
+  );
+
+  const beginTouchNavigation = useCallback(
+    (event: ReactTouchEvent<HTMLDivElement>) => {
+      beginUserNavigation();
+      lastTouchYRef.current = event.touches.item(0)?.clientY ?? null;
+    },
+    [beginUserNavigation],
+  );
+
+  const continueTouchNavigation = useCallback(
+    (event: ReactTouchEvent<HTMLDivElement>) => {
+      beginUserNavigation();
+      const touchY = event.touches.item(0)?.clientY;
+      const previousTouchY = lastTouchYRef.current;
+      lastTouchYRef.current = touchY ?? null;
+      if (touchY === undefined || previousTouchY === null) {
+        return;
+      }
+      if (touchY > previousTouchY) {
+        requestPageNearEdge("before");
+      } else if (touchY < previousTouchY) {
+        requestPageNearEdge("after");
+      }
+    },
+    [beginUserNavigation, requestPageNearEdge],
+  );
+
+  const handleWheelNavigation = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      beginUserNavigation();
+      if (event.deltaY < 0) {
+        requestPageNearEdge("before");
+      } else if (event.deltaY > 0) {
+        requestPageNearEdge("after");
+      }
+    },
+    [beginUserNavigation, requestPageNearEdge],
+  );
+
   const handleScroll = useCallback(() => {
     const state = messageHistory === undefined ? listRef.current?.getState?.() : undefined;
     const scrollNode =
@@ -424,30 +526,18 @@ export function useProgressiveTimelineHistory({
     }
 
     const delta = scrollTop - previousScrollTop;
-    if (
-      delta < 0 &&
-      scrollTop <= HISTORY_EDGE_THRESHOLD &&
-      messageHistory.hasMoreBefore &&
-      !isLoadingPreviousMessages
-    ) {
-      requestPage("before");
-    } else if (
-      delta > 0 &&
-      scrollNode.scrollHeight - scrollNode.clientHeight - scrollTop <= HISTORY_EDGE_THRESHOLD &&
-      messageHistory.hasMoreAfter &&
-      !isLoadingNextMessages
-    ) {
-      requestPage("after");
+    if (delta < 0) {
+      requestPageNearEdge("before");
+    } else if (delta > 0) {
+      requestPageNearEdge("after");
     }
   }, [
     captureVisibleAnchor,
     historyScrollElement,
-    isLoadingNextMessages,
-    isLoadingPreviousMessages,
     listRef,
     messageHistory,
     onIsAtEndChange,
-    requestPage,
+    requestPageNearEdge,
     updateMinimap,
   ]);
 
@@ -499,11 +589,14 @@ export function useProgressiveTimelineHistory({
     const isLoading =
       pendingAnchor.direction === "before" ? isLoadingPreviousMessages : isLoadingNextMessages;
     const pageChanged = historyWindowKey !== pendingAnchor.originWindowKey;
-    alignMessage(pendingAnchor.messageId, pendingAnchor.viewportOffset, () => {
-      if (!isLoading && pageChanged && pendingPageAnchorRef.current === pendingAnchor) {
-        pendingPageAnchorRef.current = null;
-      }
-    });
+    if (!isLoading && pageChanged) {
+      activeMessageAnchorRef.current = {
+        messageId: pendingAnchor.messageId,
+        viewportOffset: pendingAnchor.viewportOffset,
+      };
+      pendingPageAnchorRef.current = null;
+    }
+    alignMessage(pendingAnchor.messageId, pendingAnchor.viewportOffset);
   }, [alignMessage, historyWindowKey, isLoadingNextMessages, isLoadingPreviousMessages, rows]);
 
   useLayoutEffect(() => {
@@ -609,12 +702,20 @@ export function useProgressiveTimelineHistory({
         return;
       }
       beginUserNavigation();
+      if (
+        ["PageUp", "Home", "ArrowUp"].includes(event.key) ||
+        (event.key === " " && event.shiftKey)
+      ) {
+        requestPageNearEdge("before");
+      } else {
+        requestPageNearEdge("after");
+      }
     };
     window.addEventListener("keydown", handleKeyboardNavigation, true);
     return () => {
       window.removeEventListener("keydown", handleKeyboardNavigation, true);
     };
-  }, [beginUserNavigation, historyScrollElement]);
+  }, [beginUserNavigation, historyScrollElement, requestPageNearEdge]);
 
   useEffect(
     () => () => {
@@ -631,11 +732,20 @@ export function useProgressiveTimelineHistory({
 
   return useMemo(
     () => ({
-      beginPointerNavigation: beginUserNavigation,
-      beginUserNavigation,
+      beginPointerNavigation,
+      beginTouchNavigation,
+      continueTouchNavigation,
       handleScroll,
+      handleWheelNavigation,
       selectHistoryTarget,
     }),
-    [beginUserNavigation, handleScroll, selectHistoryTarget],
+    [
+      beginPointerNavigation,
+      beginTouchNavigation,
+      continueTouchNavigation,
+      handleScroll,
+      handleWheelNavigation,
+      selectHistoryTarget,
+    ],
   );
 }

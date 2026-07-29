@@ -522,8 +522,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           ref={setTimelineViewportElement}
           className="relative h-full min-h-0"
           onPointerDownCapture={progressiveHistory.beginPointerNavigation}
-          onTouchMoveCapture={progressiveHistory.beginUserNavigation}
-          onWheelCapture={progressiveHistory.beginUserNavigation}
+          onTouchMoveCapture={progressiveHistory.continueTouchNavigation}
+          onTouchStartCapture={progressiveHistory.beginTouchNavigation}
+          onWheelCapture={progressiveHistory.handleWheelNavigation}
         >
           {messageHistory === undefined ? (
             <LegendList<MessagesTimelineRow>
