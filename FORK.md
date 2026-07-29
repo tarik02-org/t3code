@@ -75,7 +75,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   Scroll-to-end leaves historical navigation state and returns directly to the bounded live tail.
   Unloaded ranges keep their fixed virtual size while the active segment contributes its measured
   height. Segment changes use Legend List's data version instead of manually clearing its layout
-  caches.
+  caches, then reprocess the current offset after the new header geometry settles.
 - Paginated history responses use the same client-facing activity payload projection as full thread
   snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
   The persisted activity remains unchanged.

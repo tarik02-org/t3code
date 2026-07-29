@@ -20,6 +20,8 @@ const VIRTUAL_MESSAGE_SIZE = 120;
 const HISTORY_LOAD_THROTTLE_MS = 180;
 const HISTORY_SKELETON_PERIOD = VIRTUAL_MESSAGE_SIZE * 2;
 const MESSAGE_VIEWPORT_OFFSET = 24;
+const USER_NAVIGATION_START_TIMEOUT_MS = 250;
+const USER_NAVIGATION_SCROLL_TIMEOUT_MS = 120;
 
 type ViewportAnchor =
   | {
@@ -113,7 +115,7 @@ export function useProgressiveTimelineHistory({
   const expectedScrollTopRef = useRef<number | null>(null);
   const pointerActiveRef = useRef(false);
   const userNavigationRef = useRef(false);
-  const userNavigationResetFrameRef = useRef<number | null>(null);
+  const userNavigationResetTimeoutRef = useRef<number | null>(null);
   const loadTimeoutRef = useRef<number | null>(null);
   const lastLoadAtRef = useRef(0);
   const reconcileTimeoutRef = useRef<number | null>(null);
@@ -126,6 +128,7 @@ export function useProgressiveTimelineHistory({
   const historyAfterSkeletonsRef = useRef<HTMLDivElement>(null);
   const historyInitializedRef = useRef(false);
   const handledLatestMessagesRequestRef = useRef(latestMessagesRequest);
+  const reprocessedHistoryWindowRef = useRef<string | null>(null);
   const [listHeaderSize, setListHeaderSize] = useState(0);
   const [layoutMeasurement, setLayoutMeasurement] = useState<HistoryLayoutMeasurement | null>(null);
   const messageRowIndexById = useMemo(() => {
@@ -349,7 +352,11 @@ export function useProgressiveTimelineHistory({
   );
 
   const reconcileAnchor = useCallback(() => {
-    if (messageHistory === undefined || timelineViewportElement === null) {
+    if (
+      messageHistory === undefined ||
+      historyWindowKey === null ||
+      timelineViewportElement === null
+    ) {
       return false;
     }
     if (pointerActiveRef.current) {
@@ -371,12 +378,26 @@ export function useProgressiveTimelineHistory({
         pendingRequest?.kind === "logical" &&
         Math.abs(pendingRequest.anchorMessageIndex - anchor.messageIndex) > 0.5
       ) {
+        pendingRequestRef.current = null;
+        onHistoryTargetReady?.();
+        return true;
+      }
+      if (
+        pendingRequest?.kind === "logical" &&
+        !minimapItems.some((item) => item.id === pendingRequest.messageId && item.rowIndex !== null)
+      ) {
         return false;
       }
-      return (
-        pendingRequest?.kind !== "logical" ||
-        minimapItems.some((item) => item.id === pendingRequest.messageId && item.rowIndex !== null)
-      );
+      if (pendingRequest?.kind === "logical") {
+        resolvedLogicalAnchorRef.current = {
+          anchorMessageIndex: anchor.messageIndex,
+          messageId: pendingRequest.messageId,
+          windowKey: historyWindowKey,
+        };
+        pendingRequestRef.current = null;
+        onHistoryTargetReady?.();
+      }
+      return true;
     }
 
     const target = timelineViewportElement.querySelector<HTMLElement>(
@@ -465,6 +486,7 @@ export function useProgressiveTimelineHistory({
     clearAlignmentWait,
     historyBeforeSize,
     historyTargetMessageId,
+    historyWindowKey,
     listHeaderSize,
     listRef,
     messageRowIndexById,
@@ -614,21 +636,23 @@ export function useProgressiveTimelineHistory({
     anchorRef.current = null;
     pendingRequestRef.current = null;
     resolvedLogicalAnchorRef.current = null;
+    userNavigationRef.current = false;
+    if (userNavigationResetTimeoutRef.current !== null) {
+      window.clearTimeout(userNavigationResetTimeoutRef.current);
+      userNavigationResetTimeoutRef.current = null;
+    }
     onHistoryTargetReady?.();
   }, [clearAlignmentWait, listRef, onHistoryTargetReady]);
 
   const beginUserNavigation = useCallback(() => {
     releaseScrollControl();
     userNavigationRef.current = true;
-    if (userNavigationResetFrameRef.current !== null) {
-      window.cancelAnimationFrame(userNavigationResetFrameRef.current);
-    }
-    userNavigationResetFrameRef.current = window.requestAnimationFrame(() => {
-      userNavigationResetFrameRef.current = null;
+    userNavigationResetTimeoutRef.current = window.setTimeout(() => {
+      userNavigationResetTimeoutRef.current = null;
       if (!pointerActiveRef.current) {
         userNavigationRef.current = false;
       }
-    });
+    }, USER_NAVIGATION_START_TIMEOUT_MS);
     onManualNavigation();
   }, [onManualNavigation, releaseScrollControl]);
 
@@ -680,7 +704,13 @@ export function useProgressiveTimelineHistory({
       onManualNavigation();
       scheduleHistoryLoad();
       if (!pointerActiveRef.current) {
-        userNavigationRef.current = false;
+        if (userNavigationResetTimeoutRef.current !== null) {
+          window.clearTimeout(userNavigationResetTimeoutRef.current);
+        }
+        userNavigationResetTimeoutRef.current = window.setTimeout(() => {
+          userNavigationResetTimeoutRef.current = null;
+          userNavigationRef.current = false;
+        }, USER_NAVIGATION_SCROLL_TIMEOUT_MS);
       }
     }
 
@@ -831,6 +861,11 @@ export function useProgressiveTimelineHistory({
     captureLogicalAnchor();
     scheduleHistoryLoad();
     queueReconciliation();
+    userNavigationRef.current = false;
+    if (userNavigationResetTimeoutRef.current !== null) {
+      window.clearTimeout(userNavigationResetTimeoutRef.current);
+      userNavigationResetTimeoutRef.current = null;
+    }
   }, [captureLogicalAnchor, queueReconciliation, scheduleHistoryLoad]);
 
   const selectHistoryTarget = useCallback(
@@ -1007,6 +1042,10 @@ export function useProgressiveTimelineHistory({
     }
     scheduleHistoryLoad();
     if (Math.abs(listHeaderSize - historyBeforeSize) <= 1) {
+      if (reprocessedHistoryWindowRef.current !== historyWindowKey) {
+        reprocessedHistoryWindowRef.current = historyWindowKey;
+        list.reportContentInset(null);
+      }
       queueReconciliation();
     }
   }, [
@@ -1022,45 +1061,14 @@ export function useProgressiveTimelineHistory({
 
   useEffect(() => {
     if (
-      messageHistory === undefined ||
-      historyWindowKey === null ||
-      historyLoadInProgress ||
-      pendingRequestRef.current?.kind !== "logical"
+      messageHistory !== undefined &&
+      historyWindowKey !== null &&
+      !historyLoadInProgress &&
+      pendingRequestRef.current?.kind === "logical"
     ) {
-      return;
+      queueReconciliation();
     }
-    const anchor = anchorRef.current;
-    const pendingRequest = pendingRequestRef.current;
-    if (anchor?.kind !== "logical" || pendingRequest?.kind !== "logical") {
-      return;
-    }
-    if (Math.abs(pendingRequest.anchorMessageIndex - anchor.messageIndex) > 0.5) {
-      pendingRequestRef.current = null;
-      onHistoryTargetReady?.();
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      if (!reconcileAnchor()) {
-        return;
-      }
-      resolvedLogicalAnchorRef.current = {
-        anchorMessageIndex: anchor.messageIndex,
-        messageId: pendingRequest.messageId,
-        windowKey: historyWindowKey,
-      };
-      pendingRequestRef.current = null;
-      onHistoryTargetReady?.();
-      scheduleHistoryLoad();
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [
-    historyLoadInProgress,
-    historyWindowKey,
-    messageHistory,
-    onHistoryTargetReady,
-    reconcileAnchor,
-    scheduleHistoryLoad,
-  ]);
+  }, [historyLoadInProgress, historyWindowKey, messageHistory, queueReconciliation]);
 
   useEffect(() => {
     if (!historyRequestInProgress) {
@@ -1109,9 +1117,9 @@ export function useProgressiveTimelineHistory({
         window.clearTimeout(reconcileTimeoutRef.current);
         reconcileTimeoutRef.current = null;
       }
-      if (userNavigationResetFrameRef.current !== null) {
-        window.cancelAnimationFrame(userNavigationResetFrameRef.current);
-        userNavigationResetFrameRef.current = null;
+      if (userNavigationResetTimeoutRef.current !== null) {
+        window.clearTimeout(userNavigationResetTimeoutRef.current);
+        userNavigationResetTimeoutRef.current = null;
       }
     },
     [clearAlignmentWait],
