@@ -15,11 +15,25 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Fork backend changes must remain compatible with non-fork clients. Upstream clients must be able to use a fork server without fork-specific assumptions or protocol failures.
 - Fork database changes and migrations must leave the database usable by regular upstream builds. The upstream backend must still open and use the database, and the upstream frontend must still work through that backend. Prefer sidecar databases for fork-only data.
 
+### Protocol Compatibility
+
+- Fork protocol extensions use separate extension RPC methods and additive optional capabilities.
+- Existing upstream RPC methods keep their upstream request, response, and behavior contracts so upstream clients remain compatible with the fork backend.
+- Fork clients call a fork RPC only when the backend advertises its capability and otherwise retain the upstream RPC path.
+- Fork backends keep the upstream RPC handler alongside each fork extension.
+
+### Thread Delta Subscription
+
+- Fork backends advertise `threadDeltaSubscription` and expose `orchestration.subscribeThread.withDelta` alongside the upstream thread subscription.
+- Fork clients use the fork subscription only when advertised. Upstream backends therefore continue receiving the upstream subscription.
+- The fork subscription replays gaps of at most 1,000 orchestration events and sends a fresh thread snapshot for larger or invalid gaps. If the thread no longer exists, it sends `not-found` so clients clear stale cached state.
+
 ### Release And CI
 
 - Fork workflows create/update a daily stable release PR while main-branch pushes produce nightly releases.
 - Stable release PRs list every commit since the previous stable tag, including commits brought in by upstream merges.
-- Release PR preparation runs after release publication so tag-based version resolution sees the latest release.
+- Main-branch pushes update the stable release PR immediately when the committed package version is already tagged.
+- Stable-version pushes wait for the matching release to finish so tag-based version resolution advances past the published version.
 - Release build jobs skip relay client tracing config because the relay config job is disabled.
 - Release builds publish updater metadata against the fork repository.
 - Fork stable release versions are committed through release PRs before release artifacts are built and tagged.
@@ -35,6 +49,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - The fork exposes the server and web bundle as an `x86_64-linux` flake package.
 - The package version follows the server manifest by default and supports the generated nightly version override.
+- Main-branch pushes verify the pnpm dependency hash, open or update a repair PR when it drifts, and fail the source workflow run.
 
 ### Desktop Updater Channels
 
@@ -44,6 +59,8 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 ### Fork Persistence
 
 - Fork-only goal persistence is stored in a sidecar database named `state-tarik02.sqlite`.
+- Bounded live-thread snapshots use fork-namespaced cache keys, so the fork never decodes legacy
+  unbounded snapshot JSON during startup and upstream clients ignore the fork cache entries.
 - The web client keeps fetched thread-history rows in an unbounded, normalized sidecar IndexedDB
   cache. Messages, activities, and plans are stored once and reused for covered history ranges.
   Cached records are schema-decoded independently so large activity batches cannot stall on a
@@ -56,6 +73,10 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 ### Provider Launch Environment
 
 - Provider sessions use a shared launch environment pipeline instead of ad hoc environment assembly.
+
+### Provider Instructions
+
+- Default-mode Codex instructions allow `request_user_input` when configured instead of treating it as unavailable.
 
 ### Base Path And Remote URLs
 
@@ -88,7 +109,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   ownership and throttled loading active until release. Synchronous offset writes avoid delayed
   programmatic scrolls taking control back from the user. Overlapping explicit jumps may fetch
   concurrently, but only the latest request can replace the active segment.
-- Desktop context-menu style is configurable.
+- Desktop context-menu style is configurable from Appearance settings.
 - The sidebar follows the active thread when it appears or when navigation originates elsewhere.
 - Sidebar environments can be hidden or shown dynamically from the project toolbar.
 - Threads can be archived with middle click.

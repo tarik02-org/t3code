@@ -54,9 +54,8 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
-  OrchestrationReplayEventsError,
-  OrchestrationReplayEventsInput,
   OrchestrationRpcSchemas,
+  OrchestrationThreadDeltaStreamItem,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -631,12 +630,6 @@ export const WsOrchestrationGetFullThreadDiffRpc = Rpc.make(
   },
 );
 
-export const WsOrchestrationReplayEventsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.replayEvents, {
-  payload: OrchestrationReplayEventsInput,
-  success: OrchestrationRpcSchemas.replayEvents.output,
-  error: Schema.Union([OrchestrationReplayEventsError, EnvironmentAuthorizationError]),
-});
-
 export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
   {
@@ -658,6 +651,16 @@ export const WsOrchestrationSubscribeThreadRpc = Rpc.make(
   {
     payload: OrchestrationRpcSchemas.subscribeThread.input,
     success: OrchestrationRpcSchemas.subscribeThread.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
+export const WsOrchestrationSubscribeThreadWithDeltaRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.subscribeThreadWithDelta,
+  {
+    payload: OrchestrationRpcSchemas.subscribeThread.input,
+    success: OrchestrationThreadDeltaStreamItem,
     error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
     stream: true,
   },
@@ -765,8 +768,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
-  WsOrchestrationReplayEventsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
+  WsOrchestrationSubscribeThreadWithDeltaRpc,
 );

@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  handoffProgressiveTimelineAnchorToUser,
   isProgressiveTimelineNavigationKey,
   resolveProgressiveTimelineHistoryTarget,
   resolveProgressiveTimelineLayout,
@@ -153,6 +154,59 @@ describe("progressive timeline history", () => {
       virtualHistoryAfterSize: 12_000,
       virtualHistoryBeforeSize: 216_000,
     });
+  });
+
+  it("keeps the loaded segment fixed when manual scrolling replaces a message anchor", () => {
+    const anchoredLayout = resolveProgressiveTimelineLayout({
+      anchor: {
+        messageIndex: 550,
+        viewportPosition: 100_000,
+      },
+      loadedSize: 12_000,
+      messageHistory: {
+        ...messageHistory,
+        startIndex: 500,
+        endIndex: 600,
+      },
+      preserveHistoricalCanvas: true,
+    });
+    const manualAnchor = handoffProgressiveTimelineAnchorToUser({
+      anchor: {
+        kind: "message",
+        messageId: MessageId.make("message-550"),
+        messageIndex: 550,
+        viewportOffset: 300,
+      },
+      historyAfterSize: anchoredLayout.historyAfterSize,
+      historyBeforeSize: anchoredLayout.historyBeforeSize,
+      loadedSize: 12_000,
+      messageHistory: {
+        ...messageHistory,
+        startIndex: 500,
+        endIndex: 600,
+      },
+      scrollLength: 600,
+      scrollTop: 99_700,
+    });
+    expect(manualAnchor).toEqual({
+      kind: "logical",
+      messageIndex: 550,
+    });
+    const manualLayout = resolveProgressiveTimelineLayout({
+      anchor: {
+        messageIndex: manualAnchor.messageIndex,
+        viewportPosition: 100_000,
+      },
+      loadedSize: 12_000,
+      messageHistory: {
+        ...messageHistory,
+        startIndex: 500,
+        endIndex: 600,
+      },
+      preserveHistoricalCanvas: true,
+    });
+
+    expect(manualLayout).toEqual(anchoredLayout);
   });
 
   it("only captures scroll events owned by manual navigation", () => {

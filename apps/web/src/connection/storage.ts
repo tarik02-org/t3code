@@ -53,6 +53,7 @@ const THREAD_HISTORY_PLAN_POSITION_INDEX_NAME = "by-position";
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";
 const THREAD_STORE_NAME = "thread";
+const THREAD_CACHE_KEY_NAMESPACE = "tarik02:bounded-v1";
 const SERVER_CONFIG_STORE_NAME = "server-config";
 const VCS_REFS_STORE_NAME = "vcs-refs";
 const CATALOG_KEY = "document";
@@ -178,6 +179,8 @@ function persistenceError(
     | "save-server-config"
     | "load-vcs-refs"
     | "save-vcs-refs"
+    | "remove-vcs-refs"
+    | "clear-vcs-refs"
     | "clear-environment",
   cause: unknown,
 ) {
@@ -419,7 +422,7 @@ function removeDatabaseValuesInRange(database: IDBDatabase, storeName: string, r
 }
 
 function threadCacheKey(environmentId: EnvironmentId, threadId: ThreadId) {
-  return `${environmentId}:${threadId}`;
+  return `${THREAD_CACHE_KEY_NAMESPACE}:${environmentId}:${threadId}`;
 }
 
 function threadHistoryScope(environmentId: EnvironmentId, threadId: ThreadId) {
@@ -929,6 +932,18 @@ export const connectionStorageLayer = Layer.effectContext(
               : persistenceError("save-vcs-refs", cause),
           ),
         ),
+      removeVcsRefs: (environmentId, cwd) =>
+        removeDatabaseValue(
+          database,
+          VCS_REFS_STORE_NAME,
+          vcsRefsCacheKey(environmentId, cwd),
+        ).pipe(Effect.mapError((cause) => persistenceError("remove-vcs-refs", cause))),
+      clearVcsRefs: (environmentId) =>
+        removeDatabaseValuesInRange(
+          database,
+          VCS_REFS_STORE_NAME,
+          IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
+        ).pipe(Effect.mapError((cause) => persistenceError("clear-vcs-refs", cause))),
       removeThread: (environmentId, threadId) =>
         removeDatabaseValue(
           database,

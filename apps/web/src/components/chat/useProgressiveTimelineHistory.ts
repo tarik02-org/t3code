@@ -15,6 +15,7 @@ import {
 } from "react";
 import { resolveTimelineIsAtEnd, type MessagesTimelineRow } from "./MessagesTimeline.logic";
 import {
+  handoffProgressiveTimelineAnchorToUser,
   isProgressiveTimelineNavigationKey,
   PROGRESSIVE_TIMELINE_MESSAGE_SIZE,
   resolveProgressiveTimelineHistoryTarget,
@@ -22,6 +23,7 @@ import {
   resolveProgressiveTimelineMessageIndex,
   shouldCaptureProgressiveTimelineScroll,
   type ProgressiveTimelineProgrammaticScroll,
+  type ProgressiveTimelineViewportAnchor,
   type TimelineHistoryNavigationTarget,
 } from "./progressiveTimelineHistory.logic";
 
@@ -30,18 +32,6 @@ const HISTORY_SKELETON_PERIOD = PROGRESSIVE_TIMELINE_MESSAGE_SIZE * 2;
 const INITIAL_TAIL_POSITION_DELAY_MS = 200;
 const MANUAL_SCROLL_END_DELAY_MS = 160;
 const MESSAGE_VIEWPORT_OFFSET = 24;
-
-type ViewportAnchor =
-  | {
-      readonly kind: "logical";
-      readonly messageIndex: number;
-    }
-  | {
-      readonly kind: "message";
-      readonly messageId: MessageId;
-      readonly messageIndex: number | null;
-      readonly viewportOffset: number;
-    };
 
 type PendingHistoryRequest =
   | {
@@ -106,7 +96,7 @@ export function useProgressiveTimelineHistory({
   rows,
   timelineViewportElement,
 }: UseProgressiveTimelineHistoryInput) {
-  const anchorRef = useRef<ViewportAnchor | null>(null);
+  const anchorRef = useRef<ProgressiveTimelineViewportAnchor | null>(null);
   const pendingRequestRef = useRef<PendingHistoryRequest | null>(null);
   const resolvedLogicalAnchorRef = useRef<ResolvedLogicalAnchor | null>(null);
   const programmaticScrollRef = useRef<ProgressiveTimelineProgrammaticScroll | null>(null);
@@ -504,26 +494,48 @@ export function useProgressiveTimelineHistory({
     }, delay);
   }, [requestHistoryForAnchor]);
 
-  const releaseScrollControl = useCallback(() => {
+  const cancelProgrammaticNavigation = useCallback(() => {
     const scrollNode = historyScrollElement;
     if (programmaticScrollRef.current !== null && scrollNode !== null) {
       onHistoryScrollToOffset(scrollNode.scrollTop, "auto");
       scrollNode.dispatchEvent(new Event("scroll"));
     }
     clearAlignmentWait();
-    manualScrollRef.current = false;
     programmaticScrollRef.current = null;
     expectedScrollTopRef.current = null;
-    anchorRef.current = null;
     pendingRequestRef.current = null;
     resolvedLogicalAnchorRef.current = null;
     onHistoryTargetReady?.();
   }, [clearAlignmentWait, historyScrollElement, onHistoryScrollToOffset, onHistoryTargetReady]);
 
+  const resetNavigation = useCallback(() => {
+    cancelProgrammaticNavigation();
+    manualScrollRef.current = false;
+    anchorRef.current = null;
+  }, [cancelProgrammaticNavigation]);
+
   const beginUserNavigation = useCallback(() => {
     const takesScrollControl = !manualScrollRef.current || programmaticScrollRef.current !== null;
     if (takesScrollControl) {
-      releaseScrollControl();
+      const scrollNode = historyScrollElement;
+      if (
+        anchorRef.current?.kind === "message" &&
+        messageHistory !== undefined &&
+        scrollNode !== null
+      ) {
+        const scrollTop = scrollNode.scrollTop;
+        scrollOffsetRef.current = scrollTop;
+        anchorRef.current = handoffProgressiveTimelineAnchorToUser({
+          anchor: anchorRef.current,
+          historyAfterSize,
+          historyBeforeSize,
+          loadedSize,
+          messageHistory,
+          scrollLength: scrollNode.clientHeight,
+          scrollTop,
+        });
+      }
+      cancelProgrammaticNavigation();
       initialTailPositionPendingRef.current = false;
       if (initialTailPositionTimeoutRef.current !== null) {
         window.clearTimeout(initialTailPositionTimeoutRef.current);
@@ -536,7 +548,15 @@ export function useProgressiveTimelineHistory({
       manualScrollEndTimeoutRef.current = null;
     }
     manualScrollRef.current = true;
-  }, [onManualNavigation, releaseScrollControl]);
+  }, [
+    cancelProgrammaticNavigation,
+    historyAfterSize,
+    historyBeforeSize,
+    historyScrollElement,
+    loadedSize,
+    messageHistory,
+    onManualNavigation,
+  ]);
 
   const beginPointerNavigation = useCallback(() => {
     pointerNavigationRef.current = true;
@@ -548,7 +568,7 @@ export function useProgressiveTimelineHistory({
       return;
     }
     handledLatestMessagesRequestRef.current = latestMessagesRequest;
-    releaseScrollControl();
+    resetNavigation();
     initialTailPositionPendingRef.current = false;
     if (initialTailPositionTimeoutRef.current !== null) {
       window.clearTimeout(initialTailPositionTimeoutRef.current);
@@ -558,7 +578,7 @@ export function useProgressiveTimelineHistory({
     historyInitializedRef.current = false;
     scrollOffsetRef.current = null;
     setHistoricalNavigation(false);
-  }, [latestMessagesRequest, releaseScrollControl]);
+  }, [latestMessagesRequest, resetNavigation]);
 
   const handleScroll = useCallback(() => {
     const state = messageHistory === undefined ? listRef.current?.getState?.() : undefined;

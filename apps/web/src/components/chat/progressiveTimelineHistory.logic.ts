@@ -8,6 +8,18 @@ export const PROGRESSIVE_TIMELINE_MESSAGE_SIZE = 240;
 
 export type ProgressiveTimelineProgrammaticScroll = "seeking" | "aligning";
 
+export type ProgressiveTimelineViewportAnchor =
+  | {
+      readonly kind: "logical";
+      readonly messageIndex: number;
+    }
+  | {
+      readonly kind: "message";
+      readonly messageId: MessageId;
+      readonly messageIndex: number | null;
+      readonly viewportOffset: number;
+    };
+
 export interface TimelineHistoryNavigationTarget {
   readonly id: MessageId;
   readonly messageIndex: number | null;
@@ -103,6 +115,39 @@ export function resolveProgressiveTimelineMessageIndex({
           ((viewportPosition - historyBeforeSize) / Math.max(1, loadedSize)) *
             (messageHistory.endIndex - messageHistory.startIndex);
   return Math.max(0, Math.min(messageHistory.totalMessages - 1, messageIndex));
+}
+
+export function handoffProgressiveTimelineAnchorToUser({
+  anchor,
+  historyAfterSize,
+  historyBeforeSize,
+  loadedSize,
+  messageHistory,
+  scrollLength,
+  scrollTop,
+}: {
+  readonly anchor: ProgressiveTimelineViewportAnchor;
+  readonly historyAfterSize: number;
+  readonly historyBeforeSize: number;
+  readonly loadedSize: number;
+  readonly messageHistory: OrchestrationThreadMessageHistory;
+  readonly scrollLength: number;
+  readonly scrollTop: number;
+}): Extract<ProgressiveTimelineViewportAnchor, { readonly kind: "logical" }> {
+  if (anchor.kind === "logical") {
+    return anchor;
+  }
+  return {
+    kind: "logical",
+    messageIndex: resolveProgressiveTimelineMessageIndex({
+      historyAfterSize,
+      historyBeforeSize,
+      loadedSize,
+      messageHistory,
+      scrollLength,
+      scrollTop,
+    }),
+  };
 }
 
 export function shouldCaptureProgressiveTimelineScroll({
