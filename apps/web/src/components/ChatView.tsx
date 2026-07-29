@@ -1148,6 +1148,12 @@ function ChatViewContent(props: ChatViewProps) {
   const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
     reportFailure: false,
   });
+  const loadPreviousMessages = useAtomCommand(environmentThreads.loadPreviousMessages, {
+    reportFailure: false,
+  });
+  const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
+    reportFailure: false,
+  });
   const cancelMessagesAround = useAtomCommand(environmentThreads.cancelMessagesAround, {
     reportFailure: false,
   });
@@ -1457,6 +1463,20 @@ function ChatViewContent(props: ChatViewProps) {
       current.messageId === null ? current : { ...current, messageId: null },
     );
   }, []);
+  const handleLoadPreviousMessages = useCallback(async () => {
+    const result = await loadPreviousMessages({
+      environmentId,
+      input: { threadId },
+    });
+    return result._tag === "Success" && result.value;
+  }, [environmentId, loadPreviousMessages, threadId]);
+  const handleLoadNextMessages = useCallback(async () => {
+    const result = await loadNextMessages({
+      environmentId,
+      input: { threadId },
+    });
+    return result._tag === "Success" && result.value;
+  }, [environmentId, loadNextMessages, threadId]);
   const threadError = isServerThread
     ? (localServerError ?? serverThread?.session?.lastError ?? null)
     : localDraftError;
@@ -3555,12 +3575,15 @@ function ChatViewContent(props: ChatViewProps) {
       showScrollDebouncer.current.cancel();
       setShowScrollToBottom(false);
 
-      if (activeThread?.messageHistory?.hasMoreAfter !== true) {
+      if (activeThread?.messageHistory === undefined) {
         void legendListRef.current?.scrollToEnd?.({ animated });
         return;
       }
 
       setLatestMessagesRequest((request) => request + 1);
+      if (!activeThread.messageHistory.hasMoreAfter) {
+        return;
+      }
       void showLatestMessages({
         environmentId,
         input: { threadId },
@@ -3578,17 +3601,9 @@ function ChatViewContent(props: ChatViewProps) {
           }
           return;
         }
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (liveFollowUserScrollGenerationRef.current !== userScrollGeneration) {
-              return;
-            }
-            void legendListRef.current?.scrollToEnd?.({ animated: false });
-          });
-        });
       });
     },
-    [activeThread?.messageHistory?.hasMoreAfter, environmentId, showLatestMessages, threadId],
+    [activeThread?.messageHistory, environmentId, showLatestMessages, threadId],
   );
   useEffect(() => {
     let removeListeners: (() => void) | null = null;
@@ -6009,9 +6024,7 @@ function ChatViewContent(props: ChatViewProps) {
                   : { messageHistory: activeThread.messageHistory })}
                 isLoadingPreviousMessages={
                   environmentThreadState.history.kind === "ready" &&
-                  (environmentThreadState.history.loading === "before" ||
-                    environmentThreadState.history.loading === "around" ||
-                    environmentThreadState.history.loading === "outline")
+                  environmentThreadState.history.loading === "before"
                 }
                 isLoadingNextMessages={
                   environmentThreadState.history.kind === "ready" &&
@@ -6026,6 +6039,8 @@ function ChatViewContent(props: ChatViewProps) {
                 historyTargetMessageId={historyTarget.messageId}
                 onSelectHistoryMessage={handleSelectHistoryMessage}
                 onHistoryTargetReady={handleHistoryTargetReady}
+                onLoadPreviousMessages={handleLoadPreviousMessages}
+                onLoadNextMessages={handleLoadNextMessages}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

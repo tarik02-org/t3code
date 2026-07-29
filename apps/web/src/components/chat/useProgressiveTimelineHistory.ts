@@ -1,663 +1,290 @@
-import {
-  type MessageId,
-  type OrchestrationThreadHistoryOutline,
-  type OrchestrationThreadMessageHistory,
-} from "@t3tools/contracts";
+import { type MessageId, type OrchestrationThreadMessageHistory } from "@t3tools/contracts";
 import { type LegendListRef } from "@legendapp/list/react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { type Virtualizer } from "@tanstack/react-virtual";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 import { resolveTimelineIsAtEnd, type MessagesTimelineRow } from "./MessagesTimeline.logic";
-import {
-  handoffProgressiveTimelineAnchorToUser,
-  isProgressiveTimelineNavigationKey,
-  PROGRESSIVE_TIMELINE_MESSAGE_SIZE,
-  resolveProgressiveTimelineHistoryTarget,
-  resolveProgressiveTimelineLayout,
-  resolveProgressiveTimelineMessageIndex,
-  shouldCaptureProgressiveTimelineScroll,
-  type ProgressiveTimelineProgrammaticScroll,
-  type ProgressiveTimelineViewportAnchor,
-  type TimelineHistoryNavigationTarget,
-} from "./progressiveTimelineHistory.logic";
 
-const HISTORY_LOAD_THROTTLE_MS = 180;
-const HISTORY_SKELETON_PERIOD = PROGRESSIVE_TIMELINE_MESSAGE_SIZE * 2;
-const INITIAL_TAIL_POSITION_DELAY_MS = 200;
-const MANUAL_SCROLL_END_DELAY_MS = 160;
+const HISTORY_EDGE_THRESHOLD = 640;
+const MANUAL_INPUT_IDLE_MS = 240;
 const MESSAGE_VIEWPORT_OFFSET = 24;
 
-type PendingHistoryRequest =
-  | {
-      readonly kind: "logical";
-      readonly anchorMessageIndex: number;
-      readonly messageId: MessageId;
-    }
-  | {
-      readonly kind: "message";
-      readonly messageId: MessageId;
-    };
-
-interface HistoryLayoutMeasurement {
-  readonly windowKey: string;
-  readonly loadedSize: number;
+export interface TimelineHistoryNavigationTarget {
+  readonly id: MessageId;
+  readonly messageIndex: number | null;
+  readonly rowIndex: number | null;
 }
 
-interface ResolvedLogicalAnchor {
-  readonly anchorMessageIndex: number;
+type HistoryPageDirection = "before" | "after";
+
+interface HistoryPageAnchor {
+  readonly direction: HistoryPageDirection;
+  readonly originWindowKey: string;
   readonly messageId: MessageId;
-  readonly windowKey: string;
+  readonly viewportOffset: number;
 }
 
 interface UseProgressiveTimelineHistoryInput {
-  readonly historyOutline: OrchestrationThreadHistoryOutline | null;
-  readonly historyLayoutMeasurement: HistoryLayoutMeasurement | null;
   readonly historyScrollElement: HTMLDivElement | null;
   readonly historyTargetMessageId: MessageId | null;
+  readonly historyVirtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
   readonly isLoadingNextMessages: boolean;
   readonly isLoadingPreviousMessages: boolean;
   readonly latestMessagesRequest: number;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly messageHistory: OrchestrationThreadMessageHistory | undefined;
   readonly minimapItems: ReadonlyArray<TimelineHistoryNavigationTarget>;
+  readonly minimapPositionRef: RefObject<HTMLSpanElement | null>;
   readonly minimapStripMap: Map<string, HTMLSpanElement>;
   readonly onHistoryTargetReady: (() => void) | undefined;
-  readonly onHistoryScrollToOffset: (offset: number, behavior: ScrollBehavior) => void;
   readonly onIsAtEndChange: (isAtEnd: boolean) => void;
+  readonly onLoadNextMessages: (() => Promise<boolean>) | undefined;
+  readonly onLoadPreviousMessages: (() => Promise<boolean>) | undefined;
   readonly onManualNavigation: () => void;
   readonly onSelectHistoryMessage: ((messageId: MessageId) => void) | undefined;
+  readonly routeThreadKey: string;
   readonly rows: ReadonlyArray<MessagesTimelineRow>;
-  readonly timelineViewportElement: HTMLDivElement | null;
 }
 
 export function useProgressiveTimelineHistory({
-  historyOutline,
-  historyLayoutMeasurement,
   historyScrollElement,
   historyTargetMessageId,
+  historyVirtualizer,
   isLoadingNextMessages,
   isLoadingPreviousMessages,
   latestMessagesRequest,
   listRef,
   messageHistory,
   minimapItems,
+  minimapPositionRef,
   minimapStripMap,
   onHistoryTargetReady,
-  onHistoryScrollToOffset,
   onIsAtEndChange,
+  onLoadNextMessages,
+  onLoadPreviousMessages,
   onManualNavigation,
   onSelectHistoryMessage,
+  routeThreadKey,
   rows,
-  timelineViewportElement,
 }: UseProgressiveTimelineHistoryInput) {
-  const anchorRef = useRef<ProgressiveTimelineViewportAnchor | null>(null);
-  const pendingRequestRef = useRef<PendingHistoryRequest | null>(null);
-  const resolvedLogicalAnchorRef = useRef<ResolvedLogicalAnchor | null>(null);
-  const programmaticScrollRef = useRef<ProgressiveTimelineProgrammaticScroll | null>(null);
-  const expectedScrollTopRef = useRef<number | null>(null);
-  const scrollOffsetRef = useRef<number | null>(null);
-  const manualScrollRef = useRef(false);
-  const pointerNavigationRef = useRef(false);
-  const manualScrollEndTimeoutRef = useRef<number | null>(null);
-  const loadTimeoutRef = useRef<number | null>(null);
-  const lastLoadAtRef = useRef(0);
-  const reconcileTimeoutRef = useRef<number | null>(null);
-  const reconcileAnchorRef = useRef<() => void>(() => {});
-  const alignmentCleanupRef = useRef<(() => void) | null>(null);
-  const historyBeforeSpacerRef = useRef<HTMLDivElement>(null);
-  const historyAfterSpacerRef = useRef<HTMLDivElement>(null);
-  const historyBeforeSkeletonsRef = useRef<HTMLDivElement>(null);
-  const historyAfterSkeletonsRef = useRef<HTMLDivElement>(null);
-  const historyInitializedRef = useRef(false);
-  const latestPositionPendingRef = useRef(false);
-  const initialTailPositionPendingRef = useRef(false);
-  const initialTailPositionTimeoutRef = useRef<number | null>(null);
+  const pendingPageAnchorRef = useRef<HistoryPageAnchor | null>(null);
+  const activeMessageAnchorRef = useRef<{
+    readonly messageId: MessageId;
+    readonly viewportOffset: number;
+  } | null>(null);
+  const pageRequestDirectionRef = useRef<HistoryPageDirection | null>(null);
+  const manualInputRef = useRef(false);
+  const manualInputTimeoutRef = useRef<number | null>(null);
+  const ignoreScrollRef = useRef(false);
+  const ignoreScrollFrameRef = useRef<number | null>(null);
+  const alignmentFrameRef = useRef<number | null>(null);
+  const alignmentGenerationRef = useRef(0);
+  const lastScrollTopRef = useRef<number | null>(null);
+  const initializedThreadRef = useRef<string | null>(null);
   const handledLatestMessagesRequestRef = useRef(latestMessagesRequest);
-  const [historicalNavigation, setHistoricalNavigation] = useState(false);
-  const loadedMessageIds = useMemo(() => {
-    const messageIds: MessageId[] = [];
-    for (const row of rows) {
-      if (row.kind === "message") {
-        messageIds.push(row.message.id);
-      }
-    }
-    return messageIds;
-  }, [rows]);
+  const latestPositionPendingRef = useRef(false);
+  const followEndRef = useRef(true);
 
   const historyWindowKey =
     messageHistory === undefined
       ? null
       : `${messageHistory.startIndex}:${messageHistory.endIndex}:${messageHistory.totalMessages}`;
-  const estimatedLoadedSize =
-    messageHistory === undefined
-      ? 0
-      : (messageHistory.endIndex - messageHistory.startIndex) * PROGRESSIVE_TIMELINE_MESSAGE_SIZE;
-  const loadedSize =
-    historyLayoutMeasurement?.windowKey === historyWindowKey
-      ? historyLayoutMeasurement.loadedSize
-      : estimatedLoadedSize;
-  const currentAnchor = anchorRef.current;
-  const layoutAnchor =
-    currentAnchor === null || scrollOffsetRef.current === null || historyScrollElement === null
-      ? null
-      : currentAnchor.kind === "logical"
-        ? {
-            messageIndex: currentAnchor.messageIndex,
-            viewportPosition: scrollOffsetRef.current + historyScrollElement.clientHeight / 2,
-          }
-        : currentAnchor.messageIndex === null
-          ? null
-          : {
-              messageIndex: currentAnchor.messageIndex,
-              viewportPosition: scrollOffsetRef.current + currentAnchor.viewportOffset,
-            };
-  const {
-    contentSize: contentHeight,
-    historyAfterSize,
-    historyBeforeSize,
-    virtualHistoryAfterSize,
-    virtualHistoryBeforeSize,
-  } = messageHistory === undefined
-    ? {
-        contentSize: 0,
-        historyAfterSize: 0,
-        historyBeforeSize: 0,
-        virtualHistoryAfterSize: 0,
-        virtualHistoryBeforeSize: 0,
+  const rowIndexByMessageId = useMemo(() => {
+    const indexes = new Map<MessageId, number>();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (row?.kind === "message") {
+        indexes.set(row.message.id, index);
       }
-    : resolveProgressiveTimelineLayout({
-        anchor: layoutAnchor,
-        loadedSize,
-        messageHistory,
-        preserveHistoricalCanvas: historicalNavigation || messageHistory.hasMoreAfter,
-      });
-  const historyRequestInProgress =
-    isLoadingPreviousMessages || isLoadingNextMessages || historyTargetMessageId !== null;
-  const historyLoadInProgress = isLoadingPreviousMessages || isLoadingNextMessages;
+    }
+    return indexes;
+  }, [rows]);
+  const loadedMessageIndexById = useMemo(() => {
+    const indexes = new Map<MessageId, number>();
+    let messageIndex = 0;
+    for (const row of rows) {
+      if (row.kind !== "message") {
+        continue;
+      }
+      indexes.set(row.message.id, messageIndex);
+      messageIndex += 1;
+    }
+    return indexes;
+  }, [rows]);
 
-  const clearAlignmentWait = useCallback(() => {
-    alignmentCleanupRef.current?.();
-    alignmentCleanupRef.current = null;
+  const markProgrammaticScroll = useCallback(() => {
+    ignoreScrollRef.current = true;
+    if (ignoreScrollFrameRef.current !== null) {
+      cancelAnimationFrame(ignoreScrollFrameRef.current);
+    }
+    ignoreScrollFrameRef.current = requestAnimationFrame(() => {
+      ignoreScrollFrameRef.current = null;
+      ignoreScrollRef.current = false;
+    });
   }, []);
 
-  const queueReconciliation = useCallback(() => {
-    if (reconcileTimeoutRef.current !== null) {
-      return;
+  const cancelAlignment = useCallback(() => {
+    alignmentGenerationRef.current += 1;
+    if (alignmentFrameRef.current !== null) {
+      cancelAnimationFrame(alignmentFrameRef.current);
+      alignmentFrameRef.current = null;
     }
-    reconcileTimeoutRef.current = window.setTimeout(() => {
-      reconcileTimeoutRef.current = null;
-      reconcileAnchorRef.current();
-    }, 0);
   }, []);
 
-  const positionHistorySkeletons = useCallback(
-    (scrollTop: number, scrollHeight: number) => {
-      const renderedHistoryBeforeSize =
-        historyBeforeSpacerRef.current?.offsetHeight ?? historyBeforeSize;
-      const renderedHistoryAfterSize =
-        historyAfterSpacerRef.current?.offsetHeight ?? historyAfterSize;
-      const historyBeforeSkeletons = historyBeforeSkeletonsRef.current;
-      if (historyBeforeSkeletons !== null) {
-        const offset = Math.min(
-          Math.max(
-            0,
-            Math.floor(scrollTop / HISTORY_SKELETON_PERIOD) * HISTORY_SKELETON_PERIOD -
-              HISTORY_SKELETON_PERIOD,
-          ),
-          Math.max(
-            0,
-            Math.floor(
-              (renderedHistoryBeforeSize - HISTORY_SKELETON_PERIOD) / HISTORY_SKELETON_PERIOD,
-            ) * HISTORY_SKELETON_PERIOD,
-          ),
-        );
-        const transform = `translateY(${offset}px)`;
-        if (historyBeforeSkeletons.style.transform !== transform) {
-          historyBeforeSkeletons.style.transform = transform;
-        }
-      }
-      const historyAfterSkeletons = historyAfterSkeletonsRef.current;
-      if (historyAfterSkeletons !== null) {
-        const scrollWithinHistory = Math.max(
-          0,
-          scrollTop - (scrollHeight - renderedHistoryAfterSize),
-        );
-        const offset = Math.min(
-          Math.max(
-            0,
-            Math.floor(scrollWithinHistory / HISTORY_SKELETON_PERIOD) * HISTORY_SKELETON_PERIOD -
-              HISTORY_SKELETON_PERIOD,
-          ),
-          Math.max(
-            0,
-            Math.floor(
-              (renderedHistoryAfterSize - HISTORY_SKELETON_PERIOD) / HISTORY_SKELETON_PERIOD,
-            ) * HISTORY_SKELETON_PERIOD,
-          ),
-        );
-        const transform = `translateY(${offset}px)`;
-        if (historyAfterSkeletons.style.transform !== transform) {
-          historyAfterSkeletons.style.transform = transform;
-        }
-      }
-    },
-    [historyAfterSize, historyBeforeSize],
-  );
-
-  const setScrollTop = useCallback(
-    (scrollNode: HTMLElement, scrollTop: number) => {
-      scrollOffsetRef.current = scrollTop;
-      expectedScrollTopRef.current = scrollTop;
-      positionHistorySkeletons(scrollTop, scrollNode.scrollHeight);
-      onHistoryScrollToOffset(scrollTop, "auto");
-      scrollNode.dispatchEvent(new Event("scroll"));
-    },
-    [onHistoryScrollToOffset, positionHistorySkeletons],
-  );
-
-  const smoothScroll = useCallback(
-    (scrollNode: HTMLElement, scrollTop: number, onFinish: () => void) => {
-      clearAlignmentWait();
-      if (Math.abs(scrollNode.scrollTop - scrollTop) <= 1) {
-        onFinish();
-        return;
-      }
-
-      let finished = false;
-      const finish = () => {
-        if (finished) {
-          return;
-        }
-        finished = true;
-        window.clearTimeout(timeout);
-        scrollNode.removeEventListener("scrollend", finish);
-        if (alignmentCleanupRef.current === cleanup) {
-          alignmentCleanupRef.current = null;
-        }
-        onFinish();
-      };
-      const timeout = window.setTimeout(finish, 1_000);
-      const cleanup = () => {
-        finished = true;
-        window.clearTimeout(timeout);
-        scrollNode.removeEventListener("scrollend", finish);
-      };
-      alignmentCleanupRef.current = cleanup;
-      positionHistorySkeletons(scrollTop, scrollNode.scrollHeight);
-      scrollNode.addEventListener("scrollend", finish, { once: true });
-      onHistoryScrollToOffset(scrollTop, "smooth");
-    },
-    [clearAlignmentWait, onHistoryScrollToOffset, positionHistorySkeletons],
-  );
-
-  const scheduleInitialTailPosition = useCallback(() => {
-    if (initialTailPositionTimeoutRef.current !== null) {
-      window.clearTimeout(initialTailPositionTimeoutRef.current);
-    }
-    initialTailPositionTimeoutRef.current = window.setTimeout(() => {
-      initialTailPositionTimeoutRef.current = null;
-      if (!initialTailPositionPendingRef.current) {
-        return;
-      }
-      initialTailPositionPendingRef.current = false;
+  const alignMessage = useCallback(
+    (messageId: MessageId, viewportOffset: number, onAligned?: () => void) => {
       const scrollNode = historyScrollElement;
-      if (scrollNode === null) {
-        return;
-      }
-      const scrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
-      scrollOffsetRef.current = scrollTop;
-      onHistoryScrollToOffset(scrollTop, "auto");
-      scrollNode.dispatchEvent(new Event("scroll"));
-    }, INITIAL_TAIL_POSITION_DELAY_MS);
-  }, [historyScrollElement, onHistoryScrollToOffset]);
-
-  const reconcileAnchor = useCallback(() => {
-    if (
-      messageHistory === undefined ||
-      historyWindowKey === null ||
-      timelineViewportElement === null
-    ) {
-      return false;
-    }
-    const scrollNode = historyScrollElement;
-    const anchor = anchorRef.current;
-    if (scrollNode === null || anchor === null) {
-      return false;
-    }
-    if (anchor.kind === "logical") {
-      const pendingRequest = pendingRequestRef.current;
-      if (
-        pendingRequest?.kind === "logical" &&
-        Math.abs(pendingRequest.anchorMessageIndex - anchor.messageIndex) > 0.5
-      ) {
-        pendingRequestRef.current = null;
-        onHistoryTargetReady?.();
-        return true;
-      }
-      if (
-        pendingRequest?.kind === "logical" &&
-        !minimapItems.some((item) => item.id === pendingRequest.messageId && item.rowIndex !== null)
-      ) {
+      const rowIndex = rowIndexByMessageId.get(messageId);
+      if (scrollNode === null || rowIndex === undefined) {
         return false;
       }
-      if (pendingRequest?.kind === "logical") {
-        resolvedLogicalAnchorRef.current = {
-          anchorMessageIndex: anchor.messageIndex,
-          messageId: pendingRequest.messageId,
-          windowKey: historyWindowKey,
-        };
-        pendingRequestRef.current = null;
-        onHistoryTargetReady?.();
+
+      cancelAlignment();
+      const generation = alignmentGenerationRef.current;
+      const offset = historyVirtualizer.getOffsetForIndex(rowIndex, "start")?.[0];
+      if (offset !== undefined) {
+        markProgrammaticScroll();
+        scrollNode.scrollTop = Math.max(0, offset - viewportOffset);
       }
+
+      const correctMeasuredOffset = (remainingFrames: number) => {
+        alignmentFrameRef.current = requestAnimationFrame(() => {
+          alignmentFrameRef.current = null;
+          if (generation !== alignmentGenerationRef.current) {
+            return;
+          }
+          const target = scrollNode.querySelector<HTMLElement>(
+            `[data-message-id="${CSS.escape(messageId)}"]`,
+          );
+          if (target === null) {
+            if (remainingFrames > 0) {
+              correctMeasuredOffset(remainingFrames - 1);
+            }
+            return;
+          }
+
+          const delta =
+            target.getBoundingClientRect().top -
+            scrollNode.getBoundingClientRect().top -
+            viewportOffset;
+          if (Math.abs(delta) > 1 && remainingFrames > 0) {
+            markProgrammaticScroll();
+            scrollNode.scrollTop += delta;
+            correctMeasuredOffset(remainingFrames - 1);
+            return;
+          }
+          onAligned?.();
+        });
+      };
+      correctMeasuredOffset(6);
       return true;
-    }
+    },
+    [
+      cancelAlignment,
+      historyScrollElement,
+      historyVirtualizer,
+      markProgrammaticScroll,
+      rowIndexByMessageId,
+    ],
+  );
 
-    const target = timelineViewportElement.querySelector<HTMLElement>(
-      `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
-    );
-    if (target === null) {
-      return false;
+  const captureVisibleAnchor = useCallback((): HistoryPageAnchor | null => {
+    if (historyScrollElement === null || historyWindowKey === null) {
+      return null;
     }
-    if (programmaticScrollRef.current === "seeking") {
-      return false;
-    }
-
-    const scrollTop =
-      scrollNode.scrollTop +
-      target.getBoundingClientRect().top -
-      scrollNode.getBoundingClientRect().top -
-      anchor.viewportOffset;
-    if (Math.abs(scrollNode.scrollTop - scrollTop) <= 2) {
-      clearAlignmentWait();
-      programmaticScrollRef.current = null;
-      pendingRequestRef.current = null;
-      if (historyTargetMessageId === anchor.messageId) {
-        onHistoryTargetReady?.();
+    const viewport = historyScrollElement.getBoundingClientRect();
+    let anchorElement: HTMLElement | null = null;
+    for (const element of historyScrollElement.querySelectorAll<HTMLElement>("[data-message-id]")) {
+      const rect = element.getBoundingClientRect();
+      if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) {
+        continue;
       }
-      return true;
+      if (anchorElement === null || rect.top < anchorElement.getBoundingClientRect().top) {
+        anchorElement = element;
+      }
     }
-    if (pendingRequestRef.current?.kind !== "message") {
-      clearAlignmentWait();
-      setScrollTop(scrollNode, scrollTop);
-      queueReconciliation();
-      return false;
-    }
-    if (programmaticScrollRef.current === "aligning") {
-      return false;
+    const messageId = anchorElement?.dataset.messageId as MessageId | undefined;
+    if (anchorElement !== null && messageId !== undefined) {
+      return {
+        direction: "before",
+        originWindowKey: historyWindowKey,
+        messageId,
+        viewportOffset:
+          anchorElement.getBoundingClientRect().top -
+          historyScrollElement.getBoundingClientRect().top,
+      };
     }
 
-    programmaticScrollRef.current = "aligning";
-    const finishAlignment = () => {
-      if (programmaticScrollRef.current !== "aligning") {
+    const virtualItem = historyVirtualizer.getVirtualItemForOffset(historyScrollElement.scrollTop);
+    if (virtualItem === undefined) {
+      return null;
+    }
+    let rowIndex = virtualItem.index;
+    while (rowIndex < rows.length && rows[rowIndex]?.kind !== "message") {
+      rowIndex += 1;
+    }
+    if (rowIndex === rows.length) {
+      rowIndex = virtualItem.index - 1;
+      while (rowIndex >= 0 && rows[rowIndex]?.kind !== "message") {
+        rowIndex -= 1;
+      }
+    }
+    const row = rows[rowIndex];
+    const rowOffset = historyVirtualizer.getOffsetForIndex(rowIndex, "start")?.[0];
+    if (row?.kind !== "message" || rowOffset === undefined) {
+      return null;
+    }
+    return {
+      direction: "before",
+      originWindowKey: historyWindowKey,
+      messageId: row.message.id,
+      viewportOffset: rowOffset - historyScrollElement.scrollTop,
+    };
+  }, [historyScrollElement, historyVirtualizer, historyWindowKey, rows]);
+
+  const requestPage = useCallback(
+    (direction: HistoryPageDirection) => {
+      if (
+        messageHistory === undefined ||
+        historyWindowKey === null ||
+        pageRequestDirectionRef.current !== null ||
+        pendingPageAnchorRef.current !== null
+      ) {
         return;
       }
-      programmaticScrollRef.current = null;
-      pendingRequestRef.current = null;
-      if (historyTargetMessageId === anchor.messageId) {
-        onHistoryTargetReady?.();
+      const anchor = captureVisibleAnchor();
+      const load = direction === "before" ? onLoadPreviousMessages : onLoadNextMessages;
+      if (anchor === null || load === undefined) {
+        return;
       }
-      queueReconciliation();
-    };
-    smoothScroll(scrollNode, scrollTop, finishAlignment);
-    return false;
-  }, [
-    clearAlignmentWait,
-    historyBeforeSize,
-    historyScrollElement,
-    historyTargetMessageId,
-    historyWindowKey,
-    messageHistory,
-    minimapItems,
-    onHistoryTargetReady,
-    queueReconciliation,
-    setScrollTop,
-    smoothScroll,
-    timelineViewportElement,
-  ]);
-  reconcileAnchorRef.current = reconcileAnchor;
 
-  const requestHistoryForAnchor = useCallback(() => {
-    const anchor = anchorRef.current;
-    if (
-      anchor?.kind !== "logical" ||
-      messageHistory === undefined ||
-      historyOutline === null ||
-      onSelectHistoryMessage === undefined ||
-      (resolvedLogicalAnchorRef.current?.windowKey === historyWindowKey &&
-        Math.abs(resolvedLogicalAnchorRef.current.anchorMessageIndex - anchor.messageIndex) <= 0.01)
-    ) {
-      return;
-    }
-
-    const targetMessageId = resolveProgressiveTimelineHistoryTarget({
-      anchorMessageIndex: anchor.messageIndex,
-      historyOutline,
-      loadedMessageIds,
+      pendingPageAnchorRef.current = { ...anchor, direction };
+      pageRequestDirectionRef.current = direction;
+      void load().then((loaded) => {
+        if (pageRequestDirectionRef.current !== direction) {
+          return;
+        }
+        pageRequestDirectionRef.current = null;
+        if (!loaded) {
+          pendingPageAnchorRef.current = null;
+        }
+      });
+    },
+    [
+      captureVisibleAnchor,
+      historyWindowKey,
       messageHistory,
-      minimapItems,
-    });
-    if (targetMessageId === null) {
-      return;
-    }
-    if (
-      minimapItems.some((item) => item.id === targetMessageId && item.rowIndex !== null) ||
-      (anchor.messageIndex >= messageHistory.startIndex &&
-        anchor.messageIndex < messageHistory.endIndex)
-    ) {
-      pendingRequestRef.current = {
-        kind: "logical",
-        anchorMessageIndex: anchor.messageIndex,
-        messageId: targetMessageId,
-      };
-      queueReconciliation();
-      return;
-    }
+      onLoadNextMessages,
+      onLoadPreviousMessages,
+    ],
+  );
 
-    const targetAlreadyRequested =
-      pendingRequestRef.current?.messageId === targetMessageId &&
-      historyTargetMessageId === targetMessageId;
-    pendingRequestRef.current = {
-      kind: "logical",
-      anchorMessageIndex: anchor.messageIndex,
-      messageId: targetMessageId,
-    };
-    if (targetAlreadyRequested) {
-      return;
-    }
-    lastLoadAtRef.current = performance.now();
-    onSelectHistoryMessage(targetMessageId);
-  }, [
-    historyOutline,
-    historyTargetMessageId,
-    historyWindowKey,
-    loadedMessageIds,
-    messageHistory,
-    minimapItems,
-    onSelectHistoryMessage,
-    queueReconciliation,
-  ]);
-
-  const scheduleHistoryLoad = useCallback(() => {
-    if (loadTimeoutRef.current !== null) {
-      return;
-    }
-    const delay = Math.max(0, lastLoadAtRef.current + HISTORY_LOAD_THROTTLE_MS - performance.now());
-    loadTimeoutRef.current = window.setTimeout(() => {
-      loadTimeoutRef.current = null;
-      requestHistoryForAnchor();
-    }, delay);
-  }, [requestHistoryForAnchor]);
-
-  const cancelProgrammaticNavigation = useCallback(() => {
-    const scrollNode = historyScrollElement;
-    if (programmaticScrollRef.current !== null && scrollNode !== null) {
-      onHistoryScrollToOffset(scrollNode.scrollTop, "auto");
-      scrollNode.dispatchEvent(new Event("scroll"));
-    }
-    clearAlignmentWait();
-    programmaticScrollRef.current = null;
-    expectedScrollTopRef.current = null;
-    pendingRequestRef.current = null;
-    resolvedLogicalAnchorRef.current = null;
-    onHistoryTargetReady?.();
-  }, [clearAlignmentWait, historyScrollElement, onHistoryScrollToOffset, onHistoryTargetReady]);
-
-  const resetNavigation = useCallback(() => {
-    cancelProgrammaticNavigation();
-    manualScrollRef.current = false;
-    anchorRef.current = null;
-  }, [cancelProgrammaticNavigation]);
-
-  const beginUserNavigation = useCallback(() => {
-    const takesScrollControl = !manualScrollRef.current || programmaticScrollRef.current !== null;
-    if (takesScrollControl) {
-      const scrollNode = historyScrollElement;
-      if (
-        anchorRef.current?.kind === "message" &&
-        messageHistory !== undefined &&
-        scrollNode !== null
-      ) {
-        const scrollTop = scrollNode.scrollTop;
-        scrollOffsetRef.current = scrollTop;
-        anchorRef.current = handoffProgressiveTimelineAnchorToUser({
-          anchor: anchorRef.current,
-          historyAfterSize,
-          historyBeforeSize,
-          loadedSize,
-          messageHistory,
-          scrollLength: scrollNode.clientHeight,
-          scrollTop,
-        });
-      }
-      cancelProgrammaticNavigation();
-      initialTailPositionPendingRef.current = false;
-      if (initialTailPositionTimeoutRef.current !== null) {
-        window.clearTimeout(initialTailPositionTimeoutRef.current);
-        initialTailPositionTimeoutRef.current = null;
-      }
-      onManualNavigation();
-    }
-    if (manualScrollEndTimeoutRef.current !== null) {
-      window.clearTimeout(manualScrollEndTimeoutRef.current);
-      manualScrollEndTimeoutRef.current = null;
-    }
-    manualScrollRef.current = true;
-  }, [
-    cancelProgrammaticNavigation,
-    historyAfterSize,
-    historyBeforeSize,
-    historyScrollElement,
-    loadedSize,
-    messageHistory,
-    onManualNavigation,
-  ]);
-
-  const beginPointerNavigation = useCallback(() => {
-    pointerNavigationRef.current = true;
-    beginUserNavigation();
-  }, [beginUserNavigation]);
-
-  useLayoutEffect(() => {
-    if (handledLatestMessagesRequestRef.current === latestMessagesRequest) {
-      return;
-    }
-    handledLatestMessagesRequestRef.current = latestMessagesRequest;
-    resetNavigation();
-    initialTailPositionPendingRef.current = false;
-    if (initialTailPositionTimeoutRef.current !== null) {
-      window.clearTimeout(initialTailPositionTimeoutRef.current);
-      initialTailPositionTimeoutRef.current = null;
-    }
-    latestPositionPendingRef.current = true;
-    historyInitializedRef.current = false;
-    scrollOffsetRef.current = null;
-    setHistoricalNavigation(false);
-  }, [latestMessagesRequest, resetNavigation]);
-
-  const handleScroll = useCallback(() => {
-    const state = messageHistory === undefined ? listRef.current?.getState?.() : undefined;
+  const updateMinimap = useCallback(() => {
     const scrollNode =
       messageHistory === undefined ? listRef.current?.getScrollableNode() : historyScrollElement;
-    const isAtEnd =
-      messageHistory === undefined
-        ? resolveTimelineIsAtEnd(state)
-        : scrollNode === null || scrollNode === undefined
-          ? undefined
-          : scrollNode.scrollTop + scrollNode.clientHeight >= scrollNode.scrollHeight - 2;
-    if (isAtEnd !== undefined) {
-      onIsAtEndChange(isAtEnd);
-    }
-    if (messageHistory === undefined || scrollNode === null || scrollNode === undefined) {
+    if (scrollNode === null || scrollNode === undefined) {
       return;
     }
-
-    const scrollTop = scrollNode.scrollTop;
-    const scrollLength = scrollNode.clientHeight;
-    const scrollBottom = scrollTop + scrollLength;
-    const previousScrollTop = scrollOffsetRef.current;
-    scrollOffsetRef.current = scrollTop;
-    const renderedContentHeight = historyBeforeSize + loadedSize + historyAfterSize;
-    positionHistorySkeletons(scrollTop, scrollNode.scrollHeight);
-
-    const expectedScrollTop = expectedScrollTopRef.current;
-    const isExpectedScroll =
-      expectedScrollTop !== null && Math.abs(scrollTop - expectedScrollTop) <= 1;
-    if (isExpectedScroll) {
-      expectedScrollTopRef.current = null;
-    }
-
-    if (
-      messageHistory !== undefined &&
-      historyInitializedRef.current &&
-      shouldCaptureProgressiveTimelineScroll({
-        didScroll: previousScrollTop === null || Math.abs(scrollTop - previousScrollTop) > 0.5,
-        isExpectedScroll,
-        isManualScroll: manualScrollRef.current,
-        programmaticScroll: programmaticScrollRef.current,
-      })
-    ) {
-      if (!pointerNavigationRef.current) {
-        setHistoricalNavigation(true);
-      }
-      if (manualScrollEndTimeoutRef.current !== null) {
-        window.clearTimeout(manualScrollEndTimeoutRef.current);
-      }
-      manualScrollEndTimeoutRef.current = window.setTimeout(() => {
-        manualScrollEndTimeoutRef.current = null;
-        if (!pointerNavigationRef.current) {
-          manualScrollRef.current = false;
-        }
-      }, MANUAL_SCROLL_END_DELAY_MS);
-      resolvedLogicalAnchorRef.current = null;
-      anchorRef.current = {
-        kind: "logical",
-        messageIndex: resolveProgressiveTimelineMessageIndex({
-          historyAfterSize,
-          historyBeforeSize,
-          loadedSize,
-          messageHistory,
-          scrollLength,
-          scrollTop,
-        }),
-      };
-      scheduleHistoryLoad();
-    }
-    if (
-      historicalNavigation &&
-      messageHistory?.hasMoreAfter === false &&
-      previousScrollTop !== null &&
-      scrollTop >= previousScrollTop &&
-      scrollBottom >= renderedContentHeight - 1
-    ) {
-      setHistoricalNavigation(false);
-    }
-
+    const viewport = scrollNode.getBoundingClientRect();
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
       if (strip === undefined || item.rowIndex === null) {
@@ -666,39 +293,174 @@ export function useProgressiveTimelineHistory({
       const row = scrollNode.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(item.id)}"]`,
       );
-      const viewportRect = scrollNode.getBoundingClientRect();
-      const rowRect = row?.getBoundingClientRect();
-      const inView =
-        rowRect !== undefined &&
-        rowRect.bottom > viewportRect.top &&
-        rowRect.top < viewportRect.bottom;
-      strip.dataset.inView = inView ? "true" : "false";
+      const rect = row?.getBoundingClientRect();
+      strip.dataset.inView =
+        rect !== undefined && rect.bottom > viewport.top && rect.top < viewport.bottom
+          ? "true"
+          : "false";
     }
+
+    const positionMarker = minimapPositionRef.current;
+    if (messageHistory === undefined || positionMarker === null || minimapItems.length < 2) {
+      return;
+    }
+    const viewportCenter = viewport.top + viewport.height / 2;
+    let visibleMessageId: MessageId | null = null;
+    let visibleMessageDistance = Number.POSITIVE_INFINITY;
+    for (const element of scrollNode.querySelectorAll<HTMLElement>("[data-message-id]")) {
+      const rect = element.getBoundingClientRect();
+      const distance = Math.abs((rect.top + rect.bottom) / 2 - viewportCenter);
+      if (distance < visibleMessageDistance) {
+        visibleMessageId = element.dataset.messageId as MessageId;
+        visibleMessageDistance = distance;
+      }
+    }
+    const loadedMessageIndex =
+      visibleMessageId === null ? undefined : loadedMessageIndexById.get(visibleMessageId);
+    if (loadedMessageIndex === undefined) {
+      return;
+    }
+
+    const globalMessageIndex = messageHistory.startIndex + loadedMessageIndex;
+    let progress = globalMessageIndex / Math.max(1, messageHistory.totalMessages - 1);
+    let previousItemIndex: number | null = null;
+    for (let index = 0; index < minimapItems.length; index += 1) {
+      const itemMessageIndex = minimapItems[index]?.messageIndex;
+      if (itemMessageIndex === null || itemMessageIndex === undefined) {
+        continue;
+      }
+      if (itemMessageIndex >= globalMessageIndex) {
+        if (previousItemIndex === null) {
+          progress = index / (minimapItems.length - 1);
+        } else {
+          const previousMessageIndex = minimapItems[previousItemIndex]?.messageIndex;
+          progress =
+            previousMessageIndex === null || previousMessageIndex === undefined
+              ? progress
+              : (previousItemIndex +
+                  (globalMessageIndex - previousMessageIndex) /
+                    Math.max(1, itemMessageIndex - previousMessageIndex)) /
+                (minimapItems.length - 1);
+        }
+        break;
+      }
+      previousItemIndex = index;
+      if (index === minimapItems.length - 1) {
+        progress = 1;
+      }
+    }
+    positionMarker.style.top = `${Math.max(0, Math.min(1, progress)) * 100}%`;
   }, [
-    historyAfterSize,
-    historyBeforeSize,
-    historicalNavigation,
+    historyScrollElement,
     listRef,
-    loadedSize,
+    loadedMessageIndexById,
     messageHistory,
     minimapItems,
+    minimapPositionRef,
     minimapStripMap,
-    onIsAtEndChange,
-    positionHistorySkeletons,
-    scheduleHistoryLoad,
+  ]);
+
+  const beginUserNavigation = useCallback(() => {
+    manualInputRef.current = true;
+    followEndRef.current = false;
+    activeMessageAnchorRef.current = null;
+    cancelAlignment();
+    if (historyTargetMessageId !== null) {
+      onHistoryTargetReady?.();
+    }
+    onManualNavigation();
+    if (manualInputTimeoutRef.current !== null) {
+      window.clearTimeout(manualInputTimeoutRef.current);
+    }
+    manualInputTimeoutRef.current = window.setTimeout(() => {
+      manualInputTimeoutRef.current = null;
+      manualInputRef.current = false;
+    }, MANUAL_INPUT_IDLE_MS);
+  }, [cancelAlignment, historyTargetMessageId, onHistoryTargetReady, onManualNavigation]);
+
+  const handleScroll = useCallback(() => {
+    const state = messageHistory === undefined ? listRef.current?.getState?.() : undefined;
+    const scrollNode =
+      messageHistory === undefined ? listRef.current?.getScrollableNode() : historyScrollElement;
+    const localIsAtEnd =
+      messageHistory === undefined
+        ? resolveTimelineIsAtEnd(state)
+        : scrollNode === null || scrollNode === undefined
+          ? undefined
+          : scrollNode.scrollTop + scrollNode.clientHeight >= scrollNode.scrollHeight - 2;
+    if (localIsAtEnd !== undefined) {
+      const isAtEnd =
+        messageHistory === undefined ? localIsAtEnd : localIsAtEnd && !messageHistory.hasMoreAfter;
+      onIsAtEndChange(isAtEnd);
+      if (isAtEnd) {
+        followEndRef.current = true;
+      }
+    }
+    updateMinimap();
+    if (messageHistory === undefined || scrollNode === null || scrollNode === undefined) {
+      return;
+    }
+
+    const scrollTop = scrollNode.scrollTop;
+    const previousScrollTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = scrollTop;
+    if (ignoreScrollRef.current) {
+      return;
+    }
+
+    const pendingPageAnchor = pendingPageAnchorRef.current;
+    if (pendingPageAnchor !== null) {
+      const currentAnchor = captureVisibleAnchor();
+      if (currentAnchor !== null) {
+        pendingPageAnchorRef.current = {
+          ...currentAnchor,
+          direction: pendingPageAnchor.direction,
+          originWindowKey: pendingPageAnchor.originWindowKey,
+        };
+      }
+    }
+    if (!manualInputRef.current || previousScrollTop === null) {
+      return;
+    }
+
+    const delta = scrollTop - previousScrollTop;
+    if (
+      delta < 0 &&
+      scrollTop <= HISTORY_EDGE_THRESHOLD &&
+      messageHistory.hasMoreBefore &&
+      !isLoadingPreviousMessages
+    ) {
+      requestPage("before");
+    } else if (
+      delta > 0 &&
+      scrollNode.scrollHeight - scrollNode.clientHeight - scrollTop <= HISTORY_EDGE_THRESHOLD &&
+      messageHistory.hasMoreAfter &&
+      !isLoadingNextMessages
+    ) {
+      requestPage("after");
+    }
+  }, [
+    captureVisibleAnchor,
     historyScrollElement,
-    timelineViewportElement,
+    isLoadingNextMessages,
+    isLoadingPreviousMessages,
+    listRef,
+    messageHistory,
+    onIsAtEndChange,
+    requestPage,
+    updateMinimap,
   ]);
 
   const selectHistoryTarget = useCallback(
     (item: TimelineHistoryNavigationTarget) => {
-      initialTailPositionPendingRef.current = false;
-      if (initialTailPositionTimeoutRef.current !== null) {
-        window.clearTimeout(initialTailPositionTimeoutRef.current);
-        initialTailPositionTimeoutRef.current = null;
-      }
-      setHistoricalNavigation(true);
       onManualNavigation();
+      followEndRef.current = false;
+      activeMessageAnchorRef.current = {
+        messageId: item.id,
+        viewportOffset: MESSAGE_VIEWPORT_OFFSET,
+      };
+      pendingPageAnchorRef.current = null;
+      pageRequestDirectionRef.current = null;
       if (messageHistory === undefined) {
         if (item.rowIndex !== null) {
           void listRef.current?.scrollToIndex({
@@ -710,290 +472,170 @@ export function useProgressiveTimelineHistory({
         return;
       }
 
-      clearAlignmentWait();
-      manualScrollRef.current = false;
-      expectedScrollTopRef.current = null;
-      if (loadTimeoutRef.current !== null) {
-        window.clearTimeout(loadTimeoutRef.current);
-        loadTimeoutRef.current = null;
-      }
-      const supersedesHistoryRequest =
-        historyTargetMessageId !== null && historyTargetMessageId !== item.id;
-      onHistoryTargetReady?.();
-      anchorRef.current = {
-        kind: "message",
-        messageId: item.id,
-        messageIndex: item.messageIndex,
-        viewportOffset: MESSAGE_VIEWPORT_OFFSET,
-      };
-      pendingRequestRef.current = {
-        kind: "message",
-        messageId: item.id,
-      };
-      programmaticScrollRef.current = "seeking";
-
-      const scrollNode = historyScrollElement;
-      if (scrollNode === null) {
-        programmaticScrollRef.current = null;
+      if (
+        rowIndexByMessageId.has(item.id) &&
+        alignMessage(item.id, MESSAGE_VIEWPORT_OFFSET, onHistoryTargetReady)
+      ) {
         return;
       }
-      const estimatedScrollTop =
-        item.messageIndex === null
-          ? null
-          : Math.max(
-              0,
-              Math.min(
-                scrollNode.scrollHeight - scrollNode.clientHeight,
-                item.messageIndex * PROGRESSIVE_TIMELINE_MESSAGE_SIZE - MESSAGE_VIEWPORT_OFFSET,
-              ),
-            );
-      if (item.rowIndex === null || supersedesHistoryRequest) {
-        window.setTimeout(() => {
-          if (
-            pendingRequestRef.current?.kind === "message" &&
-            pendingRequestRef.current.messageId === item.id
-          ) {
-            onSelectHistoryMessage?.(item.id);
-          }
-        });
-      }
-
-      if (item.rowIndex === null && estimatedScrollTop === null) {
-        programmaticScrollRef.current = null;
-        return;
-      }
-
-      const finishSeek = () => {
-        if (programmaticScrollRef.current !== "seeking") {
-          return;
-        }
-        programmaticScrollRef.current = null;
-        queueReconciliation();
-      };
-      if (estimatedScrollTop !== null) {
-        setScrollTop(scrollNode, estimatedScrollTop);
-        finishSeek();
-      } else if (item.rowIndex !== null) {
-        const target = scrollNode.querySelector<HTMLElement>(
-          `[data-message-id="${CSS.escape(item.id)}"]`,
-        );
-        if (target !== null) {
-          smoothScroll(
-            scrollNode,
-            scrollNode.scrollTop +
-              target.getBoundingClientRect().top -
-              scrollNode.getBoundingClientRect().top -
-              MESSAGE_VIEWPORT_OFFSET,
-            finishSeek,
-          );
-          return;
-        }
-        programmaticScrollRef.current = null;
-        queueReconciliation();
-      }
+      onSelectHistoryMessage?.(item.id);
     },
     [
-      clearAlignmentWait,
-      historyTargetMessageId,
-      historyScrollElement,
+      alignMessage,
       listRef,
       messageHistory,
       onHistoryTargetReady,
       onManualNavigation,
       onSelectHistoryMessage,
-      queueReconciliation,
-      setScrollTop,
-      smoothScroll,
-      timelineViewportElement,
+      rowIndexByMessageId,
     ],
   );
 
   useLayoutEffect(() => {
+    const pendingAnchor = pendingPageAnchorRef.current;
+    if (pendingAnchor === null || historyWindowKey === null) {
+      return;
+    }
+    const isLoading =
+      pendingAnchor.direction === "before" ? isLoadingPreviousMessages : isLoadingNextMessages;
+    const pageChanged = historyWindowKey !== pendingAnchor.originWindowKey;
+    alignMessage(pendingAnchor.messageId, pendingAnchor.viewportOffset, () => {
+      if (!isLoading && pageChanged && pendingPageAnchorRef.current === pendingAnchor) {
+        pendingPageAnchorRef.current = null;
+      }
+    });
+  }, [alignMessage, historyWindowKey, isLoadingNextMessages, isLoadingPreviousMessages, rows]);
+
+  useLayoutEffect(() => {
+    if (historyTargetMessageId === null || messageHistory === undefined) {
+      return;
+    }
+    activeMessageAnchorRef.current = {
+      messageId: historyTargetMessageId,
+      viewportOffset: MESSAGE_VIEWPORT_OFFSET,
+    };
+    alignMessage(historyTargetMessageId, MESSAGE_VIEWPORT_OFFSET, onHistoryTargetReady);
+  }, [alignMessage, historyTargetMessageId, messageHistory, onHistoryTargetReady, rows]);
+
+  useLayoutEffect(() => {
+    const anchor = activeMessageAnchorRef.current;
+    if (anchor !== null && historyTargetMessageId === null) {
+      alignMessage(anchor.messageId, anchor.viewportOffset);
+    }
+  }, [alignMessage, historyTargetMessageId, rows]);
+
+  useLayoutEffect(() => {
+    if (initializedThreadRef.current !== routeThreadKey) {
+      initializedThreadRef.current = routeThreadKey;
+      pendingPageAnchorRef.current = null;
+      activeMessageAnchorRef.current = null;
+      pageRequestDirectionRef.current = null;
+      lastScrollTopRef.current = null;
+      followEndRef.current = true;
+    }
+    if (handledLatestMessagesRequestRef.current !== latestMessagesRequest) {
+      handledLatestMessagesRequestRef.current = latestMessagesRequest;
+      latestPositionPendingRef.current = true;
+      followEndRef.current = true;
+      pendingPageAnchorRef.current = null;
+      activeMessageAnchorRef.current = null;
+      pageRequestDirectionRef.current = null;
+    }
     if (
       messageHistory === undefined ||
-      historyWindowKey === null ||
-      historyLayoutMeasurement?.windowKey !== historyWindowKey
+      historyScrollElement === null ||
+      messageHistory.hasMoreAfter ||
+      (!followEndRef.current && !latestPositionPendingRef.current)
     ) {
       return;
     }
-    const scrollNode = historyScrollElement;
-    if (scrollNode === null) {
-      return;
-    }
-    if (latestPositionPendingRef.current) {
-      if (messageHistory.hasMoreAfter) {
+
+    latestPositionPendingRef.current = false;
+    cancelAlignment();
+    const generation = alignmentGenerationRef.current;
+    const scrollToEnd = () => {
+      if (generation !== alignmentGenerationRef.current) {
         return;
       }
-      latestPositionPendingRef.current = false;
-      historyInitializedRef.current = true;
-      anchorRef.current = {
-        kind: "logical",
-        messageIndex: messageHistory.totalMessages - 1,
-      };
-      initialTailPositionPendingRef.current = true;
-      scheduleInitialTailPosition();
-      queueReconciliation();
-      return;
-    }
-    if (!historyInitializedRef.current) {
-      historyInitializedRef.current = true;
-      anchorRef.current = {
-        kind: "logical",
-        messageIndex: messageHistory.totalMessages - 1,
-      };
-      if (messageHistory.hasMoreAfter) {
-        anchorRef.current = {
-          kind: "logical",
-          messageIndex: resolveProgressiveTimelineMessageIndex({
-            historyAfterSize,
-            historyBeforeSize,
-            loadedSize,
-            messageHistory,
-            scrollLength: scrollNode.clientHeight,
-            scrollTop: scrollNode.scrollTop,
-          }),
-        };
-      } else {
-        initialTailPositionPendingRef.current = true;
-        scheduleInitialTailPosition();
-      }
-    }
-    if (initialTailPositionPendingRef.current) {
-      scheduleInitialTailPosition();
-    }
-    queueReconciliation();
+      markProgrammaticScroll();
+      historyScrollElement.scrollTop = Math.max(
+        0,
+        historyScrollElement.scrollHeight - historyScrollElement.clientHeight,
+      );
+      lastScrollTopRef.current = historyScrollElement.scrollTop;
+      updateMinimap();
+    };
+    scrollToEnd();
+    alignmentFrameRef.current = requestAnimationFrame(() => {
+      alignmentFrameRef.current = null;
+      scrollToEnd();
+    });
   }, [
-    historyAfterSize,
-    historyBeforeSize,
+    cancelAlignment,
     historyScrollElement,
-    historyWindowKey,
-    historyLayoutMeasurement,
-    loadedSize,
+    historyVirtualizer,
+    latestMessagesRequest,
+    markProgrammaticScroll,
     messageHistory,
-    queueReconciliation,
-    scheduleInitialTailPosition,
+    routeThreadKey,
+    rows,
+    updateMinimap,
   ]);
 
   useEffect(() => {
-    if (
-      messageHistory !== undefined &&
-      historyWindowKey !== null &&
-      !historyLoadInProgress &&
-      pendingRequestRef.current?.kind === "logical"
-    ) {
-      queueReconciliation();
-    }
-  }, [historyLoadInProgress, historyWindowKey, messageHistory, queueReconciliation]);
-
-  useEffect(() => {
-    if (anchorRef.current?.kind === "message" && pendingRequestRef.current?.kind === "message") {
-      queueReconciliation();
-    }
-  }, [historyRequestInProgress, historyWindowKey, queueReconciliation, rows]);
-
-  useEffect(() => {
-    if (timelineViewportElement === null) {
+    const content = historyScrollElement?.firstElementChild;
+    if (content === null || content === undefined) {
       return;
     }
-    const observer = new ResizeObserver(queueReconciliation);
-    observer.observe(timelineViewportElement);
+    const observer = new ResizeObserver(() => {
+      const anchor = activeMessageAnchorRef.current;
+      if (anchor !== null && !manualInputRef.current) {
+        alignMessage(anchor.messageId, anchor.viewportOffset);
+      }
+    });
+    observer.observe(content);
     return () => {
       observer.disconnect();
     };
-  }, [queueReconciliation, timelineViewportElement]);
+  }, [alignMessage, historyScrollElement]);
 
-  const beginKeyboardNavigation = useCallback(
-    (event: KeyboardEvent) => {
+  useEffect(() => {
+    const handleKeyboardNavigation = (event: KeyboardEvent) => {
       if (
-        !isProgressiveTimelineNavigationKey(event.key) ||
+        !["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key) ||
         (document.activeElement !== document.body &&
-          !timelineViewportElement?.contains(document.activeElement))
+          !historyScrollElement?.contains(document.activeElement))
       ) {
         return;
       }
       beginUserNavigation();
-    },
-    [beginUserNavigation, timelineViewportElement],
-  );
-
-  useEffect(() => {
-    window.addEventListener("keydown", beginKeyboardNavigation, true);
-    const finishPointerNavigation = () => {
-      pointerNavigationRef.current = false;
-      manualScrollRef.current = false;
-      if (messageHistory !== undefined && historyScrollElement !== null) {
-        setHistoricalNavigation(
-          messageHistory.hasMoreAfter ||
-            historyScrollElement.scrollTop + historyScrollElement.clientHeight <
-              historyBeforeSize + loadedSize + historyAfterSize - 1,
-        );
-      }
     };
-    window.addEventListener("pointerup", finishPointerNavigation);
-    window.addEventListener("pointercancel", finishPointerNavigation);
+    window.addEventListener("keydown", handleKeyboardNavigation, true);
     return () => {
-      window.removeEventListener("keydown", beginKeyboardNavigation, true);
-      window.removeEventListener("pointerup", finishPointerNavigation);
-      window.removeEventListener("pointercancel", finishPointerNavigation);
+      window.removeEventListener("keydown", handleKeyboardNavigation, true);
     };
-  }, [
-    beginKeyboardNavigation,
-    historyAfterSize,
-    historyBeforeSize,
-    historyScrollElement,
-    loadedSize,
-    messageHistory,
-  ]);
+  }, [beginUserNavigation, historyScrollElement]);
 
   useEffect(
     () => () => {
-      clearAlignmentWait();
-      if (loadTimeoutRef.current !== null) {
-        window.clearTimeout(loadTimeoutRef.current);
-        loadTimeoutRef.current = null;
+      cancelAlignment();
+      if (manualInputTimeoutRef.current !== null) {
+        window.clearTimeout(manualInputTimeoutRef.current);
       }
-      if (reconcileTimeoutRef.current !== null) {
-        window.clearTimeout(reconcileTimeoutRef.current);
-        reconcileTimeoutRef.current = null;
-      }
-      if (initialTailPositionTimeoutRef.current !== null) {
-        window.clearTimeout(initialTailPositionTimeoutRef.current);
-        initialTailPositionTimeoutRef.current = null;
-      }
-      if (manualScrollEndTimeoutRef.current !== null) {
-        window.clearTimeout(manualScrollEndTimeoutRef.current);
-        manualScrollEndTimeoutRef.current = null;
+      if (ignoreScrollFrameRef.current !== null) {
+        cancelAnimationFrame(ignoreScrollFrameRef.current);
       }
     },
-    [clearAlignmentWait],
+    [cancelAlignment],
   );
 
   return useMemo(
     () => ({
+      beginPointerNavigation: beginUserNavigation,
       beginUserNavigation,
-      beginPointerNavigation,
-      contentHeight,
       handleScroll,
-      historyAfterSize,
-      historyAfterSkeletonsRef,
-      historyAfterSpacerRef,
-      historyBeforeSize,
-      historyBeforeSkeletonsRef,
-      historyBeforeSpacerRef,
       selectHistoryTarget,
-      virtualHistoryAfterSize,
-      virtualHistoryBeforeSize,
     }),
-    [
-      beginUserNavigation,
-      beginPointerNavigation,
-      handleScroll,
-      historyAfterSize,
-      historyBeforeSize,
-      selectHistoryTarget,
-      contentHeight,
-      virtualHistoryAfterSize,
-      virtualHistoryBeforeSize,
-    ],
+    [beginUserNavigation, handleScroll, selectHistoryTarget],
   );
 }

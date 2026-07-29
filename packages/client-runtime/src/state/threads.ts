@@ -788,6 +788,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const loadMessagesAround = Effect.fn("EnvironmentThreadState.loadMessagesAround")(function* (
     messageId: MessageId,
   ) {
+    latestHistoryWindowRequestId += 1;
     const requestId = ++latestAroundRequestId;
     const current = yield* SubscriptionRef.get(state);
     if (current.history.kind === "disabled") {
