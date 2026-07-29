@@ -28,7 +28,6 @@ import {
 import { flushSync } from "react-dom";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   deriveTimelineEntries,
   workEntryIndicatesToolFailure,
@@ -158,8 +157,21 @@ const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
-const TIMELINE_HISTORY_LOADING_SIZE = 192;
 const TIMELINE_SCRUB_THROTTLE_MS = 180;
+const TIMELINE_HISTORY_DRAW_DISTANCE = 1_200;
+const TIMELINE_HISTORY_LOADING_BEFORE_ROW = {
+  id: "history-loading-before",
+  kind: "history-loading",
+} as const;
+const TIMELINE_HISTORY_LOADING_AFTER_ROW = {
+  id: "history-loading-after",
+  kind: "history-loading",
+} as const;
+
+type MessagesTimelineListRow =
+  | MessagesTimelineRow
+  | typeof TIMELINE_HISTORY_LOADING_BEFORE_ROW
+  | typeof TIMELINE_HISTORY_LOADING_AFTER_ROW;
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -354,6 +366,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const listRows = useMemo<ReadonlyArray<MessagesTimelineListRow>>(
+    () => [
+      ...(isLoadingPreviousMessages ? [TIMELINE_HISTORY_LOADING_BEFORE_ROW] : []),
+      ...rows,
+      ...(isLoadingNextMessages ? [TIMELINE_HISTORY_LOADING_AFTER_ROW] : []),
+    ],
+    [isLoadingNextMessages, isLoadingPreviousMessages, rows],
+  );
   const minimapItems = useMemo(
     () => deriveTimelineMinimapItems(rows, historyOutline),
     [historyOutline, rows],
@@ -361,30 +381,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
   );
-  const [historyScrollElement, setHistoryScrollElement] = useState<HTMLDivElement | null>(null);
   const minimapPositionRef = useRef<HTMLSpanElement>(null);
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const historyHeaderSize = topFadeEnabled ? 48 : 16;
-  const historyBeforeSize =
-    historyHeaderSize + (isLoadingPreviousMessages ? TIMELINE_HISTORY_LOADING_SIZE : 0);
-  const historyAfterSize = isLoadingNextMessages ? TIMELINE_HISTORY_LOADING_SIZE : 0;
-  const historyVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    anchorTo: "end",
-    count: messageHistory === undefined ? 0 : rows.length,
-    enabled: messageHistory !== undefined,
-    estimateSize: () => 90,
-    getItemKey: (index) => rows[index]!.id,
-    getScrollElement: () => historyScrollElement,
-    overscan: 5,
-    paddingEnd: historyAfterSize + contentInsetEndAdjustment,
-    paddingStart: historyBeforeSize,
-    useAnimationFrameWithResizeObserver: true,
-  });
   const progressiveHistory = useProgressiveTimelineHistory({
-    historyScrollElement,
     historyTargetMessageId,
-    historyVirtualizer,
     isLoadingNextMessages,
     isLoadingPreviousMessages,
     latestMessagesRequest,
@@ -400,6 +402,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onManualNavigation,
     onSelectHistoryMessage,
     routeThreadKey,
+    rowIndexOffset: isLoadingPreviousMessages ? 1 : 0,
     rows,
   });
   const handleAnchorReady = useCallback(
@@ -495,11 +498,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
-    ({ item }: { item: MessagesTimelineRow }) => (
-      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
-        <TimelineRowContent row={item} />
-      </div>
-    ),
+    ({ item }: { item: MessagesTimelineListRow }) =>
+      item.kind === "history-loading" ? (
+        <TimelineHistorySkeletons />
+      ) : (
+        <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
+          <TimelineRowContent row={item} />
+        </div>
+      ),
     [],
   );
 
@@ -527,115 +533,51 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           onTouchStartCapture={progressiveHistory.beginTouchNavigation}
           onWheelCapture={progressiveHistory.handleWheelNavigation}
         >
-          {messageHistory === undefined ? (
-            <LegendList<MessagesTimelineRow>
-              ref={listRef}
-              data={rows}
-              keyExtractor={keyExtractor}
-              getItemType={getItemType}
-              renderItem={renderItem}
-              estimatedItemSize={90}
-              estimatedHeaderSize={topFadeEnabled ? 48 : 16}
-              initialScrollAtEnd
-              {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-              contentInsetEndAdjustment={contentInsetEndAdjustment}
-              maintainScrollAtEnd={
-                anchoredEndSpace
-                  ? false
-                  : {
-                      animated: false,
-                      on: {
-                        dataChange: true,
-                        itemLayout: true,
-                        layout: true,
-                      },
-                    }
-              }
-              maintainVisibleContentPosition={
-                historyTargetMessageId === null
-                  ? {
-                      data: true,
-                      size: false,
-                    }
-                  : false
-              }
-              onScroll={progressiveHistory.handleScroll}
-              className={cn(
-                "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
-                topFadeEnabled && "chat-timeline-scroll-fade",
-              )}
-              ListHeaderComponent={
-                isLoadingPreviousMessages ? (
-                  <div className="flex min-h-10 items-center justify-center sm:min-h-12">
-                    <span className="text-muted-foreground text-xs">
-                      Loading earlier messages...
-                    </span>
-                  </div>
-                ) : (
-                  <div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />
-                )
-              }
-              ListFooterComponent={
-                isLoadingNextMessages ? (
-                  <div className="flex min-h-10 items-center justify-center">
-                    <span className="text-muted-foreground text-xs">Loading newer messages...</span>
-                  </div>
-                ) : (
-                  TIMELINE_LIST_FOOTER
-                )
-              }
-            />
-          ) : (
-            <div
-              ref={setHistoryScrollElement}
-              className={cn(
-                "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
-                topFadeEnabled && "chat-timeline-scroll-fade",
-              )}
-              onScroll={progressiveHistory.handleScroll}
-            >
-              <div
-                className="relative overflow-hidden"
-                style={{
-                  height: historyVirtualizer.getTotalSize(),
-                }}
-              >
-                <div
-                  className="absolute inset-x-0 top-0 overflow-hidden"
-                  style={{ height: historyBeforeSize }}
-                >
-                  {isLoadingPreviousMessages ? (
-                    <TimelineHistorySkeletons position="after-header" />
-                  ) : null}
-                </div>
-                {historyVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const item = rows[virtualRow.index]!;
-                  return (
-                    <div
-                      key={keyExtractor(item)}
-                      ref={historyVirtualizer.measureElement}
-                      className="absolute inset-x-0 top-0"
-                      data-index={virtualRow.index}
-                      style={{ transform: `translateY(${virtualRow.start}px)` }}
-                    >
-                      {renderItem({ item })}
-                    </div>
-                  );
-                })}
-                {isLoadingNextMessages ? (
-                  <div
-                    className="absolute inset-x-0 overflow-hidden"
-                    style={{
-                      bottom: contentInsetEndAdjustment,
-                      height: historyAfterSize,
-                    }}
-                  >
-                    <TimelineHistorySkeletons position="start" />
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          )}
+          <LegendList<MessagesTimelineListRow>
+            ref={listRef}
+            data={listRows}
+            {...(messageHistory === undefined
+              ? {}
+              : { drawDistance: TIMELINE_HISTORY_DRAW_DISTANCE })}
+            keyExtractor={keyExtractor}
+            getItemType={getItemType}
+            renderItem={renderItem}
+            estimatedItemSize={90}
+            estimatedHeaderSize={historyHeaderSize}
+            initialScrollAtEnd
+            {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+            contentInsetEndAdjustment={contentInsetEndAdjustment}
+            maintainScrollAtEnd={
+              anchoredEndSpace || messageHistory?.hasMoreAfter
+                ? false
+                : {
+                    animated: false,
+                    on: {
+                      dataChange: true,
+                      itemLayout: true,
+                      layout: true,
+                    },
+                  }
+            }
+            maintainVisibleContentPosition={
+              historyTargetMessageId === null
+                ? {
+                    data: true,
+                    size: messageHistory !== undefined,
+                    ...(messageHistory === undefined
+                      ? {}
+                      : { shouldRestorePosition: progressiveHistory.shouldRestorePosition }),
+                  }
+                : false
+            }
+            onScroll={progressiveHistory.handleScroll}
+            className={cn(
+              "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
+              topFadeEnabled && "chat-timeline-scroll-fade",
+            )}
+            ListHeaderComponent={<div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />}
+            ListFooterComponent={TIMELINE_LIST_FOOTER}
+          />
           <TimelineMinimap
             items={minimapItems}
             bottomInset={contentInsetEndAdjustment}
@@ -652,14 +594,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 });
 
-function TimelineHistorySkeletons({ position }: { position: "after-header" | "start" }) {
+function TimelineHistorySkeletons() {
   return (
     <div
       aria-hidden="true"
-      className={cn(
-        "absolute inset-x-0 mx-auto h-48 w-full max-w-3xl px-1 py-4",
-        position === "after-header" ? "bottom-0" : "top-0",
-      )}
+      className="mx-auto h-48 w-full max-w-3xl px-1 py-4"
       data-history-skeletons
     >
       <div className="space-y-2 py-2">
@@ -677,11 +616,14 @@ function TimelineHistorySkeletons({ position }: { position: "after-header" | "st
   );
 }
 
-function keyExtractor(item: MessagesTimelineRow) {
+function keyExtractor(item: MessagesTimelineListRow) {
   return item.id;
 }
 
-function getItemType(item: MessagesTimelineRow) {
+function getItemType(item: MessagesTimelineListRow) {
+  if (item.kind === "history-loading") {
+    return item.kind;
+  }
   return item.kind === "message" ? `message:${item.message.role}` : item.kind;
 }
 
