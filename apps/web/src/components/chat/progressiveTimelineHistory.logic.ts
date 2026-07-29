@@ -48,37 +48,48 @@ export function resolveProgressiveTimelineLayout({
   readonly messageHistory: OrchestrationThreadMessageHistory;
   readonly preserveHistoricalCanvas: boolean;
 }): ProgressiveTimelineLayout {
+  const hasUnloadedBefore = messageHistory.startIndex > 0;
+  const hasUnloadedAfter = messageHistory.endIndex < messageHistory.totalMessages;
   const virtualHistoryBeforeSize = messageHistory.startIndex * PROGRESSIVE_TIMELINE_MESSAGE_SIZE;
   const virtualHistoryAfterSize =
     Math.max(0, messageHistory.totalMessages - messageHistory.endIndex) *
     PROGRESSIVE_TIMELINE_MESSAGE_SIZE;
   const renderedContentSize = virtualHistoryBeforeSize + loadedSize + virtualHistoryAfterSize;
-  const contentSize = preserveHistoricalCanvas
-    ? Math.max(
-        messageHistory.totalMessages * PROGRESSIVE_TIMELINE_MESSAGE_SIZE,
-        renderedContentSize,
-      )
-    : renderedContentSize;
+  const contentSize =
+    !hasUnloadedBefore && !hasUnloadedAfter
+      ? loadedSize
+      : preserveHistoricalCanvas
+        ? Math.max(
+            messageHistory.totalMessages * PROGRESSIVE_TIMELINE_MESSAGE_SIZE,
+            renderedContentSize,
+          )
+        : renderedContentSize;
   const canPlaceAtAnchor =
     preserveHistoricalCanvas &&
     anchor !== null &&
     anchor.messageIndex >= messageHistory.startIndex &&
     anchor.messageIndex < messageHistory.endIndex;
-  const historyBeforeSize = canPlaceAtAnchor
-    ? Math.max(
-        0,
-        Math.min(
-          contentSize - loadedSize,
-          anchor.viewportPosition -
-            ((anchor.messageIndex - messageHistory.startIndex) /
-              Math.max(1, messageHistory.endIndex - messageHistory.startIndex)) *
-              loadedSize,
-        ),
-      )
-    : virtualHistoryBeforeSize;
-  const historyAfterSize = canPlaceAtAnchor
-    ? Math.max(0, contentSize - historyBeforeSize - loadedSize)
-    : virtualHistoryAfterSize;
+  const historyBeforeSize = !hasUnloadedBefore
+    ? 0
+    : !hasUnloadedAfter
+      ? Math.max(0, contentSize - loadedSize)
+      : canPlaceAtAnchor
+        ? Math.max(
+            0,
+            Math.min(
+              contentSize - loadedSize,
+              anchor.viewportPosition -
+                ((anchor.messageIndex - messageHistory.startIndex) /
+                  Math.max(1, messageHistory.endIndex - messageHistory.startIndex)) *
+                  loadedSize,
+            ),
+          )
+        : virtualHistoryBeforeSize;
+  const historyAfterSize = !hasUnloadedAfter
+    ? 0
+    : canPlaceAtAnchor || !hasUnloadedBefore
+      ? Math.max(0, contentSize - historyBeforeSize - loadedSize)
+      : virtualHistoryAfterSize;
   return {
     contentSize,
     historyAfterSize,
