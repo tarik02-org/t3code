@@ -2,6 +2,15 @@
 
 This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork behavior that intentionally differs from upstream.
 
+## Maintenance Workflow
+
+- Update this file in the same change whenever fork-only behavior changes.
+- Keep workflow-only fork changes narrow and prefer job-level disables over broad refactors.
+- Do not commit package version bumps solely to represent fork releases.
+- Re-check Electron updater channel behavior when changing version strings, release metadata, or desktop packaging.
+- Prepare fork PR branches from `origin/main` and target `tarik02/t3code:main`.
+- If a fork PR branch includes unintended upstream history, rebuild it from `origin/main` and replay only the intended diff.
+
 ## Changes
 
 ### Maintenance
@@ -36,7 +45,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Stable-version pushes wait for the matching release to finish so tag-based version resolution advances past the published version.
 - Release build jobs skip relay client tracing config because the relay config job is disabled.
 - Release builds publish updater metadata against the fork repository.
-- Fork stable release versions are committed through release PRs before release artifacts are built and tagged.
+- Fork stable release versions use date-based `YYYY.M.DDSS` numbers without build metadata. Release PRs commit them before release artifacts are built and tagged.
 - macOS release signing is separate from Apple notarization.
 - Self-signed macOS signing certificates are trusted during release builds.
 - macOS passkey entitlements are only enabled when Apple notarization/profile configuration is present.
@@ -72,6 +81,11 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 ### Goals UI
 
 - The fork adds thread goal support, goal activity rendering, and goal sidebar/panel UI.
+
+### Subagent Activity
+
+- Parent timelines keep subagent commands, file changes, tool calls, web searches, image views, and diffs.
+- Subagent messages, reasoning, goals, plans, token usage, and thread/turn state stay out of the parent timeline. Codex child relationships are recognized from both `collabAgentToolCall` and `subAgentActivity` items.
 
 ### Provider Launch Environment
 
