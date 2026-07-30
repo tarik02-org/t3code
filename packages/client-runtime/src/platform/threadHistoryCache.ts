@@ -1,14 +1,67 @@
-import { ThreadHistoryCacheStore } from "@t3tools/client-runtime/platform";
 import {
   type EnvironmentId,
+  type MessageId,
   type OrchestrationThreadHistoryPage,
   type ThreadId,
 } from "@t3tools/contracts";
+import { LRUCache } from "@t3tools/shared/LRUCache";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-const MAX_CACHED_HISTORY_PAGES = 12;
+import { ConnectionPersistenceError } from "./persistence.ts";
+
+export interface ThreadHistoryCacheLookup {
+  readonly page: Option.Option<OrchestrationThreadHistoryPage>;
+  readonly requestLimit: number;
+}
+
+export class ThreadHistoryCacheStore extends Context.Reference<{
+  readonly loadPrevious: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    endIndex: number,
+    limit: number,
+  ) => Effect.Effect<ThreadHistoryCacheLookup, ConnectionPersistenceError>;
+  readonly loadNext: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    startIndex: number,
+    limit: number,
+  ) => Effect.Effect<ThreadHistoryCacheLookup, ConnectionPersistenceError>;
+  readonly loadAround: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    limit: number,
+  ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ConnectionPersistenceError>;
+  readonly loadTotalMessages: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<number>, ConnectionPersistenceError>;
+  readonly save: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    page: OrchestrationThreadHistoryPage,
+  ) => Effect.Effect<void, ConnectionPersistenceError>;
+  readonly remove: (
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  ) => Effect.Effect<void, ConnectionPersistenceError>;
+  readonly clear: (environmentId: EnvironmentId) => Effect.Effect<void, ConnectionPersistenceError>;
+}>("@t3tools/client-runtime/platform/threadHistoryCache/ThreadHistoryCacheStore", {
+  defaultValue: () => ({
+    loadPrevious: (_environmentId, _threadId, _endIndex, limit) =>
+      Effect.succeed({ page: Option.none(), requestLimit: limit }),
+    loadNext: (_environmentId, _threadId, _startIndex, limit) =>
+      Effect.succeed({ page: Option.none(), requestLimit: limit }),
+    loadAround: () => Effect.succeed(Option.none()),
+    loadTotalMessages: () => Effect.succeed(Option.none()),
+    save: () => Effect.void,
+    remove: () => Effect.void,
+    clear: () => Effect.void,
+  }),
+}) {}
 
 interface CachedHistoryPage {
   readonly environmentId: EnvironmentId;
@@ -62,13 +115,8 @@ function sliceHistoryPage(
   };
 }
 
-export function make() {
-  const pages = new Map<string, CachedHistoryPage>();
-
-  const touch = (key: string, cached: CachedHistoryPage) => {
-    pages.delete(key);
-    pages.set(key, cached);
-  };
+export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
+  const pages = new LRUCache<CachedHistoryPage>(maxPages, maxPages);
 
   return ThreadHistoryCacheStore.of({
     loadPrevious: (environmentId, threadId, endIndex, limit) =>
@@ -92,7 +140,7 @@ export function make() {
         }
         if (match !== null) {
           const [key, cached] = match;
-          touch(key, cached);
+          void pages.get(key);
           return {
             page: Option.some(
               sliceHistoryPage(
@@ -133,7 +181,7 @@ export function make() {
         }
         if (match !== null) {
           const [key, cached] = match;
-          touch(key, cached);
+          void pages.get(key);
           return {
             page: Option.some(
               sliceHistoryPage(
@@ -166,7 +214,7 @@ export function make() {
           return Option.none();
         }
         const [key, cached, targetIndex] = match;
-        touch(key, cached);
+        void pages.get(key);
         let startIndex = Math.max(
           cached.page.messageHistory.startIndex,
           targetIndex - Math.floor((limit - 1) / 2),
@@ -178,7 +226,7 @@ export function make() {
     loadTotalMessages: (environmentId, threadId) =>
       Effect.sync(() => {
         let totalMessages: number | null = null;
-        for (const cached of pages.values()) {
+        for (const [, cached] of pages.entries()) {
           if (cached.environmentId === environmentId && cached.threadId === threadId) {
             totalMessages = Math.max(totalMessages ?? 0, cached.page.messageHistory.totalMessages);
           }
@@ -191,14 +239,7 @@ export function make() {
           return;
         }
         const key = `${environmentId}:${threadId}:${page.messageHistory.startIndex}:${page.messageHistory.endIndex}`;
-        pages.delete(key);
-        pages.set(key, { environmentId, threadId, page });
-        if (pages.size > MAX_CACHED_HISTORY_PAGES) {
-          const oldestKey = pages.keys().next().value;
-          if (oldestKey !== undefined) {
-            pages.delete(oldestKey);
-          }
-        }
+        pages.set(key, { environmentId, threadId, page }, 1);
       }),
     remove: (environmentId, threadId) =>
       Effect.sync(() => {
@@ -218,5 +259,3 @@ export function make() {
       }),
   });
 }
-
-export const layer = Layer.succeed(ThreadHistoryCacheStore, make());

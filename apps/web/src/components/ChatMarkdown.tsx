@@ -10,6 +10,7 @@ import {
   WrapTextIcon,
 } from "lucide-react";
 import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import { LRUCache } from "@t3tools/shared/LRUCache";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -56,7 +57,6 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
-import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import { getClientSettings } from "../hooks/useSettings";
 import {

@@ -20,11 +20,7 @@ import {
 } from "@t3tools/client-runtime/connection";
 import {
   EnvironmentId,
-  NonNegativeInt,
-  OrchestrationMessage,
-  OrchestrationProposedPlan,
   OrchestrationShellSnapshot,
-  OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
   ServerConfig,
   ThreadId,
@@ -38,18 +34,10 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import { makeWebThreadHistoryCacheStore } from "./threadHistoryCache.ts";
+
 const DATABASE_NAME = "t3code:connection-runtime";
 const DATABASE_VERSION = 4;
-const THREAD_HISTORY_DATABASE_NAME = "t3code:tarik02-thread-history-cache";
-const THREAD_HISTORY_DATABASE_VERSION = 2;
-const THREAD_HISTORY_LEGACY_STORE_NAME = "thread-history";
-const THREAD_HISTORY_THREAD_STORE_NAME = "thread";
-const THREAD_HISTORY_MESSAGE_STORE_NAME = "message";
-const THREAD_HISTORY_ACTIVITY_STORE_NAME = "activity";
-const THREAD_HISTORY_PLAN_STORE_NAME = "plan";
-const THREAD_HISTORY_MESSAGE_ID_INDEX_NAME = "by-message-id";
-const THREAD_HISTORY_ACTIVITY_POSITION_INDEX_NAME = "by-position";
-const THREAD_HISTORY_PLAN_POSITION_INDEX_NAME = "by-position";
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";
 const THREAD_STORE_NAME = "thread";
@@ -58,7 +46,6 @@ const SERVER_CONFIG_STORE_NAME = "server-config";
 const VCS_REFS_STORE_NAME = "vcs-refs";
 const CATALOG_KEY = "document";
 const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
-const THREAD_HISTORY_CACHE_SCHEMA_VERSION = 1;
 
 const StoredShellSnapshot = Schema.Struct({
   schemaVersion: Schema.Literal(SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION),
@@ -76,45 +63,6 @@ const StoredThreadSnapshot = Schema.Struct({
   snapshot: OrchestrationThreadDetailSnapshot,
 });
 const StoredThreadSnapshotJson = Schema.fromJsonString(StoredThreadSnapshot);
-const StoredThreadHistoryRange = Schema.Struct({
-  startIndex: NonNegativeInt,
-  endIndex: NonNegativeInt,
-});
-const StoredThreadHistoryThread = Schema.Struct({
-  schemaVersion: Schema.Literal(THREAD_HISTORY_CACHE_SCHEMA_VERSION),
-  scope: Schema.String,
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  totalMessages: NonNegativeInt,
-  ranges: Schema.Array(StoredThreadHistoryRange),
-});
-const StoredThreadHistoryMessage = Schema.Struct({
-  schemaVersion: Schema.Literal(THREAD_HISTORY_CACHE_SCHEMA_VERSION),
-  scope: Schema.String,
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  index: NonNegativeInt,
-  messageId: OrchestrationMessage.fields.id,
-  message: OrchestrationMessage,
-});
-const StoredThreadHistoryActivity = Schema.Struct({
-  schemaVersion: Schema.Literal(THREAD_HISTORY_CACHE_SCHEMA_VERSION),
-  scope: Schema.String,
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  position: NonNegativeInt,
-  activityId: OrchestrationThreadActivity.fields.id,
-  activity: OrchestrationThreadActivity,
-});
-const StoredThreadHistoryPlan = Schema.Struct({
-  schemaVersion: Schema.Literal(THREAD_HISTORY_CACHE_SCHEMA_VERSION),
-  scope: Schema.String,
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  position: NonNegativeInt,
-  planId: OrchestrationProposedPlan.fields.id,
-  plan: OrchestrationProposedPlan,
-});
 const StoredServerConfig = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   environmentId: EnvironmentId,
@@ -135,22 +83,6 @@ const decodeStoredShellSnapshot = Schema.decodeUnknownEffect(StoredShellSnapshot
 const encodeStoredShellSnapshot = Schema.encodeEffect(StoredShellSnapshotJson);
 const decodeStoredThreadSnapshot = Schema.decodeUnknownEffect(StoredThreadSnapshotJson);
 const encodeStoredThreadSnapshot = Schema.encodeEffect(StoredThreadSnapshotJson);
-const decodeStoredThreadHistoryThread = Schema.decodeUnknownEffect(StoredThreadHistoryThread);
-const decodeStoredThreadHistoryMessage = Schema.decodeUnknownEffect(StoredThreadHistoryMessage);
-const decodeStoredThreadHistoryMessages = (values: ReadonlyArray<unknown>) =>
-  Effect.forEach(values, (value) => decodeStoredThreadHistoryMessage(value), {
-    concurrency: "unbounded",
-  });
-const decodeStoredThreadHistoryActivity = Schema.decodeUnknownEffect(StoredThreadHistoryActivity);
-const decodeStoredThreadHistoryActivities = (values: ReadonlyArray<unknown>) =>
-  Effect.forEach(values, (value) => decodeStoredThreadHistoryActivity(value), {
-    concurrency: "unbounded",
-  });
-const decodeStoredThreadHistoryPlan = Schema.decodeUnknownEffect(StoredThreadHistoryPlan);
-const decodeStoredThreadHistoryPlans = (values: ReadonlyArray<unknown>) =>
-  Effect.forEach(values, (value) => decodeStoredThreadHistoryPlan(value), {
-    concurrency: "unbounded",
-  });
 const decodeStoredServerConfig = Schema.decodeUnknownEffect(StoredServerConfigJson);
 const encodeStoredServerConfig = Schema.encodeEffect(StoredServerConfigJson);
 const decodeStoredVcsRefs = Schema.decodeUnknownEffect(StoredVcsRefsJson);
@@ -225,68 +157,6 @@ const openDatabase = Effect.fn("web.connectionStorage.openDatabase")(function* (
   });
 });
 
-const openThreadHistoryDatabase = Effect.fn("web.connectionStorage.openThreadHistoryDatabase")(
-  function* () {
-    return yield* Effect.callback<IDBDatabase, ConnectionTransientError>((resume) => {
-      if (globalThis.indexedDB === undefined) {
-        resume(
-          Effect.fail(catalogError("open", "IndexedDB is unavailable in this browser context.")),
-        );
-        return;
-      }
-      const request = indexedDB.open(THREAD_HISTORY_DATABASE_NAME, THREAD_HISTORY_DATABASE_VERSION);
-      request.addEventListener("upgradeneeded", () => {
-        if (request.result.objectStoreNames.contains(THREAD_HISTORY_LEGACY_STORE_NAME)) {
-          request.result.deleteObjectStore(THREAD_HISTORY_LEGACY_STORE_NAME);
-        }
-        if (!request.result.objectStoreNames.contains(THREAD_HISTORY_THREAD_STORE_NAME)) {
-          request.result.createObjectStore(THREAD_HISTORY_THREAD_STORE_NAME, {
-            keyPath: "scope",
-          });
-        }
-        if (!request.result.objectStoreNames.contains(THREAD_HISTORY_MESSAGE_STORE_NAME)) {
-          const store = request.result.createObjectStore(THREAD_HISTORY_MESSAGE_STORE_NAME, {
-            keyPath: ["scope", "index"],
-          });
-          store.createIndex(THREAD_HISTORY_MESSAGE_ID_INDEX_NAME, ["scope", "messageId"], {
-            unique: true,
-          });
-        }
-        if (!request.result.objectStoreNames.contains(THREAD_HISTORY_ACTIVITY_STORE_NAME)) {
-          const store = request.result.createObjectStore(THREAD_HISTORY_ACTIVITY_STORE_NAME, {
-            keyPath: ["scope", "activityId"],
-          });
-          store.createIndex(
-            THREAD_HISTORY_ACTIVITY_POSITION_INDEX_NAME,
-            ["scope", "position", "activity.createdAt", "activityId"],
-            { unique: true },
-          );
-        }
-        if (!request.result.objectStoreNames.contains(THREAD_HISTORY_PLAN_STORE_NAME)) {
-          const store = request.result.createObjectStore(THREAD_HISTORY_PLAN_STORE_NAME, {
-            keyPath: ["scope", "planId"],
-          });
-          store.createIndex(
-            THREAD_HISTORY_PLAN_POSITION_INDEX_NAME,
-            ["scope", "position", "plan.createdAt", "planId"],
-            { unique: true },
-          );
-        }
-      });
-      request.addEventListener("error", () => {
-        resume(
-          Effect.fail(
-            catalogError("open thread history cache", request.error ?? "Unknown IndexedDB error"),
-          ),
-        );
-      });
-      request.addEventListener("success", () => {
-        resume(Effect.succeed(request.result));
-      });
-    });
-  },
-);
-
 function readDatabaseValue(database: IDBDatabase, storeName: string, key: IDBValidKey) {
   return Effect.callback<unknown, ConnectionTransientError>((resume) => {
     const request = database.transaction(storeName, "readonly").objectStore(storeName).get(key);
@@ -297,24 +167,6 @@ function readDatabaseValue(database: IDBDatabase, storeName: string, key: IDBVal
       resume(Effect.succeed(request.result));
     });
   }).pipe(Effect.withSpan("web.connectionStorage.readDatabaseValue"));
-}
-
-function readDatabaseValuesInRange(
-  database: IDBDatabase,
-  storeName: string,
-  range: IDBKeyRange,
-  indexName?: string,
-) {
-  return Effect.callback<ReadonlyArray<unknown>, ConnectionTransientError>((resume) => {
-    const store = database.transaction(storeName, "readonly").objectStore(storeName);
-    const request = (indexName === undefined ? store : store.index(indexName)).getAll(range);
-    request.addEventListener("error", () => {
-      resume(Effect.fail(catalogError("read", request.error ?? "Unknown IndexedDB read error")));
-    });
-    request.addEventListener("success", () => {
-      resume(Effect.succeed(request.result));
-    });
-  }).pipe(Effect.withSpan("web.connectionStorage.readDatabaseValuesInRange"));
 }
 
 function writeDatabaseValue(
@@ -335,47 +187,6 @@ function writeDatabaseValue(
     });
     transaction.objectStore(storeName).put(value, key);
   }).pipe(Effect.withSpan("web.connectionStorage.writeDatabaseValue"));
-}
-
-function writeThreadHistoryPage(
-  database: IDBDatabase,
-  thread: object,
-  messages: ReadonlyArray<object>,
-  activities: ReadonlyArray<object>,
-  plans: ReadonlyArray<object>,
-) {
-  return Effect.callback<void, ConnectionTransientError>((resume) => {
-    const transaction = database.transaction(
-      [
-        THREAD_HISTORY_THREAD_STORE_NAME,
-        THREAD_HISTORY_MESSAGE_STORE_NAME,
-        THREAD_HISTORY_ACTIVITY_STORE_NAME,
-        THREAD_HISTORY_PLAN_STORE_NAME,
-      ],
-      "readwrite",
-    );
-    transaction.addEventListener("error", () => {
-      resume(
-        Effect.fail(catalogError("write", transaction.error ?? "Unknown IndexedDB write error")),
-      );
-    });
-    transaction.addEventListener("complete", () => {
-      resume(Effect.void);
-    });
-    transaction.objectStore(THREAD_HISTORY_THREAD_STORE_NAME).put(thread);
-    const messageStore = transaction.objectStore(THREAD_HISTORY_MESSAGE_STORE_NAME);
-    for (const message of messages) {
-      messageStore.put(message);
-    }
-    const activityStore = transaction.objectStore(THREAD_HISTORY_ACTIVITY_STORE_NAME);
-    for (const activity of activities) {
-      activityStore.put(activity);
-    }
-    const planStore = transaction.objectStore(THREAD_HISTORY_PLAN_STORE_NAME);
-    for (const plan of plans) {
-      planStore.put(plan);
-    }
-  }).pipe(Effect.withSpan("web.connectionStorage.writeThreadHistoryPage"));
 }
 
 function removeDatabaseValue(database: IDBDatabase, storeName: string, key: IDBValidKey) {
@@ -424,117 +235,6 @@ function removeDatabaseValuesInRange(database: IDBDatabase, storeName: string, r
 function threadCacheKey(environmentId: EnvironmentId, threadId: ThreadId) {
   return `${THREAD_CACHE_KEY_NAMESPACE}:${environmentId}:${threadId}`;
 }
-
-function threadHistoryScope(environmentId: EnvironmentId, threadId: ThreadId) {
-  return `${environmentId}:${threadId}`;
-}
-
-const loadThreadHistoryThread = Effect.fn("web.connectionStorage.loadThreadHistoryThread")(
-  function* (database: IDBDatabase, environmentId: EnvironmentId, threadId: ThreadId) {
-    const scope = threadHistoryScope(environmentId, threadId);
-    const raw = yield* readDatabaseValue(database, THREAD_HISTORY_THREAD_STORE_NAME, scope);
-    if (raw === undefined) {
-      return Option.none();
-    }
-    const thread = yield* decodeStoredThreadHistoryThread(raw);
-    return thread.scope === scope &&
-      thread.environmentId === environmentId &&
-      thread.threadId === threadId
-      ? Option.some(thread)
-      : Option.none();
-  },
-);
-
-const loadThreadHistoryPage = Effect.fn("web.connectionStorage.loadThreadHistoryPage")(function* (
-  database: IDBDatabase,
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  startIndex: number,
-  endIndex: number,
-  totalMessages: number,
-) {
-  if (endIndex <= startIndex) {
-    return Option.none();
-  }
-  const scope = threadHistoryScope(environmentId, threadId);
-  const [rawMessages, rawActivities, rawPlans] = yield* Effect.all([
-    readDatabaseValuesInRange(
-      database,
-      THREAD_HISTORY_MESSAGE_STORE_NAME,
-      IDBKeyRange.bound([scope, startIndex], [scope, endIndex - 1]),
-    ),
-    readDatabaseValuesInRange(
-      database,
-      THREAD_HISTORY_ACTIVITY_STORE_NAME,
-      IDBKeyRange.bound([scope, startIndex], [scope, endIndex, "\uffff", "\uffff"]),
-      THREAD_HISTORY_ACTIVITY_POSITION_INDEX_NAME,
-    ),
-    readDatabaseValuesInRange(
-      database,
-      THREAD_HISTORY_PLAN_STORE_NAME,
-      IDBKeyRange.bound([scope, startIndex], [scope, endIndex, "\uffff", "\uffff"]),
-      THREAD_HISTORY_PLAN_POSITION_INDEX_NAME,
-    ),
-  ]);
-  const messageRecords = yield* decodeStoredThreadHistoryMessages(rawMessages);
-  const activityRecords = yield* decodeStoredThreadHistoryActivities(rawActivities);
-  const planRecords = yield* decodeStoredThreadHistoryPlans(rawPlans);
-  if (
-    messageRecords.length !== endIndex - startIndex ||
-    messageRecords.some(
-      (record, offset) =>
-        record.scope !== scope ||
-        record.environmentId !== environmentId ||
-        record.threadId !== threadId ||
-        record.index !== startIndex + offset,
-    )
-  ) {
-    return Option.none();
-  }
-  const messages = messageRecords.map((record) => record.message);
-  const firstMessage = messages[0];
-  if (firstMessage === undefined) {
-    return Option.none();
-  }
-  return Option.some({
-    messages,
-    activities: activityRecords
-      .filter(
-        (record) =>
-          record.scope === scope &&
-          record.environmentId === environmentId &&
-          record.threadId === threadId,
-      )
-      .map((record) => record.activity)
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      ),
-    proposedPlans: planRecords
-      .filter(
-        (record) =>
-          record.scope === scope &&
-          record.environmentId === environmentId &&
-          record.threadId === threadId,
-      )
-      .map((record) => record.plan)
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      ),
-    messageHistory: {
-      hasMoreBefore: startIndex > 0,
-      hasMoreAfter: endIndex < totalMessages,
-      startIndex,
-      endIndex,
-      totalMessages,
-      cursor: {
-        createdAt: firstMessage.createdAt,
-        messageId: firstMessage.id,
-      },
-    },
-  });
-});
 
 function vcsRefsCacheKey(environmentId: EnvironmentId, cwd: string) {
   return `${environmentId}:${cwd}`;
@@ -671,11 +371,7 @@ export const connectionStorageLayer = Layer.effectContext(
     const database = yield* Effect.acquireRelease(openDatabase(), (database) =>
       Effect.sync(() => database.close()),
     );
-    const threadHistoryDatabase = yield* Effect.acquireRelease(
-      openThreadHistoryDatabase(),
-      (database) => Effect.sync(() => database.close()),
-    );
-    const threadHistoryWriteLock = yield* Semaphore.make(1);
+    const threadHistoryCacheStore = yield* makeWebThreadHistoryCacheStore();
     const catalog = yield* makeCatalogStore(makeCatalogBackend(database));
 
     const targetStore = ConnectionTargetStore.of({
@@ -965,308 +661,11 @@ export const connectionStorageLayer = Layer.effectContext(
               VCS_REFS_STORE_NAME,
               IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
             ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_THREAD_STORE_NAME,
-              IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_MESSAGE_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_ACTIVITY_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_PLAN_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
+            threadHistoryCacheStore.clear(environmentId),
           ],
           { concurrency: "unbounded", discard: true },
         ).pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
     });
-    const threadHistoryCacheStore = ThreadHistoryCacheStore.of({
-      loadPrevious: (environmentId, threadId, endIndex, limit) =>
-        Effect.gen(function* () {
-          const thread = yield* loadThreadHistoryThread(
-            threadHistoryDatabase,
-            environmentId,
-            threadId,
-          );
-          if (Option.isNone(thread)) {
-            return { page: Option.none(), requestLimit: limit };
-          }
-          const range = thread.value.ranges.find(
-            (candidate) => candidate.startIndex < endIndex && candidate.endIndex >= endIndex,
-          );
-          if (range !== undefined) {
-            return {
-              page: yield* loadThreadHistoryPage(
-                threadHistoryDatabase,
-                environmentId,
-                threadId,
-                Math.max(range.startIndex, endIndex - limit),
-                endIndex,
-                thread.value.totalMessages,
-              ),
-              requestLimit: limit,
-            };
-          }
-          const nearestRange = thread.value.ranges.findLast(
-            (candidate) => candidate.endIndex < endIndex,
-          );
-          return {
-            page: Option.none(),
-            requestLimit: Math.min(
-              limit,
-              endIndex - (nearestRange?.endIndex ?? Math.max(0, endIndex - limit)),
-            ),
-          };
-        }).pipe(Effect.mapError((cause) => persistenceError("load-thread-history", cause))),
-      loadNext: (environmentId, threadId, startIndex, limit) =>
-        Effect.gen(function* () {
-          const thread = yield* loadThreadHistoryThread(
-            threadHistoryDatabase,
-            environmentId,
-            threadId,
-          );
-          if (Option.isNone(thread)) {
-            return { page: Option.none(), requestLimit: limit };
-          }
-          const range = thread.value.ranges.find(
-            (candidate) => candidate.startIndex <= startIndex && candidate.endIndex > startIndex,
-          );
-          if (range !== undefined) {
-            return {
-              page: yield* loadThreadHistoryPage(
-                threadHistoryDatabase,
-                environmentId,
-                threadId,
-                startIndex,
-                Math.min(range.endIndex, startIndex + limit),
-                thread.value.totalMessages,
-              ),
-              requestLimit: limit,
-            };
-          }
-          const nearestRange = thread.value.ranges.find(
-            (candidate) => candidate.startIndex > startIndex,
-          );
-          return {
-            page: Option.none(),
-            requestLimit: Math.min(
-              limit,
-              (nearestRange?.startIndex ?? startIndex + limit) - startIndex,
-            ),
-          };
-        }).pipe(Effect.mapError((cause) => persistenceError("load-thread-history", cause))),
-      loadAround: (environmentId, threadId, messageId, limit) =>
-        Effect.gen(function* () {
-          const scope = threadHistoryScope(environmentId, threadId);
-          const [thread, rawTargets] = yield* Effect.all([
-            loadThreadHistoryThread(threadHistoryDatabase, environmentId, threadId),
-            readDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_MESSAGE_STORE_NAME,
-              IDBKeyRange.only([scope, messageId]),
-              THREAD_HISTORY_MESSAGE_ID_INDEX_NAME,
-            ),
-          ]);
-          const targets = yield* decodeStoredThreadHistoryMessages(rawTargets);
-          const target = targets[0];
-          if (
-            Option.isNone(thread) ||
-            target === undefined ||
-            target.scope !== scope ||
-            target.environmentId !== environmentId ||
-            target.threadId !== threadId
-          ) {
-            return Option.none();
-          }
-          const range = thread.value.ranges.find(
-            (candidate) =>
-              candidate.startIndex <= target.index && candidate.endIndex > target.index,
-          );
-          if (range === undefined) {
-            return Option.none();
-          }
-          let startIndex = Math.max(range.startIndex, target.index - Math.floor((limit - 1) / 2));
-          const endIndex = Math.min(range.endIndex, startIndex + limit);
-          startIndex = Math.max(range.startIndex, endIndex - limit);
-          return yield* loadThreadHistoryPage(
-            threadHistoryDatabase,
-            environmentId,
-            threadId,
-            startIndex,
-            endIndex,
-            thread.value.totalMessages,
-          );
-        }).pipe(Effect.mapError((cause) => persistenceError("load-thread-history", cause))),
-      loadTotalMessages: (environmentId, threadId) =>
-        loadThreadHistoryThread(threadHistoryDatabase, environmentId, threadId).pipe(
-          Effect.map(Option.map((thread) => thread.totalMessages)),
-          Effect.mapError((cause) => persistenceError("load-thread-history", cause)),
-        ),
-      save: (environmentId, threadId, page) =>
-        threadHistoryWriteLock
-          .withPermits(1)(
-            Effect.gen(function* () {
-              if (page.messages.length === 0) {
-                return;
-              }
-              const scope = threadHistoryScope(environmentId, threadId);
-              const current = yield* loadThreadHistoryThread(
-                threadHistoryDatabase,
-                environmentId,
-                threadId,
-              );
-              const ranges = [
-                ...(Option.isSome(current) ? current.value.ranges : []),
-                {
-                  startIndex: page.messageHistory.startIndex,
-                  endIndex: page.messageHistory.endIndex,
-                },
-              ].toSorted((left, right) => left.startIndex - right.startIndex);
-              const mergedRanges: Array<{ readonly startIndex: number; endIndex: number }> = [];
-              for (const range of ranges) {
-                const previous = mergedRanges.at(-1);
-                if (previous === undefined || previous.endIndex < range.startIndex) {
-                  mergedRanges.push({ ...range });
-                } else {
-                  previous.endIndex = Math.max(previous.endIndex, range.endIndex);
-                }
-              }
-              let activityMessageOffset = 0;
-              const activities = page.activities.map((activity) => {
-                while (
-                  activityMessageOffset < page.messages.length &&
-                  page.messages[activityMessageOffset]!.createdAt <= activity.createdAt
-                ) {
-                  activityMessageOffset += 1;
-                }
-                return {
-                  schemaVersion: THREAD_HISTORY_CACHE_SCHEMA_VERSION,
-                  scope,
-                  environmentId,
-                  threadId,
-                  position: page.messageHistory.startIndex + activityMessageOffset,
-                  activityId: activity.id,
-                  activity,
-                };
-              });
-              let planMessageOffset = 0;
-              const plans = page.proposedPlans.map((plan) => {
-                while (
-                  planMessageOffset < page.messages.length &&
-                  page.messages[planMessageOffset]!.createdAt <= plan.createdAt
-                ) {
-                  planMessageOffset += 1;
-                }
-                return {
-                  schemaVersion: THREAD_HISTORY_CACHE_SCHEMA_VERSION,
-                  scope,
-                  environmentId,
-                  threadId,
-                  position: page.messageHistory.startIndex + planMessageOffset,
-                  planId: plan.id,
-                  plan,
-                };
-              });
-              yield* writeThreadHistoryPage(
-                threadHistoryDatabase,
-                {
-                  schemaVersion: THREAD_HISTORY_CACHE_SCHEMA_VERSION,
-                  scope,
-                  environmentId,
-                  threadId,
-                  totalMessages: Math.max(
-                    Option.isSome(current) ? current.value.totalMessages : 0,
-                    page.messageHistory.totalMessages,
-                  ),
-                  ranges: mergedRanges,
-                },
-                page.messages.map((message, offset) => ({
-                  schemaVersion: THREAD_HISTORY_CACHE_SCHEMA_VERSION,
-                  scope,
-                  environmentId,
-                  threadId,
-                  index: page.messageHistory.startIndex + offset,
-                  messageId: message.id,
-                  message,
-                })),
-                activities,
-                plans,
-              );
-            }),
-          )
-          .pipe(Effect.mapError((cause) => persistenceError("save-thread-history", cause))),
-      remove: (environmentId, threadId) =>
-        Effect.all(
-          [
-            removeDatabaseValue(
-              threadHistoryDatabase,
-              THREAD_HISTORY_THREAD_STORE_NAME,
-              threadHistoryScope(environmentId, threadId),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_MESSAGE_STORE_NAME,
-              IDBKeyRange.bound(
-                [threadHistoryScope(environmentId, threadId), 0],
-                [threadHistoryScope(environmentId, threadId), Number.MAX_SAFE_INTEGER],
-              ),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_ACTIVITY_STORE_NAME,
-              IDBKeyRange.bound(
-                [threadHistoryScope(environmentId, threadId)],
-                [threadHistoryScope(environmentId, threadId), "\uffff"],
-              ),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_PLAN_STORE_NAME,
-              IDBKeyRange.bound(
-                [threadHistoryScope(environmentId, threadId)],
-                [threadHistoryScope(environmentId, threadId), "\uffff"],
-              ),
-            ),
-          ],
-          { concurrency: "unbounded", discard: true },
-        ).pipe(Effect.mapError((cause) => persistenceError("remove-thread", cause))),
-      clear: (environmentId) =>
-        Effect.all(
-          [
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_THREAD_STORE_NAME,
-              IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_MESSAGE_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_ACTIVITY_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-            removeDatabaseValuesInRange(
-              threadHistoryDatabase,
-              THREAD_HISTORY_PLAN_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-          ],
-          { concurrency: "unbounded", discard: true },
-        ).pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
-    });
-
     return Context.make(ConnectionTargetStore, targetStore).pipe(
       Context.add(ConnectionRegistrationStore, registrationStore),
       Context.add(ProfileStore.ConnectionProfileStore, profileStore),

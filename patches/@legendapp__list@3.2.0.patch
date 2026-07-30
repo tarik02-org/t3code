@@ -203,44 +203,6 @@ index 72d3f59..435a5fc 100644
      /**
       * Number of columns to render items in.
       * @default 1
-diff --git a/react.js b/react.js
---- a/react.js
-+++ b/react.js
-@@ -1819,7 +1819,14 @@ function prepareMVCP(ctx, dataChanged) {
-     } else if (scrollTarget !== void 0) {
-       targetId = getId(state, scrollTarget);
-     } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
--      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
-+      targetId = idsInView.find((id) => {
-+        const index = indexByKey.get(id);
-+        return index !== void 0 && (shouldRestorePosition === void 0 || shouldRestorePosition(
-+          state.props.data[index],
-+          index,
-+          state.props.data
-+        ));
-+      });
-     }
-     if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
-       for (let i = 0; i < idsInView.length; i++) {
-diff --git a/react.mjs b/react.mjs
---- a/react.mjs
-+++ b/react.mjs
-@@ -1798,7 +1798,14 @@ function prepareMVCP(ctx, dataChanged) {
-     } else if (scrollTarget !== void 0) {
-       targetId = getId(state, scrollTarget);
-     } else if (idsInView.length > 0 && state.didContainersLayout && !dataChanged) {
--      targetId = idsInView.find((id) => indexByKey.get(id) !== void 0);
-+      targetId = idsInView.find((id) => {
-+        const index = indexByKey.get(id);
-+        return index !== void 0 && (shouldRestorePosition === void 0 || shouldRestorePosition(
-+          state.props.data[index],
-+          index,
-+          state.props.data
-+        ));
-+      });
-     }
-     if (dataChanged && idsInView.length > 0 && state.didContainersLayout) {
-       for (let i = 0; i < idsInView.length; i++) {
 diff --git a/react-native.js b/react-native.js
 index 8d4ff89..003b2f7 100644
 --- a/react-native.js

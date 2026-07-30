@@ -71,7 +71,6 @@ interface UseProgressiveTimelineHistoryInput {
   readonly latestMessagesRequest: number;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly messageHistory: OrchestrationThreadMessageHistory | undefined;
-  readonly minimapItems: ReadonlyArray<TimelineHistoryNavigationTarget>;
   readonly minimapStripMap: Map<string, HTMLSpanElement>;
   readonly onHistoryTargetReady: (() => void) | undefined;
   readonly onIsAtEndChange: (isAtEnd: boolean) => void;
@@ -91,7 +90,6 @@ export function useProgressiveTimelineHistory({
   latestMessagesRequest,
   listRef,
   messageHistory,
-  minimapItems,
   minimapStripMap,
   onHistoryTargetReady,
   onIsAtEndChange,
@@ -111,11 +109,11 @@ export function useProgressiveTimelineHistory({
   const initializedThreadRef = useRef<string | null>(null);
   const handledLatestMessagesRequestRef = useRef(latestMessagesRequest);
   const latestPositionPendingRef = useRef(false);
-  const followEndRef = useRef(true);
   const lastTouchYRef = useRef<number | null>(null);
   const pointerActiveRef = useRef(false);
   const positioningTargetRef = useRef<MessageId | null>(null);
   const minimapFrameRef = useRef<number | null>(null);
+  const visibleMinimapIdsRef = useRef<ReadonlySet<string>>(new Set());
 
   const rowIndexByMessageId = useMemo(() => {
     const indexes = new Map<MessageId, number>();
@@ -248,30 +246,30 @@ export function useProgressiveTimelineHistory({
       return;
     }
     const viewport = scrollNode.getBoundingClientRect();
-    const messageRects = new Map<string, DOMRect>();
+    const visibleMessageIds = new Set<string>();
     for (const element of scrollNode.querySelectorAll<HTMLElement>("[data-message-id]")) {
       const rect = element.getBoundingClientRect();
       const messageId = element.dataset.messageId;
-      if (messageId !== undefined) {
-        messageRects.set(messageId, rect);
+      if (messageId !== undefined && rect.bottom > viewport.top && rect.top < viewport.bottom) {
+        visibleMessageIds.add(messageId);
       }
     }
-    for (const item of minimapItems) {
-      const strip = minimapStripMap.get(item.id);
-      if (strip === undefined) {
-        continue;
+    for (const messageId of visibleMinimapIdsRef.current) {
+      if (!visibleMessageIds.has(messageId)) {
+        const strip = minimapStripMap.get(messageId);
+        if (strip !== undefined) {
+          strip.dataset.inView = "false";
+        }
       }
-      if (item.rowIndex === null) {
-        strip.dataset.inView = "false";
-        continue;
-      }
-      const rect = messageRects.get(item.id);
-      strip.dataset.inView =
-        rect !== undefined && rect.bottom > viewport.top && rect.top < viewport.bottom
-          ? "true"
-          : "false";
     }
-  }, [listRef, minimapItems, minimapStripMap]);
+    for (const messageId of visibleMessageIds) {
+      const strip = minimapStripMap.get(messageId);
+      if (strip !== undefined) {
+        strip.dataset.inView = "true";
+      }
+    }
+    visibleMinimapIdsRef.current = visibleMessageIds;
+  }, [listRef, minimapStripMap]);
 
   const scheduleMinimapUpdate = useCallback(() => {
     if (minimapFrameRef.current !== null) {
@@ -286,7 +284,6 @@ export function useProgressiveTimelineHistory({
   const beginUserNavigation = useCallback(() => {
     scheduleMinimapUpdate();
     manualInputRef.current = true;
-    followEndRef.current = false;
     if (positioningTargetRef.current !== null) {
       positioningTargetRef.current = null;
       const scrollOffset = listRef.current?.getState().scroll;
@@ -381,9 +378,6 @@ export function useProgressiveTimelineHistory({
       const isAtEnd =
         messageHistory === undefined ? localIsAtEnd : localIsAtEnd && !messageHistory.hasMoreAfter;
       onIsAtEndChange(isAtEnd);
-      if (isAtEnd) {
-        followEndRef.current = true;
-      }
     }
     scheduleMinimapUpdate();
     if (messageHistory === undefined || scrollNode === null || scrollNode === undefined) {
@@ -425,7 +419,6 @@ export function useProgressiveTimelineHistory({
   const selectHistoryTarget = useCallback(
     (item: TimelineHistoryNavigationTarget) => {
       onManualNavigation(false);
-      followEndRef.current = false;
       pageRequestRef.current = null;
       releasePrependAnchor();
       const rowIndex = rowIndexByMessageId.get(item.id);
@@ -488,16 +481,21 @@ export function useProgressiveTimelineHistory({
   useLayoutEffect(() => {
     if (initializedThreadRef.current !== routeThreadKey) {
       initializedThreadRef.current = routeThreadKey;
+      for (const messageId of visibleMinimapIdsRef.current) {
+        const strip = minimapStripMap.get(messageId);
+        if (strip !== undefined) {
+          strip.dataset.inView = "false";
+        }
+      }
+      visibleMinimapIdsRef.current = new Set();
       pageRequestRef.current = null;
       releasePrependAnchor();
       positioningTargetRef.current = null;
       lastScrollTopRef.current = null;
-      followEndRef.current = true;
     }
     if (handledLatestMessagesRequestRef.current !== latestMessagesRequest) {
       handledLatestMessagesRequestRef.current = latestMessagesRequest;
       latestPositionPendingRef.current = true;
-      followEndRef.current = true;
       pageRequestRef.current = null;
       releasePrependAnchor();
       positioningTargetRef.current = null;
@@ -505,7 +503,7 @@ export function useProgressiveTimelineHistory({
     if (
       messageHistory === undefined ||
       messageHistory.hasMoreAfter ||
-      (!followEndRef.current && !latestPositionPendingRef.current)
+      !latestPositionPendingRef.current
     ) {
       return;
     }
@@ -516,6 +514,7 @@ export function useProgressiveTimelineHistory({
     latestMessagesRequest,
     listRef,
     messageHistory,
+    minimapStripMap,
     releasePrependAnchor,
     routeThreadKey,
     rows,

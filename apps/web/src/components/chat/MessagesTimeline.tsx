@@ -391,7 +391,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     latestMessagesRequest,
     listRef,
     messageHistory,
-    minimapItems,
     minimapStripMap,
     onHistoryTargetReady,
     onIsAtEndChange,
@@ -547,7 +546,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
             contentInsetEndAdjustment={contentInsetEndAdjustment}
             maintainScrollAtEnd={
-              anchoredEndSpace || messageHistory?.hasMoreAfter
+              anchoredEndSpace || messageHistory !== undefined
                 ? false
                 : {
                     animated: false,
