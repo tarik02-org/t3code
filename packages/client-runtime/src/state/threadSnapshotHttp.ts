@@ -23,10 +23,11 @@ import {
 } from "../rpc/http.ts";
 import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
 
-// Bounded so a pathologically slow endpoint cannot block the (cheaper) socket
-// fallback for long. The cached thread renders while this runs, so the wait only
-// delays the transition to live data on the first open, not the initial paint.
-const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
+// The timeout covers response decoding and schema validation as well as the
+// request itself. Dense turns can contain thousands of tool activities, so a
+// short timeout can discard an already-delivered page and repeat the same work
+// through the socket fallback.
+const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 30_000;
 export const THREAD_TURN_PAGE_SIZE = 10;
 
 /**

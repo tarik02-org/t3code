@@ -70,21 +70,15 @@ const StoredThreadHistoryPlan = Schema.Struct({
 });
 
 const decodeStoredThreadHistoryThread = Schema.decodeUnknownEffect(StoredThreadHistoryThread);
-const decodeStoredThreadHistoryMessage = Schema.decodeUnknownEffect(StoredThreadHistoryMessage);
-const decodeStoredThreadHistoryMessages = (values: ReadonlyArray<unknown>) =>
-  Effect.forEach(values, (value) => decodeStoredThreadHistoryMessage(value), {
-    concurrency: "unbounded",
-  });
-const decodeStoredThreadHistoryActivity = Schema.decodeUnknownEffect(StoredThreadHistoryActivity);
-const decodeStoredThreadHistoryActivities = (values: ReadonlyArray<unknown>) =>
-  Effect.forEach(values, (value) => decodeStoredThreadHistoryActivity(value), {
-    concurrency: "unbounded",
-  });
-const decodeStoredThreadHistoryPlan = Schema.decodeUnknownEffect(StoredThreadHistoryPlan);
-const decodeStoredThreadHistoryPlans = (values: ReadonlyArray<unknown>) =>
-  Effect.forEach(values, (value) => decodeStoredThreadHistoryPlan(value), {
-    concurrency: "unbounded",
-  });
+const decodeStoredThreadHistoryMessages = Schema.decodeUnknownEffect(
+  Schema.Array(StoredThreadHistoryMessage),
+);
+const decodeStoredThreadHistoryActivities = Schema.decodeUnknownEffect(
+  Schema.Array(StoredThreadHistoryActivity),
+);
+const decodeStoredThreadHistoryPlans = Schema.decodeUnknownEffect(
+  Schema.Array(StoredThreadHistoryPlan),
+);
 
 function transientError(operation: string, cause: unknown) {
   return new ConnectionTransientError({

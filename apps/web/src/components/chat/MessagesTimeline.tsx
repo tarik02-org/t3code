@@ -164,19 +164,10 @@ const TIMELINE_MAINTAIN_VISIBLE_CONTENT_POSITION = {
   data: true,
   size: false,
 };
-const TIMELINE_HISTORY_LOADING_BEFORE_ROW = {
-  id: "history-loading-before",
-  kind: "history-loading",
-} as const;
-const TIMELINE_HISTORY_LOADING_AFTER_ROW = {
-  id: "history-loading-after",
-  kind: "history-loading",
-} as const;
-
-type MessagesTimelineListRow =
-  | MessagesTimelineRow
-  | typeof TIMELINE_HISTORY_LOADING_BEFORE_ROW
-  | typeof TIMELINE_HISTORY_LOADING_AFTER_ROW;
+const TIMELINE_HISTORY_MAINTAIN_VISIBLE_CONTENT_POSITION = {
+  data: false,
+  size: false,
+};
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -371,14 +362,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
-  const listRows = useMemo<ReadonlyArray<MessagesTimelineListRow>>(
-    () => [
-      ...(isLoadingPreviousMessages ? [TIMELINE_HISTORY_LOADING_BEFORE_ROW] : []),
-      ...rows,
-      ...(isLoadingNextMessages ? [TIMELINE_HISTORY_LOADING_AFTER_ROW] : []),
-    ],
-    [isLoadingNextMessages, isLoadingPreviousMessages, rows],
-  );
   const minimapItems = useMemo(
     () => deriveTimelineMinimapItems(rows, historyOutline),
     [historyOutline, rows],
@@ -404,7 +387,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onManualNavigation,
     onSelectHistoryMessage,
     routeThreadKey,
-    rowIndexOffset: isLoadingPreviousMessages ? 1 : 0,
     rows,
   });
   const handleAnchorReady = useCallback(
@@ -500,14 +482,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
-    ({ item }: { item: MessagesTimelineListRow }) =>
-      item.kind === "history-loading" ? (
-        <TimelineHistorySkeletons />
-      ) : (
-        <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
-          <TimelineRowContent row={item} />
-        </div>
-      ),
+    ({ item }: { item: MessagesTimelineRow }) => (
+      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
+        <TimelineRowContent row={item} />
+      </div>
+    ),
     [],
   );
 
@@ -533,15 +512,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           onPointerDownCapture={progressiveHistory.beginUserNavigation}
           onWheelCapture={progressiveHistory.beginUserNavigation}
         >
-          <LegendList<MessagesTimelineListRow>
+          <LegendList<MessagesTimelineRow>
             ref={listRef}
-            data={listRows}
+            data={rows}
             {...(messageHistory === undefined
               ? {}
               : { drawDistance: TIMELINE_HISTORY_DRAW_DISTANCE })}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
-            getFixedItemSize={getFixedItemSize}
             renderItem={renderItem}
             estimatedItemSize={90}
             estimatedHeaderSize={historyHeaderSize}
@@ -561,7 +539,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   }
             }
             maintainVisibleContentPosition={
-              messageHistory === undefined ? TIMELINE_MAINTAIN_VISIBLE_CONTENT_POSITION : true
+              messageHistory === undefined
+                ? TIMELINE_MAINTAIN_VISIBLE_CONTENT_POSITION
+                : TIMELINE_HISTORY_MAINTAIN_VISIBLE_CONTENT_POSITION
             }
             {...(messageHistory === undefined
               ? {}
@@ -576,8 +556,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
-            ListHeaderComponent={<div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />}
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
+            ListHeaderComponent={
+              <>
+                <div className={topFadeEnabled ? "h-10 sm:h-12" : "h-3 sm:h-4"} />
+                {isLoadingPreviousMessages ? <TimelineHistorySkeletons /> : null}
+              </>
+            }
+            ListFooterComponent={
+              <>
+                {isLoadingNextMessages ? <TimelineHistorySkeletons /> : null}
+                {TIMELINE_LIST_FOOTER}
+              </>
+            }
           />
           <TimelineMinimap
             items={minimapItems}
@@ -615,19 +605,12 @@ function TimelineHistorySkeletons() {
   );
 }
 
-function keyExtractor(item: MessagesTimelineListRow) {
+function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
 }
 
-function getItemType(item: MessagesTimelineListRow) {
-  if (item.kind === "history-loading") {
-    return item.kind;
-  }
+function getItemType(item: MessagesTimelineRow) {
   return item.kind === "message" ? `message:${item.message.role}` : item.kind;
-}
-
-function getFixedItemSize(item: MessagesTimelineListRow) {
-  return item.kind === "history-loading" ? 192 : undefined;
 }
 
 interface TimelineMinimapItem extends TimelineHistoryNavigationTarget {
