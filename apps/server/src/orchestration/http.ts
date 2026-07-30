@@ -64,11 +64,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           const snapshot = yield* projectionSnapshotQuery
-            .getThreadDetailSnapshot(
-              args.params.threadId,
-              args.query.messageLimit,
-              args.query.turnLimit,
-            )
+            .getThreadDetailSnapshot(args.params.threadId, args.query.turnLimit)
             .pipe(
               Effect.catch((cause) =>
                 failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
@@ -86,25 +82,14 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           const page = yield* projectionSnapshotQuery
-            .getThreadMessagePage(
-              "turnLimit" in args.query
-                ? {
-                    threadId: args.params.threadId,
-                    before: {
-                      createdAt: args.query.beforeCreatedAt,
-                      messageId: args.query.beforeMessageId,
-                    },
-                    turnLimit: args.query.turnLimit,
-                  }
-                : {
-                    threadId: args.params.threadId,
-                    before: {
-                      createdAt: args.query.beforeCreatedAt,
-                      messageId: args.query.beforeMessageId,
-                    },
-                    limit: args.query.limit,
-                  },
-            )
+            .getThreadMessagePage({
+              threadId: args.params.threadId,
+              before: {
+                createdAt: args.query.beforeCreatedAt,
+                messageId: args.query.beforeMessageId,
+              },
+              turnLimit: args.query.turnLimit,
+            })
             .pipe(
               Effect.catch((cause) =>
                 failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
@@ -122,25 +107,14 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           const page = yield* projectionSnapshotQuery
-            .getThreadMessagePageAfter(
-              "turnLimit" in args.query
-                ? {
-                    threadId: args.params.threadId,
-                    after: {
-                      createdAt: args.query.afterCreatedAt,
-                      messageId: args.query.afterMessageId,
-                    },
-                    turnLimit: args.query.turnLimit,
-                  }
-                : {
-                    threadId: args.params.threadId,
-                    after: {
-                      createdAt: args.query.afterCreatedAt,
-                      messageId: args.query.afterMessageId,
-                    },
-                    limit: args.query.limit,
-                  },
-            )
+            .getThreadMessagePageAfter({
+              threadId: args.params.threadId,
+              after: {
+                createdAt: args.query.afterCreatedAt,
+                messageId: args.query.afterMessageId,
+              },
+              turnLimit: args.query.turnLimit,
+            })
             .pipe(
               Effect.catch((cause) =>
                 failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
@@ -158,19 +132,11 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           const page = yield* projectionSnapshotQuery
-            .getThreadMessagePageAround(
-              "turnLimit" in args.query
-                ? {
-                    threadId: args.params.threadId,
-                    messageId: args.params.messageId,
-                    turnLimit: args.query.turnLimit,
-                  }
-                : {
-                    threadId: args.params.threadId,
-                    messageId: args.params.messageId,
-                    limit: args.query.limit,
-                  },
-            )
+            .getThreadMessagePageAround({
+              threadId: args.params.threadId,
+              messageId: args.params.messageId,
+              turnLimit: args.query.turnLimit,
+            })
             .pipe(
               Effect.catch((cause) =>
                 failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),

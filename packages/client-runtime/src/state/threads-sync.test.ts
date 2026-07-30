@@ -38,7 +38,7 @@ import {
   ThreadSnapshotLoader,
   type EnvironmentThreadState,
 } from "./threads.ts";
-import { THREAD_MESSAGE_PAGE_SIZE } from "./threadSnapshotHttp.ts";
+import { THREAD_TURN_PAGE_SIZE } from "./threadSnapshotHttp.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -148,7 +148,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const retryCount = yield* Ref.make(0);
   const subscriptionCount = yield* Ref.make(0);
   const loaderCalls = yield* Ref.make(0);
-  const lastLoaderMessageLimit = yield* Ref.make<number | undefined>(undefined);
+  const lastLoaderTurnLimit = yield* Ref.make<number | undefined>(undefined);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
   const lastRequestCompletionMarker = yield* Ref.make<boolean | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
@@ -193,9 +193,9 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     Option.some(PREPARED),
   );
   const snapshotLoader = ThreadSnapshotLoader.of({
-    load: (_prepared, threadId, messageLimit) =>
+    load: (_prepared, threadId, turnLimit) =>
       Ref.update(loaderCalls, (count) => count + 1).pipe(
-        Effect.andThen(Ref.set(lastLoaderMessageLimit, messageLimit)),
+        Effect.andThen(Ref.set(lastLoaderTurnLimit, turnLimit)),
         Effect.andThen(
           threadId === THREAD_ID
             ? (options?.httpSnapshotEffect ??
@@ -266,7 +266,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     retryCount,
     subscriptionCount,
     loaderCalls,
-    lastLoaderMessageLimit,
+    lastLoaderTurnLimit,
     lastSubscribeAfterSequence,
     lastRequestCompletionMarker,
     supervisorState,
@@ -355,7 +355,7 @@ describe("EnvironmentThreads", () => {
 
   it.effect("does not publish an unbounded legacy cache before loading a paginated snapshot", () =>
     Effect.gen(function* () {
-      const messages = Array.from({ length: THREAD_MESSAGE_PAGE_SIZE + 1 }, (_, index) => ({
+      const messages = Array.from({ length: THREAD_TURN_PAGE_SIZE * 2 + 2 }, (_, index) => ({
         id: MessageId.make(`message-${index.toString().padStart(3, "0")}`),
         role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
         text: `message ${index}`,
@@ -366,16 +366,16 @@ describe("EnvironmentThreads", () => {
       }));
       const snapshotReady =
         yield* Deferred.make<Option.Option<OrchestrationThreadDetailSnapshot>>();
-      const boundedMessages = messages.slice(-THREAD_MESSAGE_PAGE_SIZE);
+      const boundedMessages = messages.slice(-THREAD_TURN_PAGE_SIZE * 2);
       const boundedThread: OrchestrationThread = {
         ...BASE_THREAD,
         messages: boundedMessages,
         messageHistory: {
           hasMoreBefore: true,
           hasMoreAfter: false,
-          startIndex: 1,
-          endIndex: THREAD_MESSAGE_PAGE_SIZE + 1,
-          totalMessages: THREAD_MESSAGE_PAGE_SIZE + 1,
+          startIndex: 2,
+          endIndex: THREAD_TURN_PAGE_SIZE * 2 + 2,
+          totalMessages: THREAD_TURN_PAGE_SIZE * 2 + 2,
           cursor: {
             createdAt: boundedMessages[0]!.createdAt,
             messageId: boundedMessages[0]!.id,
@@ -398,7 +398,7 @@ describe("EnvironmentThreads", () => {
       }
 
       expect(Option.isNone(provisional.data)).toBe(true);
-      expect(yield* Ref.get(harness.lastLoaderMessageLimit)).toBe(THREAD_MESSAGE_PAGE_SIZE);
+      expect(yield* Ref.get(harness.lastLoaderTurnLimit)).toBe(THREAD_TURN_PAGE_SIZE);
 
       yield* Deferred.succeed(
         snapshotReady,
@@ -412,9 +412,9 @@ describe("EnvironmentThreads", () => {
         (value) => Option.isSome(value.data) && value.data.value.messageHistory !== undefined,
       );
 
-      expect(Option.getOrThrow(loaded.data).messages).toHaveLength(THREAD_MESSAGE_PAGE_SIZE);
+      expect(Option.getOrThrow(loaded.data).messages).toHaveLength(THREAD_TURN_PAGE_SIZE * 2);
       expect(Option.getOrThrow(loaded.data).messageHistory?.totalMessages).toBe(
-        THREAD_MESSAGE_PAGE_SIZE + 1,
+        THREAD_TURN_PAGE_SIZE * 2 + 2,
       );
     }),
   );

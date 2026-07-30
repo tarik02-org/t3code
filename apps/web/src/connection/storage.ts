@@ -655,6 +655,14 @@ export const connectionStorageLayer = Layer.effectContext(
               THREAD_STORE_NAME,
               IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
             ),
+            removeDatabaseValuesInRange(
+              database,
+              THREAD_STORE_NAME,
+              IDBKeyRange.bound(
+                `${THREAD_CACHE_KEY_NAMESPACE}:${environmentId}:`,
+                `${THREAD_CACHE_KEY_NAMESPACE}:${environmentId}:\uffff`,
+              ),
+            ),
             removeDatabaseValue(database, SERVER_CONFIG_STORE_NAME, environmentId),
             removeDatabaseValuesInRange(
               database,

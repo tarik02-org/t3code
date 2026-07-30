@@ -41,7 +41,6 @@ import {
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadHistoryOutline,
   OrchestrationThreadHistoryPage,
-  ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT,
   ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT,
 } from "./orchestration.ts";
 import {
@@ -469,65 +468,37 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
 });
 
 const EnvironmentOrchestrationThreadSnapshotQuery = Schema.Struct({
-  messageLimit: Schema.optional(
-    PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT)),
-  ),
   turnLimit: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT)),
   ),
 });
 
-const EnvironmentOrchestrationThreadMessagesQuery = Schema.Union([
-  Schema.Struct({
-    beforeCreatedAt: IsoDateTime,
-    beforeMessageId: MessageId,
-    limit: PositiveInt.check(
-      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT),
-    ),
-  }),
-  Schema.Struct({
-    beforeCreatedAt: IsoDateTime,
-    beforeMessageId: MessageId,
-    turnLimit: PositiveInt.check(
-      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
-    ),
-  }),
-]);
+const EnvironmentOrchestrationThreadMessagesQuery = Schema.Struct({
+  beforeCreatedAt: IsoDateTime,
+  beforeMessageId: MessageId,
+  turnLimit: PositiveInt.check(
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+});
 
-const EnvironmentOrchestrationThreadMessagesAfterQuery = Schema.Union([
-  Schema.Struct({
-    afterCreatedAt: IsoDateTime,
-    afterMessageId: MessageId,
-    limit: PositiveInt.check(
-      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT),
-    ),
-  }),
-  Schema.Struct({
-    afterCreatedAt: IsoDateTime,
-    afterMessageId: MessageId,
-    turnLimit: PositiveInt.check(
-      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
-    ),
-  }),
-]);
+const EnvironmentOrchestrationThreadMessagesAfterQuery = Schema.Struct({
+  afterCreatedAt: IsoDateTime,
+  afterMessageId: MessageId,
+  turnLimit: PositiveInt.check(
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+});
 
 const EnvironmentOrchestrationThreadMessageAroundParams = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
 });
 
-const EnvironmentOrchestrationThreadMessageAroundQuery = Schema.Union([
-  Schema.Struct({
-    limit: PositiveInt.check(
-      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT),
-    ),
-  }),
-  Schema.Struct({
-    turnLimit: PositiveInt.check(
-      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
-    ),
-  }),
-]);
+const EnvironmentOrchestrationThreadMessageAroundQuery = Schema.Struct({
+  turnLimit: PositiveInt.check(
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+});
 
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(

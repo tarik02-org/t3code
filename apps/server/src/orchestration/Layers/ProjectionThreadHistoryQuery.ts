@@ -186,32 +186,6 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
           AND (created_at, message_id) <= (${cursorCreatedAt}, ${cursorMessageId})
       `,
     });
-    const listMessageRowsBefore = SqlSchema.findAll({
-      Request: ThreadMessagePageLookupInput,
-      Result: ProjectionThreadMessageDbRowSchema,
-      execute: ({ threadId, cursorCreatedAt, cursorMessageId, fetchLimit }) =>
-        sql`
-        SELECT *
-        FROM (
-          SELECT
-            message_id AS "messageId",
-            thread_id AS "threadId",
-            turn_id AS "turnId",
-            role,
-            text,
-            attachments_json AS "attachments",
-            is_streaming AS "isStreaming",
-            created_at AS "createdAt",
-            updated_at AS "updatedAt"
-          FROM projection_thread_messages
-          WHERE thread_id = ${threadId}
-            AND (created_at, message_id) < (${cursorCreatedAt}, ${cursorMessageId})
-          ORDER BY created_at DESC, message_id DESC
-          LIMIT ${fetchLimit}
-        )
-        ORDER BY "createdAt" ASC, "messageId" ASC
-      `,
-    });
     const listMessageRowsAfter = SqlSchema.findAll({
       Request: ThreadMessagePageLookupInput,
       Result: ProjectionThreadMessageDbRowSchema,
@@ -469,19 +443,6 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
       };
     });
-    const countMessages = Effect.fn("ProjectionThreadHistoryQuery.countMessages")(function* (
-      threadId: ThreadId,
-    ) {
-      const row = yield* countMessageRows({ threadId }).pipe(
-        Effect.mapError(
-          toPersistenceSqlOrDecodeError(
-            "ProjectionThreadHistoryQuery.countMessages:query",
-            "ProjectionThreadHistoryQuery.countMessages:decodeRow",
-          ),
-        ),
-      );
-      return row.count;
-    });
     const getTurnPageByCursor = Effect.fn("ProjectionThreadHistoryQuery.getTurnPageByCursor")(
       function* (
         input:
@@ -647,224 +608,6 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
         });
       },
     );
-    const getMessagePage = Effect.fn("ProjectionThreadHistoryQuery.getMessagePage")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly before: OrchestrationThreadMessageCursor;
-        readonly limit: number;
-      }) {
-        const [thread, rows, totalMessageCount, messageCountBeforeCursor] = yield* Effect.all([
-          getActiveThread({ threadId: input.threadId }),
-          listMessageRowsBefore({
-            threadId: input.threadId,
-            cursorCreatedAt: input.before.createdAt,
-            cursorMessageId: input.before.messageId,
-            fetchLimit: input.limit + 1,
-          }),
-          countMessageRows({ threadId: input.threadId }),
-          countMessageRowsBefore({
-            threadId: input.threadId,
-            cursorCreatedAt: input.before.createdAt,
-            cursorMessageId: input.before.messageId,
-          }),
-        ]).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionThreadHistoryQuery.getMessagePage:query",
-              "ProjectionThreadHistoryQuery.getMessagePage:decodeRows",
-            ),
-          ),
-        );
-        if (Option.isNone(thread)) {
-          return Option.none<OrchestrationThreadHistoryPage>();
-        }
-
-        const pageRows = rows.length > input.limit ? rows.slice(1) : rows;
-        const firstRow = pageRows[0];
-        const endIndex = messageCountBeforeCursor.count;
-        const startIndex = endIndex - pageRows.length;
-        const historyRange =
-          firstRow === undefined
-            ? { activities: [], proposedPlans: [] }
-            : yield* loadRange({
-                threadId: input.threadId,
-                startCreatedAt: firstRow.createdAt,
-                endCreatedAt: input.before.createdAt,
-              });
-        return Option.some({
-          messages: pageRows.map(mapThreadMessageRow),
-          activities: historyRange.activities,
-          proposedPlans: historyRange.proposedPlans,
-          messageHistory: {
-            hasMoreBefore: startIndex > 0,
-            hasMoreAfter: endIndex < totalMessageCount.count,
-            startIndex,
-            endIndex,
-            totalMessages: totalMessageCount.count,
-            cursor:
-              firstRow === undefined
-                ? null
-                : {
-                    createdAt: firstRow.createdAt,
-                    messageId: firstRow.messageId,
-                  },
-          },
-        });
-      },
-    );
-    const getMessagePageAfter = Effect.fn("ProjectionThreadHistoryQuery.getMessagePageAfter")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly after: OrchestrationThreadMessageCursor;
-        readonly limit: number;
-      }) {
-        const [thread, rows, totalMessageCount, messageCountThroughCursor] = yield* Effect.all([
-          getActiveThread({ threadId: input.threadId }),
-          listMessageRowsAfter({
-            threadId: input.threadId,
-            cursorCreatedAt: input.after.createdAt,
-            cursorMessageId: input.after.messageId,
-            fetchLimit: input.limit + 1,
-          }),
-          countMessageRows({ threadId: input.threadId }),
-          countMessageRowsThrough({
-            threadId: input.threadId,
-            cursorCreatedAt: input.after.createdAt,
-            cursorMessageId: input.after.messageId,
-          }),
-        ]).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionThreadHistoryQuery.getMessagePageAfter:query",
-              "ProjectionThreadHistoryQuery.getMessagePageAfter:decodeRows",
-            ),
-          ),
-        );
-        if (Option.isNone(thread)) {
-          return Option.none<OrchestrationThreadHistoryPage>();
-        }
-
-        const hasMoreAfter = rows.length > input.limit;
-        const pageRows = hasMoreAfter ? rows.slice(0, input.limit) : rows;
-        const firstRow = pageRows[0];
-        const nextRow = rows[input.limit];
-        const startIndex = messageCountThroughCursor.count;
-        const endIndex = startIndex + pageRows.length;
-        const historyRange =
-          firstRow === undefined
-            ? { activities: [], proposedPlans: [] }
-            : yield* loadRange({
-                threadId: input.threadId,
-                startCreatedAt: input.after.createdAt,
-                endCreatedAt: nextRow?.createdAt ?? null,
-              });
-        return Option.some({
-          messages: pageRows.map(mapThreadMessageRow),
-          activities: historyRange.activities,
-          proposedPlans: historyRange.proposedPlans,
-          messageHistory: {
-            hasMoreBefore: startIndex > 0,
-            hasMoreAfter: endIndex < totalMessageCount.count,
-            startIndex,
-            endIndex,
-            totalMessages: totalMessageCount.count,
-            cursor:
-              firstRow === undefined
-                ? null
-                : {
-                    createdAt: firstRow.createdAt,
-                    messageId: firstRow.messageId,
-                  },
-          },
-        });
-      },
-    );
-    const getMessagePageAround = Effect.fn("ProjectionThreadHistoryQuery.getMessagePageAround")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly messageId: MessageId;
-        readonly limit: number;
-      }) {
-        const [thread, target, totalMessageCount] = yield* Effect.all([
-          getActiveThread({ threadId: input.threadId }),
-          getMessageRowById({ threadId: input.threadId, messageId: input.messageId }),
-          countMessageRows({ threadId: input.threadId }),
-        ]).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionThreadHistoryQuery.getMessagePageAround:targetQuery",
-              "ProjectionThreadHistoryQuery.getMessagePageAround:decodeTarget",
-            ),
-          ),
-        );
-        if (Option.isNone(thread) || Option.isNone(target)) {
-          return Option.none<OrchestrationThreadHistoryPage>();
-        }
-
-        const [beforeRows, afterRows, messageCountBeforeTarget] = yield* Effect.all([
-          listMessageRowsBefore({
-            threadId: input.threadId,
-            cursorCreatedAt: target.value.createdAt,
-            cursorMessageId: target.value.messageId,
-            fetchLimit: input.limit + 1,
-          }),
-          listMessageRowsAfter({
-            threadId: input.threadId,
-            cursorCreatedAt: target.value.createdAt,
-            cursorMessageId: target.value.messageId,
-            fetchLimit: input.limit + 1,
-          }),
-          countMessageRowsBefore({
-            threadId: input.threadId,
-            cursorCreatedAt: target.value.createdAt,
-            cursorMessageId: target.value.messageId,
-          }),
-        ]).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionThreadHistoryQuery.getMessagePageAround:pageQuery",
-              "ProjectionThreadHistoryQuery.getMessagePageAround:decodePage",
-            ),
-          ),
-        );
-        let beforeCount = Math.min(Math.floor((input.limit - 1) / 2), beforeRows.length);
-        const afterCount = Math.min(input.limit - 1 - beforeCount, afterRows.length);
-        beforeCount = Math.min(input.limit - 1 - afterCount, beforeRows.length);
-        const visibleRows = [
-          ...beforeRows.slice(-beforeCount),
-          target.value,
-          ...afterRows.slice(0, afterCount),
-        ];
-        const firstRow = visibleRows[0];
-        if (firstRow === undefined) {
-          return Option.none<OrchestrationThreadHistoryPage>();
-        }
-        const startIndex = messageCountBeforeTarget.count - beforeCount;
-        const endIndex = startIndex + visibleRows.length;
-        const nextRow = afterRows[afterCount];
-        const historyRange = yield* loadRange({
-          threadId: input.threadId,
-          startCreatedAt: firstRow.createdAt,
-          endCreatedAt: nextRow?.createdAt ?? null,
-        });
-        return Option.some({
-          messages: visibleRows.map(mapThreadMessageRow),
-          activities: historyRange.activities,
-          proposedPlans: historyRange.proposedPlans,
-          messageHistory: {
-            hasMoreBefore: startIndex > 0,
-            hasMoreAfter: endIndex < totalMessageCount.count,
-            startIndex,
-            endIndex,
-            totalMessages: totalMessageCount.count,
-            cursor: {
-              createdAt: firstRow.createdAt,
-              messageId: firstRow.messageId,
-            },
-          },
-        });
-      },
-    );
     const getHistoryOutline = Effect.fn("ProjectionThreadHistoryQuery.getHistoryOutline")(
       function* (threadId: ThreadId) {
         const [thread, rows] = yield* Effect.all([
@@ -896,15 +639,10 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
     );
 
     return {
-      countMessages,
-      loadRange,
       getLatestTurnPage,
       getTurnPage,
       getTurnPageAfter,
       getTurnPageAround,
-      getMessagePage,
-      getMessagePageAfter,
-      getMessagePageAround,
       getHistoryOutline,
     };
   },

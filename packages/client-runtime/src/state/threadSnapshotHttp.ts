@@ -27,7 +27,6 @@ import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./envir
 // fallback for long. The cached thread renders while this runs, so the wait only
 // delays the transition to live data on the first open, not the initial paint.
 const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
-export const THREAD_MESSAGE_PAGE_SIZE = 200;
 export const THREAD_TURN_PAGE_SIZE = 10;
 
 /**
@@ -41,7 +40,6 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
   readonly prepared: PreparedConnection;
   readonly threadId: ThreadId;
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
-  readonly messageLimit?: number;
   readonly turnLimit?: number;
   readonly timeoutMs?: number;
 }) {
@@ -51,9 +49,6 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
       `/api/orchestration/threads/${input.threadId}`,
     ),
   );
-  if (input.messageLimit !== undefined) {
-    requestUrl.searchParams.set("messageLimit", String(input.messageLimit));
-  }
   if (input.turnLimit !== undefined) {
     requestUrl.searchParams.set("turnLimit", String(input.turnLimit));
   }
@@ -71,10 +66,7 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
       input.prepared.httpAuthorization,
       client.orchestration.threadSnapshot({
         params: { threadId: input.threadId },
-        query: {
-          ...(input.messageLimit === undefined ? {} : { messageLimit: input.messageLimit }),
-          ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
-        },
+        query: input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit },
         headers,
       }),
     ),
@@ -252,7 +244,6 @@ export class ThreadSnapshotLoader extends Context.Service<
     readonly load: (
       prepared: PreparedConnection,
       threadId: ThreadId,
-      messageLimit?: number,
       turnLimit?: number,
     ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
     readonly loadPreviousMessages: (
@@ -292,17 +283,11 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
     // connections work without one).
     const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
     return ThreadSnapshotLoader.of({
-      load: (
-        prepared: PreparedConnection,
-        threadId: ThreadId,
-        messageLimit?: number,
-        turnLimit?: number,
-      ) =>
+      load: (prepared: PreparedConnection, threadId: ThreadId, turnLimit?: number) =>
         fetchEnvironmentThreadSnapshot({
           prepared,
           threadId,
           signer,
-          ...(messageLimit === undefined ? {} : { messageLimit }),
           ...(turnLimit === undefined ? {} : { turnLimit }),
         }).pipe(
           Effect.map(Option.some<OrchestrationThreadDetailSnapshot>),

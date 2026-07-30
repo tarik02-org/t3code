@@ -26,11 +26,7 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { ThreadHistoryCacheStore } from "../platform/threadHistoryCache.ts";
 import { subscribeDynamicRequest } from "../rpc/client.ts";
-import {
-  THREAD_MESSAGE_PAGE_SIZE,
-  THREAD_TURN_PAGE_SIZE,
-  ThreadSnapshotLoader,
-} from "./threadSnapshotHttp.ts";
+import { THREAD_TURN_PAGE_SIZE, ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import {
   boundLiveThread,
   boundThreadHistoryPage,
@@ -132,7 +128,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const initiallyMessagePaginationEnabled = options?.messagePagination?.enabled() ?? true;
   const initiallyVisibleCachedThread = Option.filter(cachedThread, (thread) =>
     initiallyMessagePaginationEnabled
-      ? thread.messageHistory !== undefined || thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE
+      ? thread.messageHistory !== undefined
       : thread.messageHistory === undefined,
   );
   const state = yield* SubscriptionRef.make<EnvironmentThreadState>({
@@ -914,8 +910,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         const currentLiveThread = yield* Ref.get(liveThread);
         const visibleLiveThread = Option.filter(currentLiveThread, (thread) =>
           supportsMessagePagination
-            ? thread.messageHistory !== undefined ||
-              thread.messages.length <= THREAD_MESSAGE_PAGE_SIZE
+            ? thread.messageHistory !== undefined
             : thread.messageHistory === undefined,
         );
         if (Option.isSome(currentLiveThread) && Option.isNone(visibleLiveThread)) {
@@ -950,7 +945,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           const httpSnapshot = yield* snapshotLoader.load(
             prepared,
             threadId,
-            undefined,
             supportsMessagePagination ? THREAD_TURN_PAGE_SIZE : undefined,
           );
           if (Option.isSome(httpSnapshot)) {

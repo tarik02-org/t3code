@@ -972,11 +972,10 @@ const makeWsRpcLayer = (
 
       const loadThreadSnapshot = Effect.fn("Ws.loadThreadSnapshot")(function* (
         threadId: ThreadId,
-        messageLimit?: number,
         turnLimit?: number,
       ) {
         const snapshot = yield* projectionSnapshotQuery
-          .getThreadDetailSnapshot(threadId, messageLimit, turnLimit)
+          .getThreadDetailSnapshot(threadId, turnLimit)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -1033,7 +1032,6 @@ const makeWsRpcLayer = (
               // Keep the requested live-tail bound when replay falls back to a fresh snapshot.
               const snapshot = yield* loadThreadSnapshot(
                 input.request.threadId,
-                input.request.messageLimit,
                 input.request.turnLimit,
               );
               if (Option.isNone(snapshot)) {
@@ -1084,11 +1082,7 @@ const makeWsRpcLayer = (
           return Stream.concat(catchUpStream, synchronizedThenLive);
         }
 
-        const snapshot = yield* loadThreadSnapshot(
-          input.request.threadId,
-          input.request.messageLimit,
-          input.request.turnLimit,
-        );
+        const snapshot = yield* loadThreadSnapshot(input.request.threadId, input.request.turnLimit);
         if (Option.isNone(snapshot)) {
           return yield* new OrchestrationGetSnapshotError({
             message: `Thread ${input.request.threadId} was not found`,

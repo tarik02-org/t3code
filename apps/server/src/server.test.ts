@@ -5897,15 +5897,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("forwards the requested socket thread message limit to the snapshot query", () =>
+  it.effect("forwards the requested socket thread turn limit to the snapshot query", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
-      let requestedMessageLimit: number | undefined;
+      let requestedTurnLimit: number | undefined;
       yield* buildAppUnderTest({
         layers: {
           projectionSnapshotQuery: {
-            getThreadDetailSnapshot: (_threadId, messageLimit) => {
-              requestedMessageLimit = messageLimit;
+            getThreadDetailSnapshot: (_threadId, turnLimit) => {
+              requestedTurnLimit = turnLimit;
               return Effect.succeed(Option.some({ snapshotSequence: 1, thread }));
             },
           },
@@ -5917,12 +5917,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-            messageLimit: 80,
+            turnLimit: 10,
           }).pipe(Stream.take(1), Stream.runDrain),
         ),
       );
 
-      assert.equal(requestedMessageLimit, 80);
+      assert.equal(requestedTurnLimit, 10);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
