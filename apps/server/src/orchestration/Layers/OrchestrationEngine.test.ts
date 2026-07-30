@@ -208,6 +208,7 @@ describe("OrchestrationEngine", () => {
           getThreadMessagePageAfter: () => Effect.die("unused"),
           getThreadMessagePageAround: () => Effect.die("unused"),
           getThreadHistoryOutline: () => Effect.die("unused"),
+          searchThreads: () => Effect.succeed({ matches: [] }),
         }),
       ),
       Layer.provide(
