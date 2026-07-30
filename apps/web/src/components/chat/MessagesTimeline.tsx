@@ -158,7 +158,12 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const TIMELINE_SCRUB_THROTTLE_MS = 180;
-const TIMELINE_HISTORY_DRAW_DISTANCE = 1_200;
+const TIMELINE_HISTORY_DRAW_DISTANCE = 3_000;
+const TIMELINE_HISTORY_PAGE_THRESHOLD = 4;
+const TIMELINE_MAINTAIN_VISIBLE_CONTENT_POSITION = {
+  data: true,
+  size: false,
+};
 const TIMELINE_HISTORY_LOADING_BEFORE_ROW = {
   id: "history-loading-before",
   kind: "history-loading",
@@ -525,10 +530,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         <div
           ref={setTimelineViewportElement}
           className="relative h-full min-h-0"
-          onPointerDownCapture={progressiveHistory.beginPointerNavigation}
-          onTouchMoveCapture={progressiveHistory.continueTouchNavigation}
-          onTouchStartCapture={progressiveHistory.beginTouchNavigation}
-          onWheelCapture={progressiveHistory.handleWheelNavigation}
+          onPointerDownCapture={progressiveHistory.beginUserNavigation}
+          onWheelCapture={progressiveHistory.beginUserNavigation}
         >
           <LegendList<MessagesTimelineListRow>
             ref={listRef}
@@ -557,10 +560,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     },
                   }
             }
-            maintainVisibleContentPosition={{
-              data: true,
-              size: messageHistory !== undefined,
-            }}
+            maintainVisibleContentPosition={
+              messageHistory === undefined ? TIMELINE_MAINTAIN_VISIBLE_CONTENT_POSITION : true
+            }
+            {...(messageHistory === undefined
+              ? {}
+              : {
+                  onEndReached: progressiveHistory.loadNextPage,
+                  onEndReachedThreshold: TIMELINE_HISTORY_PAGE_THRESHOLD,
+                  onStartReached: progressiveHistory.loadPreviousPage,
+                  onStartReachedThreshold: TIMELINE_HISTORY_PAGE_THRESHOLD,
+                })}
             onScroll={progressiveHistory.handleScroll}
             className={cn(
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",

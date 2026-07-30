@@ -49,6 +49,13 @@ const ThreadMessagePageLookupInput = Schema.Struct({
   cursorMessageId: MessageId,
   fetchLimit: PositiveInt,
 });
+const ThreadTurnPageLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  mode: Schema.Literals(["latest", "before", "after", "around"]),
+  cursorCreatedAt: Schema.NullOr(IsoDateTime),
+  cursorMessageId: Schema.NullOr(MessageId),
+  fetchLimit: PositiveInt,
+});
 const ThreadMessageCursorLookupInput = Schema.Struct({
   threadId: ThreadId,
   cursorCreatedAt: IsoDateTime,
@@ -227,6 +234,114 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
         LIMIT ${fetchLimit}
       `,
     });
+    const listTurnMessageRows = SqlSchema.findAll({
+      Request: ThreadTurnPageLookupInput,
+      Result: ProjectionThreadMessageDbRowSchema,
+      execute: ({ threadId, mode, cursorCreatedAt, cursorMessageId, fetchLimit }) =>
+        sql`
+        WITH user_messages AS (
+          SELECT
+            created_at,
+            message_id,
+            ROW_NUMBER() OVER (ORDER BY created_at ASC, message_id ASC) - 1 AS ordinal,
+            COUNT(*) OVER () AS total
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+            AND role = 'user'
+        ),
+        stats AS (
+          SELECT COALESCE(MAX(total), 0) AS total
+          FROM user_messages
+        ),
+        window_start AS (
+          SELECT CASE ${mode}
+            WHEN 'latest' THEN MAX(0, total - ${fetchLimit})
+            WHEN 'before' THEN MAX(
+              0,
+              (
+                SELECT COUNT(*)
+                FROM user_messages
+                WHERE (created_at, message_id) < (${cursorCreatedAt}, ${cursorMessageId})
+              ) - ${fetchLimit}
+            )
+            WHEN 'after' THEN (
+              SELECT COUNT(*)
+              FROM user_messages
+              WHERE (created_at, message_id) <= (${cursorCreatedAt}, ${cursorMessageId})
+            )
+            ELSE MAX(
+              0,
+              MIN(
+                COALESCE(
+                  (
+                    SELECT ordinal
+                    FROM user_messages
+                    WHERE (created_at, message_id) <= (${cursorCreatedAt}, ${cursorMessageId})
+                    ORDER BY created_at DESC, message_id DESC
+                    LIMIT 1
+                  ),
+                  0
+                ) - CAST((${fetchLimit} - 1) / 2 AS INTEGER),
+                total - ${fetchLimit}
+              )
+            )
+          END AS ordinal,
+          total
+          FROM stats
+        ),
+        window AS (
+          SELECT
+            ordinal AS start_ordinal,
+            CASE ${mode}
+              WHEN 'before' THEN (
+                SELECT COUNT(*)
+                FROM user_messages
+                WHERE (created_at, message_id) < (${cursorCreatedAt}, ${cursorMessageId})
+              )
+              ELSE MIN(total, ordinal + ${fetchLimit})
+            END AS end_ordinal,
+            total
+          FROM window_start
+        ),
+        start_boundary AS (
+          SELECT created_at, message_id
+          FROM user_messages
+          WHERE ordinal = (SELECT start_ordinal FROM window)
+        ),
+        end_boundary AS (
+          SELECT created_at, message_id
+          FROM user_messages
+          WHERE ordinal = (SELECT end_ordinal FROM window)
+        )
+        SELECT
+          message_id AS "messageId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          attachments_json AS "attachments",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND (
+            (SELECT total FROM window) = 0
+            OR (
+              (created_at, message_id) >= (
+                SELECT created_at, message_id FROM start_boundary
+              )
+              AND (
+                NOT EXISTS (SELECT 1 FROM end_boundary)
+                OR (created_at, message_id) < (
+                  SELECT created_at, message_id FROM end_boundary
+                )
+              )
+            )
+          )
+        ORDER BY created_at ASC, message_id ASC
+      `,
+    });
     const getMessageRowById = SqlSchema.findOneOption({
       Request: ThreadMessageIdLookupInput,
       Result: ProjectionThreadMessageDbRowSchema,
@@ -270,7 +385,7 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
           AND created_at >= ${startCreatedAt}
-          AND (${endCreatedAt} IS NULL OR created_at <= ${endCreatedAt})
+          AND (${endCreatedAt} IS NULL OR created_at < ${endCreatedAt})
         ORDER BY sequence ASC, created_at ASC, activity_id ASC
       `,
     });
@@ -291,7 +406,7 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
         FROM projection_thread_proposed_plans
         WHERE thread_id = ${threadId}
           AND created_at >= ${startCreatedAt}
-          AND (${endCreatedAt} IS NULL OR created_at <= ${endCreatedAt})
+          AND (${endCreatedAt} IS NULL OR created_at < ${endCreatedAt})
         ORDER BY created_at ASC, plan_id ASC
       `,
     });
@@ -367,6 +482,171 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
       );
       return row.count;
     });
+    const getTurnPageByCursor = Effect.fn("ProjectionThreadHistoryQuery.getTurnPageByCursor")(
+      function* (
+        input:
+          | {
+              readonly threadId: ThreadId;
+              readonly mode: "latest";
+              readonly cursor: null;
+              readonly limit: number;
+            }
+          | {
+              readonly threadId: ThreadId;
+              readonly mode: "before" | "after" | "around";
+              readonly cursor: OrchestrationThreadMessageCursor;
+              readonly limit: number;
+            },
+      ) {
+        const [thread, rows, totalMessageCount] = yield* Effect.all([
+          getActiveThread({ threadId: input.threadId }),
+          listTurnMessageRows({
+            threadId: input.threadId,
+            mode: input.mode,
+            cursorCreatedAt: input.cursor?.createdAt ?? null,
+            cursorMessageId: input.cursor?.messageId ?? null,
+            fetchLimit: input.limit,
+          }),
+          countMessageRows({ threadId: input.threadId }),
+        ]).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionThreadHistoryQuery.getTurnPageByCursor:query",
+              "ProjectionThreadHistoryQuery.getTurnPageByCursor:decodeRows",
+            ),
+          ),
+        );
+        if (Option.isNone(thread)) {
+          return Option.none<OrchestrationThreadHistoryPage>();
+        }
+
+        const firstRow = rows[0];
+        const lastRow = rows.at(-1);
+        const startIndex =
+          firstRow === undefined
+            ? input.cursor === null
+              ? totalMessageCount.count
+              : (yield* (
+                  input.mode === "after"
+                    ? countMessageRowsThrough({
+                        threadId: input.threadId,
+                        cursorCreatedAt: input.cursor.createdAt,
+                        cursorMessageId: input.cursor.messageId,
+                      })
+                    : countMessageRowsBefore({
+                        threadId: input.threadId,
+                        cursorCreatedAt: input.cursor.createdAt,
+                        cursorMessageId: input.cursor.messageId,
+                      })
+                ).pipe(
+                  Effect.mapError(
+                    toPersistenceSqlOrDecodeError(
+                      "ProjectionThreadHistoryQuery.getTurnPageByCursor:countEmptyPage:query",
+                      "ProjectionThreadHistoryQuery.getTurnPageByCursor:countEmptyPage:decodeRow",
+                    ),
+                  ),
+                )).count
+            : (yield* countMessageRowsBefore({
+                threadId: input.threadId,
+                cursorCreatedAt: firstRow.createdAt,
+                cursorMessageId: firstRow.messageId,
+              }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionThreadHistoryQuery.getTurnPageByCursor:countBefore:query",
+                    "ProjectionThreadHistoryQuery.getTurnPageByCursor:countBefore:decodeRow",
+                  ),
+                ),
+              )).count;
+        const nextRow =
+          lastRow === undefined || input.mode === "latest"
+            ? undefined
+            : (yield* listMessageRowsAfter({
+                threadId: input.threadId,
+                cursorCreatedAt: lastRow.createdAt,
+                cursorMessageId: lastRow.messageId,
+                fetchLimit: 1,
+              }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionThreadHistoryQuery.getTurnPageByCursor:nextBoundary:query",
+                    "ProjectionThreadHistoryQuery.getTurnPageByCursor:nextBoundary:decodeRow",
+                  ),
+                ),
+              ))[0];
+        const endIndex = startIndex + rows.length;
+        const historyRange =
+          firstRow === undefined
+            ? { activities: [], proposedPlans: [] }
+            : yield* loadRange({
+                threadId: input.threadId,
+                startCreatedAt: firstRow.createdAt,
+                endCreatedAt:
+                  input.mode === "before" ? input.cursor.createdAt : (nextRow?.createdAt ?? null),
+              });
+        return Option.some({
+          messages: rows.map(mapThreadMessageRow),
+          activities: historyRange.activities,
+          proposedPlans: historyRange.proposedPlans,
+          messageHistory: {
+            hasMoreBefore: startIndex > 0,
+            hasMoreAfter: endIndex < totalMessageCount.count,
+            startIndex,
+            endIndex,
+            totalMessages: totalMessageCount.count,
+            cursor:
+              firstRow === undefined
+                ? null
+                : {
+                    createdAt: firstRow.createdAt,
+                    messageId: firstRow.messageId,
+                  },
+          },
+        });
+      },
+    );
+    const getLatestTurnPage = (input: { readonly threadId: ThreadId; readonly limit: number }) =>
+      getTurnPageByCursor({ ...input, mode: "latest", cursor: null });
+    const getTurnPage = (input: {
+      readonly threadId: ThreadId;
+      readonly before: OrchestrationThreadMessageCursor;
+      readonly limit: number;
+    }) => getTurnPageByCursor({ ...input, mode: "before", cursor: input.before });
+    const getTurnPageAfter = (input: {
+      readonly threadId: ThreadId;
+      readonly after: OrchestrationThreadMessageCursor;
+      readonly limit: number;
+    }) => getTurnPageByCursor({ ...input, mode: "after", cursor: input.after });
+    const getTurnPageAround = Effect.fn("ProjectionThreadHistoryQuery.getTurnPageAround")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly messageId: MessageId;
+        readonly limit: number;
+      }) {
+        const target = yield* getMessageRowById({
+          threadId: input.threadId,
+          messageId: input.messageId,
+        }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionThreadHistoryQuery.getTurnPageAround:targetQuery",
+              "ProjectionThreadHistoryQuery.getTurnPageAround:decodeTarget",
+            ),
+          ),
+        );
+        if (Option.isNone(target)) {
+          return Option.none<OrchestrationThreadHistoryPage>();
+        }
+        return yield* getTurnPageByCursor({
+          ...input,
+          mode: "around",
+          cursor: {
+            createdAt: target.value.createdAt,
+            messageId: target.value.messageId,
+          },
+        });
+      },
+    );
     const getMessagePage = Effect.fn("ProjectionThreadHistoryQuery.getMessagePage")(
       function* (input: {
         readonly threadId: ThreadId;
@@ -618,6 +898,10 @@ export const makeProjectionThreadHistoryQuery = Effect.fn("ProjectionThreadHisto
     return {
       countMessages,
       loadRange,
+      getLatestTurnPage,
+      getTurnPage,
+      getTurnPageAfter,
+      getTurnPageAround,
       getMessagePage,
       getMessagePageAfter,
       getMessagePageAround,

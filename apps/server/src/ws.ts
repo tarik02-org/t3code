@@ -972,9 +972,10 @@ const makeWsRpcLayer = (
       const loadThreadSnapshot = Effect.fn("Ws.loadThreadSnapshot")(function* (
         threadId: ThreadId,
         messageLimit?: number,
+        turnLimit?: number,
       ) {
         const snapshot = yield* projectionSnapshotQuery
-          .getThreadDetailSnapshot(threadId, messageLimit)
+          .getThreadDetailSnapshot(threadId, messageLimit, turnLimit)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -1032,6 +1033,7 @@ const makeWsRpcLayer = (
               const snapshot = yield* loadThreadSnapshot(
                 input.request.threadId,
                 input.request.messageLimit,
+                input.request.turnLimit,
               );
               if (Option.isNone(snapshot)) {
                 return Stream.concat(
@@ -1084,6 +1086,7 @@ const makeWsRpcLayer = (
         const snapshot = yield* loadThreadSnapshot(
           input.request.threadId,
           input.request.messageLimit,
+          input.request.turnLimit,
         );
         if (Option.isNone(snapshot)) {
           return yield* new OrchestrationGetSnapshotError({

@@ -27,8 +27,8 @@ import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./envir
 // fallback for long. The cached thread renders while this runs, so the wait only
 // delays the transition to live data on the first open, not the initial paint.
 const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
-export const THREAD_MESSAGE_PAGE_SIZE = 50;
-export const THREAD_HISTORY_AROUND_PAGE_SIZE = 100;
+export const THREAD_MESSAGE_PAGE_SIZE = 200;
+export const THREAD_TURN_PAGE_SIZE = 6;
 
 /**
  * Load a thread's detail snapshot over HTTP instead of embedding it in the
@@ -42,6 +42,7 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
   readonly threadId: ThreadId;
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
   readonly messageLimit?: number;
+  readonly turnLimit?: number;
   readonly timeoutMs?: number;
 }) {
   const requestUrl = new URL(
@@ -52,6 +53,9 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
   );
   if (input.messageLimit !== undefined) {
     requestUrl.searchParams.set("messageLimit", String(input.messageLimit));
+  }
+  if (input.turnLimit !== undefined) {
+    requestUrl.searchParams.set("turnLimit", String(input.turnLimit));
   }
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
@@ -67,7 +71,10 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
       input.prepared.httpAuthorization,
       client.orchestration.threadSnapshot({
         params: { threadId: input.threadId },
-        query: input.messageLimit === undefined ? {} : { messageLimit: input.messageLimit },
+        query: {
+          ...(input.messageLimit === undefined ? {} : { messageLimit: input.messageLimit }),
+          ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
+        },
         headers,
       }),
     ),
@@ -80,7 +87,7 @@ export const fetchEnvironmentThreadMessagesBefore = Effect.fn(
   readonly prepared: PreparedConnection;
   readonly threadId: ThreadId;
   readonly before: OrchestrationThreadMessageCursor;
-  readonly limit: number;
+  readonly turnLimit: number;
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
   readonly timeoutMs?: number;
 }) {
@@ -92,7 +99,7 @@ export const fetchEnvironmentThreadMessagesBefore = Effect.fn(
   );
   requestUrl.searchParams.set("beforeCreatedAt", input.before.createdAt);
   requestUrl.searchParams.set("beforeMessageId", input.before.messageId);
-  requestUrl.searchParams.set("limit", String(input.limit));
+  requestUrl.searchParams.set("turnLimit", String(input.turnLimit));
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
     input.prepared.httpAuthorization,
@@ -110,7 +117,7 @@ export const fetchEnvironmentThreadMessagesBefore = Effect.fn(
         query: {
           beforeCreatedAt: input.before.createdAt,
           beforeMessageId: input.before.messageId,
-          limit: input.limit,
+          turnLimit: input.turnLimit,
         },
         headers,
       }),
@@ -124,7 +131,7 @@ export const fetchEnvironmentThreadMessagesAfter = Effect.fn(
   readonly prepared: PreparedConnection;
   readonly threadId: ThreadId;
   readonly after: OrchestrationThreadMessageCursor;
-  readonly limit: number;
+  readonly turnLimit: number;
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
   readonly timeoutMs?: number;
 }) {
@@ -136,7 +143,7 @@ export const fetchEnvironmentThreadMessagesAfter = Effect.fn(
   );
   requestUrl.searchParams.set("afterCreatedAt", input.after.createdAt);
   requestUrl.searchParams.set("afterMessageId", input.after.messageId);
-  requestUrl.searchParams.set("limit", String(input.limit));
+  requestUrl.searchParams.set("turnLimit", String(input.turnLimit));
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
     input.prepared.httpAuthorization,
@@ -154,7 +161,7 @@ export const fetchEnvironmentThreadMessagesAfter = Effect.fn(
         query: {
           afterCreatedAt: input.after.createdAt,
           afterMessageId: input.after.messageId,
-          limit: input.limit,
+          turnLimit: input.turnLimit,
         },
         headers,
       }),
@@ -177,7 +184,7 @@ export const fetchEnvironmentThreadMessagesAround = Effect.fn(
       `/api/orchestration/threads/${input.threadId}/messages/${input.messageId}/around`,
     ),
   );
-  requestUrl.searchParams.set("limit", String(THREAD_HISTORY_AROUND_PAGE_SIZE));
+  requestUrl.searchParams.set("turnLimit", String(THREAD_TURN_PAGE_SIZE));
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
     input.prepared.httpAuthorization,
@@ -192,7 +199,7 @@ export const fetchEnvironmentThreadMessagesAround = Effect.fn(
       input.prepared.httpAuthorization,
       client.orchestration.threadMessagesAround({
         params: { threadId: input.threadId, messageId: input.messageId },
-        query: { limit: THREAD_HISTORY_AROUND_PAGE_SIZE },
+        query: { turnLimit: THREAD_TURN_PAGE_SIZE },
         headers,
       }),
     ),
@@ -246,18 +253,19 @@ export class ThreadSnapshotLoader extends Context.Service<
       prepared: PreparedConnection,
       threadId: ThreadId,
       messageLimit?: number,
+      turnLimit?: number,
     ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
     readonly loadPreviousMessages: (
       prepared: PreparedConnection,
       threadId: ThreadId,
       before: OrchestrationThreadMessageCursor,
-      limit: number,
+      turnLimit: number,
     ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>>;
     readonly loadNextMessages: (
       prepared: PreparedConnection,
       threadId: ThreadId,
       after: OrchestrationThreadMessageCursor,
-      limit: number,
+      turnLimit: number,
     ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>>;
     readonly loadMessagesAround: (
       prepared: PreparedConnection,
@@ -284,12 +292,18 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
     // connections work without one).
     const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
     return ThreadSnapshotLoader.of({
-      load: (prepared: PreparedConnection, threadId: ThreadId, messageLimit?: number) =>
+      load: (
+        prepared: PreparedConnection,
+        threadId: ThreadId,
+        messageLimit?: number,
+        turnLimit?: number,
+      ) =>
         fetchEnvironmentThreadSnapshot({
           prepared,
           threadId,
           signer,
           ...(messageLimit === undefined ? {} : { messageLimit }),
+          ...(turnLimit === undefined ? {} : { turnLimit }),
         }).pipe(
           Effect.map(Option.some<OrchestrationThreadDetailSnapshot>),
           Effect.provideService(HttpClient.HttpClient, httpClient),
@@ -319,9 +333,15 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
         prepared: PreparedConnection,
         threadId: ThreadId,
         before: OrchestrationThreadMessageCursor,
-        limit: number,
+        turnLimit: number,
       ) =>
-        fetchEnvironmentThreadMessagesBefore({ prepared, threadId, before, limit, signer }).pipe(
+        fetchEnvironmentThreadMessagesBefore({
+          prepared,
+          threadId,
+          before,
+          turnLimit,
+          signer,
+        }).pipe(
           Effect.map(Option.some<OrchestrationThreadHistoryPage>),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({
@@ -342,9 +362,15 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
         prepared: PreparedConnection,
         threadId: ThreadId,
         after: OrchestrationThreadMessageCursor,
-        limit: number,
+        turnLimit: number,
       ) =>
-        fetchEnvironmentThreadMessagesAfter({ prepared, threadId, after, limit, signer }).pipe(
+        fetchEnvironmentThreadMessagesAfter({
+          prepared,
+          threadId,
+          after,
+          turnLimit,
+          signer,
+        }).pipe(
           Effect.map(Option.some<OrchestrationThreadHistoryPage>),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({

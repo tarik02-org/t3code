@@ -27,8 +27,8 @@ import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { ThreadHistoryCacheStore } from "../platform/threadHistoryCache.ts";
 import { subscribeDynamicRequest } from "../rpc/client.ts";
 import {
-  THREAD_HISTORY_AROUND_PAGE_SIZE,
   THREAD_MESSAGE_PAGE_SIZE,
+  THREAD_TURN_PAGE_SIZE,
   ThreadSnapshotLoader,
 } from "./threadSnapshotHttp.ts";
 import {
@@ -330,7 +330,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     const historyLookup = yield* historyCache
-      .loadPrevious(environmentId, threadId, sourceHistory.startIndex, THREAD_MESSAGE_PAGE_SIZE)
+      .loadPrevious(environmentId, threadId, sourceHistory.startIndex, THREAD_TURN_PAGE_SIZE)
       .pipe(
         Effect.catchTags({
           ConnectionPersistenceError: (error) =>
@@ -342,7 +342,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               }),
               Effect.as({
                 page: Option.none<OrchestrationThreadHistoryPage>(),
-                requestLimit: THREAD_MESSAGE_PAGE_SIZE,
+                requestLimit: THREAD_TURN_PAGE_SIZE,
               }),
             ),
         }),
@@ -456,7 +456,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
-      yield* cacheHistoryPage(page.value);
+      yield* Effect.forkIn(cacheHistoryPage(page.value), scope);
       return true;
     }).pipe(
       Effect.ensuring(
@@ -490,7 +490,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     const historyLookup = yield* historyCache
-      .loadNext(environmentId, threadId, window.messageHistory.endIndex, THREAD_MESSAGE_PAGE_SIZE)
+      .loadNext(environmentId, threadId, window.messageHistory.endIndex, THREAD_TURN_PAGE_SIZE)
       .pipe(
         Effect.catchTags({
           ConnectionPersistenceError: (error) =>
@@ -502,7 +502,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               }),
               Effect.as({
                 page: Option.none<OrchestrationThreadHistoryPage>(),
-                requestLimit: THREAD_MESSAGE_PAGE_SIZE,
+                requestLimit: THREAD_TURN_PAGE_SIZE,
               }),
             ),
         }),
@@ -576,7 +576,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
-      yield* cacheHistoryPage(page.value);
+      yield* Effect.forkIn(cacheHistoryPage(page.value), scope);
       return true;
     }).pipe(
       Effect.ensuring(
@@ -612,7 +612,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         history: { ...current.history, loading: "around" },
       });
       const cachedPage = yield* historyCache
-        .loadAround(environmentId, threadId, messageId, THREAD_HISTORY_AROUND_PAGE_SIZE)
+        .loadAround(environmentId, threadId, messageId, THREAD_TURN_PAGE_SIZE)
         .pipe(
           Effect.catchTags({
             ConnectionPersistenceError: (error) =>
@@ -670,7 +670,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         history,
       });
       if (Option.isNone(cachedPage)) {
-        yield* cacheHistoryPage(page.value);
+        yield* Effect.forkIn(cacheHistoryPage(page.value), scope);
       }
       return true;
     }).pipe(
@@ -950,7 +950,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           const httpSnapshot = yield* snapshotLoader.load(
             prepared,
             threadId,
-            supportsMessagePagination ? THREAD_MESSAGE_PAGE_SIZE : undefined,
+            undefined,
+            supportsMessagePagination ? THREAD_TURN_PAGE_SIZE : undefined,
           );
           if (Option.isSome(httpSnapshot)) {
             yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
@@ -980,7 +981,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             : ORCHESTRATION_WS_METHODS.subscribeThread,
           input: {
             threadId,
-            ...(supportsMessagePagination ? { messageLimit: THREAD_MESSAGE_PAGE_SIZE } : {}),
+            ...(supportsMessagePagination ? { turnLimit: THREAD_TURN_PAGE_SIZE } : {}),
             ...(canResume ? { afterSequence: sequence } : {}),
             ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           },

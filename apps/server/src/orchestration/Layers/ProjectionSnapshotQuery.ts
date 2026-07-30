@@ -2063,8 +2063,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
-  const getThreadDetail = (threadId: ThreadId, messageLimit?: number) =>
+  const getThreadDetail = (threadId: ThreadId, messageLimit?: number, turnLimit?: number) =>
     Effect.gen(function* () {
+      const turnPage =
+        turnLimit === undefined
+          ? null
+          : yield* threadHistoryQuery.getLatestTurnPage({ threadId, limit: turnLimit });
       const [threadRow, messageRows, checkpointRows, latestTurnRow, sessionRow, messageCount] =
         yield* Effect.all([
           getActiveThreadRowById({ threadId }).pipe(
@@ -2080,12 +2084,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          (messageLimit === undefined
-            ? listThreadMessageRowsByThread({ threadId })
-            : listLatestThreadMessageRowsByThread({
-                threadId,
-                fetchLimit: messageLimit + 1,
-              })
+          (turnLimit !== undefined
+            ? Effect.succeed([])
+            : messageLimit === undefined
+              ? listThreadMessageRowsByThread({ threadId })
+              : listLatestThreadMessageRowsByThread({
+                  threadId,
+                  fetchLimit: messageLimit + 1,
+                })
           ).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2118,50 +2124,56 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          messageLimit === undefined
+          turnLimit !== undefined || messageLimit === undefined
             ? Effect.succeed(null)
             : threadHistoryQuery.countMessages(threadId),
         ]);
 
-      if (Option.isNone(threadRow)) {
+      if (Option.isNone(threadRow) || (turnPage !== null && Option.isNone(turnPage))) {
         return Option.none<OrchestrationThread>();
       }
 
+      const turnHistoryPage = turnPage === null ? null : turnPage.value;
       const hasMoreMessagesBefore = messageLimit !== undefined && messageRows.length > messageLimit;
       const visibleMessageRows = hasMoreMessagesBefore ? messageRows.slice(1) : messageRows;
       const firstMessageRow = visibleMessageRows[0];
       const totalMessages = messageCount ?? visibleMessageRows.length;
       const startIndex = totalMessages - visibleMessageRows.length;
       const history =
-        messageLimit !== undefined && firstMessageRow !== undefined
-          ? yield* threadHistoryQuery.loadRange({
-              threadId,
-              startCreatedAt: firstMessageRow.createdAt,
-              endCreatedAt: null,
-            })
-          : yield* Effect.all([
-              listThreadProposedPlanRowsByThread({ threadId }).pipe(
-                Effect.mapError(
-                  toPersistenceSqlOrDecodeError(
-                    "ProjectionSnapshotQuery.getThreadDetailById:listPlans:query",
-                    "ProjectionSnapshotQuery.getThreadDetailById:listPlans:decodeRows",
+        turnHistoryPage !== null
+          ? {
+              proposedPlans: turnHistoryPage.proposedPlans,
+              activities: turnHistoryPage.activities,
+            }
+          : messageLimit !== undefined && firstMessageRow !== undefined
+            ? yield* threadHistoryQuery.loadRange({
+                threadId,
+                startCreatedAt: firstMessageRow.createdAt,
+                endCreatedAt: null,
+              })
+            : yield* Effect.all([
+                listThreadProposedPlanRowsByThread({ threadId }).pipe(
+                  Effect.mapError(
+                    toPersistenceSqlOrDecodeError(
+                      "ProjectionSnapshotQuery.getThreadDetailById:listPlans:query",
+                      "ProjectionSnapshotQuery.getThreadDetailById:listPlans:decodeRows",
+                    ),
                   ),
                 ),
-              ),
-              listThreadActivityRowsByThread({ threadId }).pipe(
-                Effect.mapError(
-                  toPersistenceSqlOrDecodeError(
-                    "ProjectionSnapshotQuery.getThreadDetailById:listActivities:query",
-                    "ProjectionSnapshotQuery.getThreadDetailById:listActivities:decodeRows",
+                listThreadActivityRowsByThread({ threadId }).pipe(
+                  Effect.mapError(
+                    toPersistenceSqlOrDecodeError(
+                      "ProjectionSnapshotQuery.getThreadDetailById:listActivities:query",
+                      "ProjectionSnapshotQuery.getThreadDetailById:listActivities:decodeRows",
+                    ),
                   ),
                 ),
-              ),
-            ]).pipe(
-              Effect.map(([proposedPlanRows, activityRows]) => ({
-                proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
-                activities: activityRows.map(mapThreadActivityRow),
-              })),
-            );
+              ]).pipe(
+                Effect.map(([proposedPlanRows, activityRows]) => ({
+                  proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
+                  activities: activityRows.map(mapThreadActivityRow),
+                })),
+              );
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -2182,11 +2194,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         deletedAt: null,
         goal: threadRow.value.goal,
-        messages: visibleMessageRows.map(mapThreadMessageRow),
-        ...(messageLimit === undefined
+        messages:
+          turnHistoryPage === null
+            ? visibleMessageRows.map(mapThreadMessageRow)
+            : turnHistoryPage.messages,
+        ...(messageLimit === undefined && turnHistoryPage === null
           ? {}
           : {
-              messageHistory: {
+              messageHistory: turnHistoryPage?.messageHistory ?? {
                 hasMoreBefore: startIndex > 0,
                 hasMoreAfter: false,
                 startIndex,
@@ -2230,6 +2245,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getThreadDetailSnapshot: ProjectionSnapshotQueryShape["getThreadDetailSnapshot"] = (
     threadId,
     messageLimit,
+    turnLimit,
   ) =>
     // Read the thread detail and the snapshot sequence within a single
     // transaction so the sequence is consistent with the returned state; a
@@ -2239,7 +2255,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          const thread = yield* getThreadDetail(threadId, messageLimit);
+          const thread = yield* getThreadDetail(threadId, messageLimit, turnLimit);
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
@@ -2258,13 +2274,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       );
 
   const getThreadMessagePage: ProjectionSnapshotQueryShape["getThreadMessagePage"] = (input) =>
-    threadHistoryQuery.getMessagePage(input);
+    "turnLimit" in input
+      ? threadHistoryQuery.getTurnPage({ ...input, limit: input.turnLimit })
+      : threadHistoryQuery.getMessagePage(input);
   const getThreadMessagePageAfter: ProjectionSnapshotQueryShape["getThreadMessagePageAfter"] = (
     input,
-  ) => threadHistoryQuery.getMessagePageAfter(input);
+  ) =>
+    "turnLimit" in input
+      ? threadHistoryQuery.getTurnPageAfter({ ...input, limit: input.turnLimit })
+      : threadHistoryQuery.getMessagePageAfter(input);
   const getThreadMessagePageAround: ProjectionSnapshotQueryShape["getThreadMessagePageAround"] = (
     input,
-  ) => threadHistoryQuery.getMessagePageAround(input);
+  ) =>
+    "turnLimit" in input
+      ? threadHistoryQuery.getTurnPageAround({ ...input, limit: input.turnLimit })
+      : threadHistoryQuery.getMessagePageAround(input);
   const getThreadHistoryOutline: ProjectionSnapshotQueryShape["getThreadHistoryOutline"] = (
     threadId,
   ) => threadHistoryQuery.getHistoryOutline(threadId);

@@ -365,6 +365,7 @@ export const OrchestrationLatestTurn = Schema.Struct({
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
 export const ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT = 200;
+export const ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT = 20;
 
 export const OrchestrationThreadMessageCursor = Schema.Struct({
   createdAt: IsoDateTime,
@@ -564,6 +565,9 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
   messageLimit: Schema.optionalKey(
     PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_MESSAGE_PAGE_MAX_LIMIT)),
+  ),
+  turnLimit: Schema.optionalKey(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT)),
   ),
   /**
    * When provided, the server skips the initial snapshot frame and instead

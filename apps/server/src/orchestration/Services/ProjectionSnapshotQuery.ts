@@ -172,25 +172,50 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailSnapshot: (
     threadId: ThreadId,
     messageLimit?: number,
+    turnLimit?: number,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
 
-  readonly getThreadMessagePage: (input: {
-    readonly threadId: ThreadId;
-    readonly before: OrchestrationThreadMessageCursor;
-    readonly limit: number;
-  }) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
+  readonly getThreadMessagePage: (
+    input:
+      | {
+          readonly threadId: ThreadId;
+          readonly before: OrchestrationThreadMessageCursor;
+          readonly limit: number;
+        }
+      | {
+          readonly threadId: ThreadId;
+          readonly before: OrchestrationThreadMessageCursor;
+          readonly turnLimit: number;
+        },
+  ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
 
-  readonly getThreadMessagePageAfter: (input: {
-    readonly threadId: ThreadId;
-    readonly after: OrchestrationThreadMessageCursor;
-    readonly limit: number;
-  }) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
+  readonly getThreadMessagePageAfter: (
+    input:
+      | {
+          readonly threadId: ThreadId;
+          readonly after: OrchestrationThreadMessageCursor;
+          readonly limit: number;
+        }
+      | {
+          readonly threadId: ThreadId;
+          readonly after: OrchestrationThreadMessageCursor;
+          readonly turnLimit: number;
+        },
+  ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
 
-  readonly getThreadMessagePageAround: (input: {
-    readonly threadId: ThreadId;
-    readonly messageId: MessageId;
-    readonly limit: number;
-  }) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
+  readonly getThreadMessagePageAround: (
+    input:
+      | {
+          readonly threadId: ThreadId;
+          readonly messageId: MessageId;
+          readonly limit: number;
+        }
+      | {
+          readonly threadId: ThreadId;
+          readonly messageId: MessageId;
+          readonly turnLimit: number;
+        },
+  ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
 
   readonly getThreadHistoryOutline: (
     threadId: ThreadId,

@@ -39,6 +39,7 @@ const StoredThreadHistoryThread = Schema.Struct({
   threadId: ThreadId,
   totalMessages: NonNegativeInt,
   ranges: Schema.Array(StoredThreadHistoryRange),
+  turnStarts: Schema.Array(NonNegativeInt).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 const StoredThreadHistoryMessage = Schema.Struct({
   schemaVersion: Schema.Literal(CACHE_SCHEMA_VERSION),
@@ -400,28 +401,26 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
             (candidate) => candidate.startIndex < endIndex && candidate.endIndex >= endIndex,
           );
           if (range !== undefined) {
+            const turnStarts = thread.value.turnStarts.filter(
+              (index) => index >= range.startIndex && index < endIndex,
+            );
+            const startIndex = turnStarts.at(-limit);
             return {
-              page: yield* loadPage(
-                database,
-                environmentId,
-                threadId,
-                Math.max(range.startIndex, endIndex - limit),
-                endIndex,
-                thread.value.totalMessages,
-              ),
+              page:
+                startIndex === undefined
+                  ? Option.none()
+                  : yield* loadPage(
+                      database,
+                      environmentId,
+                      threadId,
+                      startIndex,
+                      endIndex,
+                      thread.value.totalMessages,
+                    ),
               requestLimit: limit,
             };
           }
-          const nearestRange = thread.value.ranges.findLast(
-            (candidate) => candidate.endIndex < endIndex,
-          );
-          return {
-            page: Option.none(),
-            requestLimit: Math.min(
-              limit,
-              endIndex - (nearestRange?.endIndex ?? Math.max(0, endIndex - limit)),
-            ),
-          };
+          return { page: Option.none(), requestLimit: limit };
         }).pipe(Effect.mapError((cause) => persistenceError("load-thread-history", cause))),
       loadNext: (environmentId, threadId, startIndex, limit) =>
         Effect.gen(function* () {
@@ -433,28 +432,26 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
             (candidate) => candidate.startIndex <= startIndex && candidate.endIndex > startIndex,
           );
           if (range !== undefined) {
+            const turnStarts = thread.value.turnStarts.filter(
+              (index) => index >= startIndex && index < range.endIndex,
+            );
+            const pageStartIndex = turnStarts[0];
             return {
-              page: yield* loadPage(
-                database,
-                environmentId,
-                threadId,
-                startIndex,
-                Math.min(range.endIndex, startIndex + limit),
-                thread.value.totalMessages,
-              ),
+              page:
+                pageStartIndex === undefined
+                  ? Option.none()
+                  : yield* loadPage(
+                      database,
+                      environmentId,
+                      threadId,
+                      pageStartIndex,
+                      turnStarts[limit] ?? range.endIndex,
+                      thread.value.totalMessages,
+                    ),
               requestLimit: limit,
             };
           }
-          const nearestRange = thread.value.ranges.find(
-            (candidate) => candidate.startIndex > startIndex,
-          );
-          return {
-            page: Option.none(),
-            requestLimit: Math.min(
-              limit,
-              (nearestRange?.startIndex ?? startIndex + limit) - startIndex,
-            ),
-          };
+          return { page: Option.none(), requestLimit: limit };
         }).pipe(Effect.mapError((cause) => persistenceError("load-thread-history", cause))),
       loadAround: (environmentId, threadId, messageId, limit) =>
         Effect.gen(function* () {
@@ -486,9 +483,19 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
           if (range === undefined) {
             return Option.none();
           }
-          let startIndex = Math.max(range.startIndex, target.index - Math.floor((limit - 1) / 2));
-          const endIndex = Math.min(range.endIndex, startIndex + limit);
-          startIndex = Math.max(range.startIndex, endIndex - limit);
+          const turnStarts = thread.value.turnStarts.filter(
+            (index) => index >= range.startIndex && index < range.endIndex,
+          );
+          const targetTurn = turnStarts.findLastIndex((index) => index <= target.index);
+          if (targetTurn === -1) {
+            return Option.none();
+          }
+          const startTurn = Math.max(
+            0,
+            Math.min(targetTurn - Math.floor((limit - 1) / 2), turnStarts.length - limit),
+          );
+          const startIndex = turnStarts[startTurn]!;
+          const endIndex = turnStarts[startTurn + limit] ?? range.endIndex;
           return yield* loadPage(
             database,
             environmentId,
@@ -519,6 +526,12 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
                   endIndex: page.messageHistory.endIndex,
                 },
               ].toSorted((left, right) => left.startIndex - right.startIndex);
+              const turnStarts = [
+                ...(Option.isSome(current) ? current.value.turnStarts : []),
+                ...page.messages.flatMap((message, offset) =>
+                  message.role === "user" ? [page.messageHistory.startIndex + offset] : [],
+                ),
+              ].toSorted((left, right) => left - right);
               const mergedRanges: Array<{ readonly startIndex: number; endIndex: number }> = [];
               for (const range of ranges) {
                 const previous = mergedRanges.at(-1);
@@ -576,6 +589,7 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
                     page.messageHistory.totalMessages,
                   ),
                   ranges: mergedRanges,
+                  turnStarts: [...new Set(turnStarts)],
                 },
                 page.messages.map((message, offset) => ({
                   schemaVersion: CACHE_SCHEMA_VERSION,

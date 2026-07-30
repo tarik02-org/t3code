@@ -1,26 +1,7 @@
 import { type MessageId, type OrchestrationThreadMessageHistory } from "@t3tools/contracts";
 import { type LegendListRef } from "@legendapp/list/react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  type RefObject,
-  type TouchEvent as ReactTouchEvent,
-  type WheelEvent as ReactWheelEvent,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 import { resolveTimelineIsAtEnd, type MessagesTimelineRow } from "./MessagesTimeline.logic";
-
-const HISTORY_EDGE_THRESHOLD = 640;
-const MANUAL_INPUT_IDLE_MS = 240;
-const PREPEND_ANCHOR_SETTLE_MS = 1_000;
-const PREPEND_ANCHOR_OBSERVER_OPTIONS = {
-  attributeFilter: ["style"],
-  attributes: true,
-  childList: true,
-  subtree: true,
-} satisfies MutationObserverInit;
 
 export interface TimelineHistoryNavigationTarget {
   readonly id: MessageId;
@@ -34,34 +15,8 @@ interface HistoryPageRequest {
   readonly direction: HistoryPageDirection;
 }
 
-interface HistoryPrependAnchor {
-  readonly observer: MutationObserver;
-  readonly request: HistoryPageRequest;
-  distanceFromBottom: number;
-  rowId: string | null;
-  settleTimeout: number | null;
-  viewportOffset: number;
-}
-
-function resolveVisibleTimelineRowAnchor(scrollNode: HTMLElement) {
-  const viewport = scrollNode.getBoundingClientRect();
-  let intersecting: { readonly rowId: string; readonly viewportOffset: number } | null = null;
-  let starting: { readonly rowId: string; readonly viewportOffset: number } | null = null;
-  for (const element of scrollNode.querySelectorAll<HTMLElement>("[data-timeline-row-id]")) {
-    const rect = element.getBoundingClientRect();
-    const rowId = element.dataset.timelineRowId;
-    if (rowId === undefined || rect.bottom <= viewport.top || rect.top >= viewport.bottom) {
-      continue;
-    }
-    const viewportOffset = rect.top - viewport.top;
-    if (intersecting === null || viewportOffset < intersecting.viewportOffset) {
-      intersecting = { rowId, viewportOffset };
-    }
-    if (viewportOffset >= 0 && (starting === null || viewportOffset < starting.viewportOffset)) {
-      starting = { rowId, viewportOffset };
-    }
-  }
-  return starting ?? intersecting;
+interface HistoryPositioningTarget {
+  readonly id: MessageId;
 }
 
 interface UseProgressiveTimelineHistoryInput {
@@ -102,16 +57,10 @@ export function useProgressiveTimelineHistory({
   rows,
 }: UseProgressiveTimelineHistoryInput) {
   const pageRequestRef = useRef<HistoryPageRequest | null>(null);
-  const prependAnchorRef = useRef<HistoryPrependAnchor | null>(null);
-  const manualInputRef = useRef(false);
-  const manualInputTimeoutRef = useRef<number | null>(null);
-  const lastScrollTopRef = useRef<number | null>(null);
   const initializedThreadRef = useRef<string | null>(null);
   const handledLatestMessagesRequestRef = useRef(latestMessagesRequest);
   const latestPositionPendingRef = useRef(false);
-  const lastTouchYRef = useRef<number | null>(null);
-  const pointerActiveRef = useRef(false);
-  const positioningTargetRef = useRef<MessageId | null>(null);
+  const positioningTargetRef = useRef<HistoryPositioningTarget | null>(null);
   const minimapFrameRef = useRef<number | null>(null);
   const visibleMinimapIdsRef = useRef<ReadonlySet<string>>(new Set());
 
@@ -125,120 +74,48 @@ export function useProgressiveTimelineHistory({
     }
     return indexes;
   }, [rowIndexOffset, rows]);
-  const releasePrependAnchor = useCallback((anchor?: HistoryPrependAnchor) => {
-    const current = prependAnchorRef.current;
-    if (current === null || (anchor !== undefined && current !== anchor)) {
-      return;
-    }
-    current.observer.disconnect();
-    if (current.settleTimeout !== null) {
-      window.clearTimeout(current.settleTimeout);
-    }
-    prependAnchorRef.current = null;
-  }, []);
 
   const requestPage = useCallback(
     (direction: HistoryPageDirection) => {
       if (messageHistory === undefined || pageRequestRef.current !== null) {
         return;
       }
-      const load = direction === "before" ? onLoadPreviousMessages : onLoadNextMessages;
+      const isBefore = direction === "before";
+      if (
+        (isBefore && (!messageHistory.hasMoreBefore || isLoadingPreviousMessages)) ||
+        (!isBefore && (!messageHistory.hasMoreAfter || isLoadingNextMessages))
+      ) {
+        return;
+      }
+      const load = isBefore ? onLoadPreviousMessages : onLoadNextMessages;
       if (load === undefined) {
         return;
       }
 
       const request = { direction };
       pageRequestRef.current = request;
-      if (direction === "before") {
-        releasePrependAnchor();
-        const scrollNode = listRef.current?.getScrollableNode();
-        if (scrollNode !== null && scrollNode !== undefined) {
-          const rowAnchor = resolveVisibleTimelineRowAnchor(scrollNode);
-          let prependAnchor: HistoryPrependAnchor;
-          const observer = new MutationObserver(() => {
-            if (prependAnchorRef.current !== prependAnchor) {
-              return;
-            }
-            const viewport = scrollNode.getBoundingClientRect();
-            const anchorElement =
-              prependAnchor.rowId === null
-                ? null
-                : scrollNode.querySelector<HTMLElement>(
-                    `[data-timeline-row-id="${CSS.escape(prependAnchor.rowId)}"]`,
-                  );
-            if (anchorElement !== null) {
-              scrollNode.scrollTop +=
-                anchorElement.getBoundingClientRect().top -
-                viewport.top -
-                prependAnchor.viewportOffset;
-            } else {
-              scrollNode.scrollTop = Math.max(
-                0,
-                scrollNode.scrollHeight - prependAnchor.distanceFromBottom,
-              );
-            }
-            lastScrollTopRef.current = scrollNode.scrollTop;
-          });
-          prependAnchor = {
-            distanceFromBottom: scrollNode.scrollHeight - scrollNode.scrollTop,
-            observer,
-            request,
-            rowId: rowAnchor?.rowId ?? null,
-            settleTimeout: null,
-            viewportOffset: rowAnchor?.viewportOffset ?? 0,
-          };
-          prependAnchorRef.current = prependAnchor;
-          observer.observe(scrollNode, PREPEND_ANCHOR_OBSERVER_OPTIONS);
+      void load().finally(() => {
+        if (pageRequestRef.current === request) {
+          pageRequestRef.current = null;
         }
-      }
-      void load()
-        .then((loaded) => {
-          const prependAnchor = prependAnchorRef.current;
-          if (prependAnchor?.request !== request) {
-            return;
-          }
-          if (!loaded) {
-            releasePrependAnchor(prependAnchor);
-            return;
-          }
-          prependAnchor.settleTimeout = window.setTimeout(() => {
-            releasePrependAnchor(prependAnchor);
-          }, PREPEND_ANCHOR_SETTLE_MS);
-        })
-        .finally(() => {
-          if (pageRequestRef.current === request) {
-            pageRequestRef.current = null;
-          }
-        });
+      });
     },
-    [listRef, messageHistory, onLoadNextMessages, onLoadPreviousMessages, releasePrependAnchor],
+    [
+      isLoadingNextMessages,
+      isLoadingPreviousMessages,
+      messageHistory,
+      onLoadNextMessages,
+      onLoadPreviousMessages,
+    ],
   );
 
-  const requestPageNearEdge = useCallback(
-    (direction: HistoryPageDirection) => {
-      const scrollNode = listRef.current?.getScrollableNode();
-      if (messageHistory === undefined || scrollNode === null || scrollNode === undefined) {
-        return;
-      }
-      if (
-        direction === "before" &&
-        scrollNode.scrollTop <= HISTORY_EDGE_THRESHOLD &&
-        messageHistory.hasMoreBefore &&
-        !isLoadingPreviousMessages
-      ) {
-        requestPage("before");
-      } else if (
-        direction === "after" &&
-        scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop <=
-          HISTORY_EDGE_THRESHOLD &&
-        messageHistory.hasMoreAfter &&
-        !isLoadingNextMessages
-      ) {
-        requestPage("after");
-      }
-    },
-    [isLoadingNextMessages, isLoadingPreviousMessages, listRef, messageHistory, requestPage],
-  );
+  const loadPreviousPage = useCallback(() => {
+    requestPage("before");
+  }, [requestPage]);
+
+  const loadNextPage = useCallback(() => {
+    requestPage("after");
+  }, [requestPage]);
 
   const updateMinimap = useCallback(() => {
     const scrollNode = listRef.current?.getScrollableNode();
@@ -281,27 +158,46 @@ export function useProgressiveTimelineHistory({
     });
   }, [updateMinimap]);
 
+  const positionHistoryTarget = useCallback(
+    (id: MessageId, rowIndex: number, animated: boolean, onReady?: () => void) => {
+      const list = listRef.current;
+      if (list === null) {
+        return;
+      }
+      const target = { id };
+      positioningTargetRef.current = target;
+      void list
+        .scrollToIndex({
+          index: rowIndex,
+          animated,
+          viewPosition: 0.5,
+        })
+        .then(() => {
+          if (positioningTargetRef.current !== target) {
+            return;
+          }
+          positioningTargetRef.current = null;
+          scheduleMinimapUpdate();
+          onReady?.();
+        });
+    },
+    [listRef, scheduleMinimapUpdate],
+  );
+
   const beginUserNavigation = useCallback(() => {
     scheduleMinimapUpdate();
-    manualInputRef.current = true;
     if (positioningTargetRef.current !== null) {
       positioningTargetRef.current = null;
-      const scrollOffset = listRef.current?.getState().scroll;
-      if (scrollOffset !== undefined) {
-        void listRef.current?.scrollToOffset({ offset: scrollOffset, animated: false });
+      const list = listRef.current;
+      const scrollOffset = list?.getState().scroll;
+      if (list !== null && scrollOffset !== undefined) {
+        void list.scrollToOffset({ offset: scrollOffset, animated: false });
       }
     }
     if (historyTargetMessageId !== null) {
       onHistoryTargetReady?.();
     }
     onManualNavigation(true);
-    if (manualInputTimeoutRef.current !== null) {
-      window.clearTimeout(manualInputTimeoutRef.current);
-    }
-    manualInputTimeoutRef.current = window.setTimeout(() => {
-      manualInputTimeoutRef.current = null;
-      manualInputRef.current = false;
-    }, MANUAL_INPUT_IDLE_MS);
   }, [
     historyTargetMessageId,
     listRef,
@@ -310,196 +206,76 @@ export function useProgressiveTimelineHistory({
     scheduleMinimapUpdate,
   ]);
 
-  useLayoutEffect(() => {
-    updateMinimap();
-  }, [rows, updateMinimap]);
-
-  const beginPointerNavigation = useCallback(() => {
-    pointerActiveRef.current = true;
-    beginUserNavigation();
-  }, [beginUserNavigation]);
-
-  const beginTouchNavigation = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      beginUserNavigation();
-      lastTouchYRef.current = event.touches.item(0)?.clientY ?? null;
-    },
-    [beginUserNavigation],
-  );
-
-  const continueTouchNavigation = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      beginUserNavigation();
-      const touchY = event.touches.item(0)?.clientY;
-      const previousTouchY = lastTouchYRef.current;
-      lastTouchYRef.current = touchY ?? null;
-      if (touchY === undefined || previousTouchY === null) {
-        return;
-      }
-      const scrollNode = listRef.current?.getScrollableNode();
-      if (touchY > previousTouchY && scrollNode?.scrollTop === 0) {
-        requestPageNearEdge("before");
-      } else if (
-        touchY < previousTouchY &&
-        scrollNode !== null &&
-        scrollNode !== undefined &&
-        scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop <= 1
-      ) {
-        requestPageNearEdge("after");
-      }
-    },
-    [beginUserNavigation, listRef, requestPageNearEdge],
-  );
-
-  const handleWheelNavigation = useCallback(
-    (event: ReactWheelEvent<HTMLDivElement>) => {
-      const scrollNode = listRef.current?.getScrollableNode();
-      beginUserNavigation();
-      if (event.deltaY < 0 && scrollNode?.scrollTop === 0) {
-        requestPageNearEdge("before");
-      } else if (
-        event.deltaY > 0 &&
-        scrollNode !== null &&
-        scrollNode !== undefined &&
-        scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop <= 1
-      ) {
-        requestPageNearEdge("after");
-      }
-    },
-    [beginUserNavigation, listRef, requestPageNearEdge],
-  );
-
   const handleScroll = useCallback(() => {
-    const list = listRef.current;
-    const state = list?.getState();
-    const scrollNode = list?.getScrollableNode();
-    const localIsAtEnd = resolveTimelineIsAtEnd(state);
+    const localIsAtEnd = resolveTimelineIsAtEnd(listRef.current?.getState());
     if (localIsAtEnd !== undefined) {
-      const isAtEnd =
-        messageHistory === undefined ? localIsAtEnd : localIsAtEnd && !messageHistory.hasMoreAfter;
-      onIsAtEndChange(isAtEnd);
+      onIsAtEndChange(
+        messageHistory === undefined ? localIsAtEnd : localIsAtEnd && !messageHistory.hasMoreAfter,
+      );
     }
     scheduleMinimapUpdate();
-    if (messageHistory === undefined || scrollNode === null || scrollNode === undefined) {
-      return;
-    }
-
-    const scrollTop = scrollNode.scrollTop;
-    const previousScrollTop = lastScrollTopRef.current;
-    lastScrollTopRef.current = scrollTop;
-    const prependAnchor = prependAnchorRef.current;
-    if (
-      prependAnchor !== null &&
-      (manualInputRef.current || pointerActiveRef.current) &&
-      previousScrollTop !== null &&
-      Math.abs(scrollTop - previousScrollTop) > 1
-    ) {
-      const rowAnchor = resolveVisibleTimelineRowAnchor(scrollNode);
-      prependAnchor.distanceFromBottom = scrollNode.scrollHeight - scrollTop;
-      prependAnchor.rowId = rowAnchor?.rowId ?? null;
-      prependAnchor.viewportOffset = rowAnchor?.viewportOffset ?? 0;
-    }
-    if (scrollTop <= 1) {
-      requestPageNearEdge("before");
-    } else if (scrollNode.scrollHeight - scrollNode.clientHeight - scrollTop <= 1) {
-      requestPageNearEdge("after");
-    }
-    if ((!manualInputRef.current && !pointerActiveRef.current) || previousScrollTop === null) {
-      return;
-    }
-
-    const delta = scrollTop - previousScrollTop;
-    if (delta < 0) {
-      requestPageNearEdge("before");
-    } else if (delta > 0) {
-      requestPageNearEdge("after");
-    }
-  }, [listRef, messageHistory, onIsAtEndChange, requestPageNearEdge, scheduleMinimapUpdate]);
+  }, [listRef, messageHistory, onIsAtEndChange, scheduleMinimapUpdate]);
 
   const selectHistoryTarget = useCallback(
     (item: TimelineHistoryNavigationTarget) => {
       onManualNavigation(false);
-      pageRequestRef.current = null;
-      releasePrependAnchor();
       const rowIndex = rowIndexByMessageId.get(item.id);
-      const list = listRef.current;
-      if (rowIndex !== undefined && list !== null) {
-        positioningTargetRef.current = item.id;
-        void list
-          .scrollToIndex({
-            index: rowIndex,
-            animated: true,
-            viewPosition: 0.5,
-          })
-          .then(() => {
-            if (positioningTargetRef.current === item.id) {
-              positioningTargetRef.current = null;
-            }
-          });
+      if (rowIndex !== undefined) {
+        positionHistoryTarget(item.id, rowIndex, true);
         return;
       }
       onSelectHistoryMessage?.(item.id);
     },
-    [
-      listRef,
-      onManualNavigation,
-      onSelectHistoryMessage,
-      releasePrependAnchor,
-      rowIndexByMessageId,
-    ],
+    [onManualNavigation, onSelectHistoryMessage, positionHistoryTarget, rowIndexByMessageId],
   );
 
   useLayoutEffect(() => {
-    if (historyTargetMessageId === null) {
-      positioningTargetRef.current = null;
-      return;
-    }
-    if (positioningTargetRef.current === historyTargetMessageId) {
+    updateMinimap();
+  }, [rows, updateMinimap]);
+
+  useLayoutEffect(() => {
+    if (
+      historyTargetMessageId === null ||
+      positioningTargetRef.current?.id === historyTargetMessageId
+    ) {
       return;
     }
     const rowIndex = rowIndexByMessageId.get(historyTargetMessageId);
-    const list = listRef.current;
-    if (rowIndex === undefined || list === null) {
+    if (rowIndex === undefined) {
       return;
     }
-
-    positioningTargetRef.current = historyTargetMessageId;
-    void list
-      .scrollToIndex({
-        index: rowIndex,
-        animated: false,
-        viewPosition: 0.5,
-      })
-      .then(() => {
-        if (positioningTargetRef.current === historyTargetMessageId) {
-          positioningTargetRef.current = null;
-          onHistoryTargetReady?.();
-        }
-      });
-  }, [historyTargetMessageId, listRef, onHistoryTargetReady, rowIndexByMessageId]);
+    positionHistoryTarget(historyTargetMessageId, rowIndex, false, onHistoryTargetReady);
+  }, [historyTargetMessageId, onHistoryTargetReady, positionHistoryTarget, rowIndexByMessageId]);
 
   useLayoutEffect(() => {
-    if (initializedThreadRef.current !== routeThreadKey) {
-      initializedThreadRef.current = routeThreadKey;
-      for (const messageId of visibleMinimapIdsRef.current) {
-        const strip = minimapStripMap.get(messageId);
-        if (strip !== undefined) {
-          strip.dataset.inView = "false";
-        }
+    if (initializedThreadRef.current === routeThreadKey) {
+      return;
+    }
+    initializedThreadRef.current = routeThreadKey;
+    for (const messageId of visibleMinimapIdsRef.current) {
+      const strip = minimapStripMap.get(messageId);
+      if (strip !== undefined) {
+        strip.dataset.inView = "false";
       }
-      visibleMinimapIdsRef.current = new Set();
-      pageRequestRef.current = null;
-      releasePrependAnchor();
-      positioningTargetRef.current = null;
-      lastScrollTopRef.current = null;
     }
-    if (handledLatestMessagesRequestRef.current !== latestMessagesRequest) {
-      handledLatestMessagesRequestRef.current = latestMessagesRequest;
-      latestPositionPendingRef.current = true;
-      pageRequestRef.current = null;
-      releasePrependAnchor();
-      positioningTargetRef.current = null;
+    visibleMinimapIdsRef.current = new Set();
+    pageRequestRef.current = null;
+    positioningTargetRef.current = null;
+    handledLatestMessagesRequestRef.current = latestMessagesRequest;
+    latestPositionPendingRef.current = false;
+  }, [latestMessagesRequest, minimapStripMap, routeThreadKey]);
+
+  useLayoutEffect(() => {
+    if (handledLatestMessagesRequestRef.current === latestMessagesRequest) {
+      return;
     }
+    handledLatestMessagesRequestRef.current = latestMessagesRequest;
+    latestPositionPendingRef.current = true;
+    pageRequestRef.current = null;
+    positioningTargetRef.current = null;
+  }, [latestMessagesRequest]);
+
+  useLayoutEffect(() => {
     if (
       messageHistory === undefined ||
       messageHistory.hasMoreAfter ||
@@ -507,23 +283,9 @@ export function useProgressiveTimelineHistory({
     ) {
       return;
     }
-
     latestPositionPendingRef.current = false;
     void listRef.current?.scrollToEnd({ animated: false }).then(scheduleMinimapUpdate);
-  }, [
-    latestMessagesRequest,
-    listRef,
-    messageHistory,
-    minimapStripMap,
-    releasePrependAnchor,
-    routeThreadKey,
-    rows,
-    scheduleMinimapUpdate,
-  ]);
-
-  useEffect(() => {
-    scheduleMinimapUpdate();
-  }, [rows.length, scheduleMinimapUpdate]);
+  }, [listRef, messageHistory, rows, scheduleMinimapUpdate]);
 
   useEffect(() => {
     const handleKeyboardNavigation = (event: KeyboardEvent) => {
@@ -534,69 +296,32 @@ export function useProgressiveTimelineHistory({
       ) {
         return;
       }
-      const navigatesBefore =
-        ["PageUp", "Home", "ArrowUp"].includes(event.key) || (event.key === " " && event.shiftKey);
       beginUserNavigation();
-      if (navigatesBefore) {
-        if (scrollNode?.scrollTop === 0) {
-          requestPageNearEdge("before");
-        }
-      } else if (
-        scrollNode !== null &&
-        scrollNode !== undefined &&
-        scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop <= 1
-      ) {
-        requestPageNearEdge("after");
-      }
     };
     window.addEventListener("keydown", handleKeyboardNavigation, true);
     return () => {
       window.removeEventListener("keydown", handleKeyboardNavigation, true);
     };
-  }, [beginUserNavigation, listRef, requestPageNearEdge]);
+  }, [beginUserNavigation, listRef]);
 
   useEffect(
     () => () => {
-      if (manualInputTimeoutRef.current !== null) {
-        window.clearTimeout(manualInputTimeoutRef.current);
-      }
       if (minimapFrameRef.current !== null) {
         cancelAnimationFrame(minimapFrameRef.current);
         minimapFrameRef.current = null;
       }
-      releasePrependAnchor();
     },
-    [releasePrependAnchor],
+    [],
   );
-
-  useEffect(() => {
-    const endPointerNavigation = () => {
-      pointerActiveRef.current = false;
-    };
-    window.addEventListener("pointerup", endPointerNavigation, true);
-    window.addEventListener("pointercancel", endPointerNavigation, true);
-    return () => {
-      window.removeEventListener("pointerup", endPointerNavigation, true);
-      window.removeEventListener("pointercancel", endPointerNavigation, true);
-    };
-  }, []);
 
   return useMemo(
     () => ({
-      beginPointerNavigation,
-      beginTouchNavigation,
-      continueTouchNavigation,
+      beginUserNavigation,
       handleScroll,
-      handleWheelNavigation,
+      loadNextPage,
+      loadPreviousPage,
       selectHistoryTarget,
     }),
-    [
-      beginPointerNavigation,
-      beginTouchNavigation,
-      continueTouchNavigation,
-      handleScroll,
-      handleWheelNavigation,
-      selectHistoryTarget,
-    ],
+    [beginUserNavigation, handleScroll, loadNextPage, loadPreviousPage, selectHistoryTarget],
   );
 }

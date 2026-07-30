@@ -1200,7 +1200,11 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const routeServerThreadShell = useThreadShell(routeKind === "server" ? routeThreadRef : null);
   const serverThread = useThread(routeThreadRef, { waitForShell: draftThread !== null });
-  const environmentThreadState = useEnvironmentThread(environmentId, threadId);
+  const subscribeToThreadHistory = routeKind === "server" || serverThread !== null;
+  const environmentThreadState = useEnvironmentThread(
+    subscribeToThreadHistory ? environmentId : null,
+    subscribeToThreadHistory ? threadId : null,
+  );
   const liveServerThread = Option.getOrNull(environmentThreadState.liveData);
   const [historyTarget, setHistoryTarget] = useState<{
     readonly threadKey: string;

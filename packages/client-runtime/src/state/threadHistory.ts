@@ -1,18 +1,19 @@
 import type { OrchestrationThread, OrchestrationThreadHistoryPage } from "@t3tools/contracts";
 
-import { THREAD_MESSAGE_PAGE_SIZE } from "./threadSnapshotHttp.ts";
+import { THREAD_TURN_PAGE_SIZE } from "./threadSnapshotHttp.ts";
 import type { EnvironmentThreadHistoryState } from "./threadState.ts";
 
-const THREAD_HISTORY_WINDOW_MAX_MESSAGES = 250;
+const THREAD_HISTORY_WINDOW_MAX_TURNS = THREAD_TURN_PAGE_SIZE * 5;
 
 export function boundLiveThread(thread: OrchestrationThread): OrchestrationThread {
   if (thread.messageHistory === undefined) {
     return thread;
   }
-  const messages =
-    thread.messages.length > THREAD_MESSAGE_PAGE_SIZE
-      ? thread.messages.slice(-THREAD_MESSAGE_PAGE_SIZE)
-      : thread.messages;
+  const turnStarts = thread.messages.flatMap((message, index) =>
+    message.role === "user" ? [index] : [],
+  );
+  const startOffset = turnStarts.at(-THREAD_TURN_PAGE_SIZE);
+  const messages = startOffset === undefined ? thread.messages : thread.messages.slice(startOffset);
   const firstMessage = messages[0];
   if (firstMessage === undefined) {
     return thread;
@@ -116,13 +117,17 @@ export function boundThreadHistoryPage(
   page: OrchestrationThreadHistoryPage,
   preserve: "older" | "newer",
 ): OrchestrationThreadHistoryPage {
-  if (page.messages.length <= THREAD_HISTORY_WINDOW_MAX_MESSAGES) {
+  const turnStarts = page.messages.flatMap((message, index) =>
+    message.role === "user" ? [index] : [],
+  );
+  if (turnStarts.length <= THREAD_HISTORY_WINDOW_MAX_TURNS) {
     return page;
   }
-  const messages =
-    preserve === "older"
-      ? page.messages.slice(0, THREAD_HISTORY_WINDOW_MAX_MESSAGES)
-      : page.messages.slice(-THREAD_HISTORY_WINDOW_MAX_MESSAGES);
+  const sliceStart =
+    preserve === "older" ? 0 : turnStarts[turnStarts.length - THREAD_HISTORY_WINDOW_MAX_TURNS]!;
+  const sliceEnd =
+    preserve === "older" ? turnStarts[THREAD_HISTORY_WINDOW_MAX_TURNS]! : page.messages.length;
+  const messages = page.messages.slice(sliceStart, sliceEnd);
   const firstMessage = messages[0];
   const lastMessage = messages.at(-1);
   if (firstMessage === undefined || lastMessage === undefined) {
@@ -131,11 +136,9 @@ export function boundThreadHistoryPage(
   const startIndex =
     preserve === "older"
       ? page.messageHistory.startIndex
-      : page.messageHistory.endIndex - messages.length;
+      : page.messageHistory.startIndex + sliceStart;
   const endIndex =
-    preserve === "older"
-      ? page.messageHistory.startIndex + messages.length
-      : page.messageHistory.endIndex;
+    preserve === "older" ? page.messageHistory.startIndex + sliceEnd : page.messageHistory.endIndex;
   return {
     messages,
     activities: page.activities.filter(

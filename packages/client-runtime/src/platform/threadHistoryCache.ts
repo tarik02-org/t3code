@@ -122,7 +122,6 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
     loadPrevious: (environmentId, threadId, endIndex, limit) =>
       Effect.sync(() => {
         let match: readonly [string, CachedHistoryPage] | null = null;
-        let nearestEndIndex: number | null = null;
         for (const entry of pages.entries()) {
           const cached = entry[1];
           if (cached.environmentId !== environmentId || cached.threadId !== threadId) {
@@ -131,39 +130,31 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
           const history = cached.page.messageHistory;
           if (history.startIndex < endIndex && history.endIndex >= endIndex) {
             match = entry;
-          } else if (
-            history.endIndex < endIndex &&
-            (nearestEndIndex === null || history.endIndex > nearestEndIndex)
-          ) {
-            nearestEndIndex = history.endIndex;
           }
         }
         if (match !== null) {
           const [key, cached] = match;
           void pages.get(key);
+          const endOffset = endIndex - cached.page.messageHistory.startIndex;
+          const turnStarts = cached.page.messages.flatMap((message, index) =>
+            message.role === "user" && index < endOffset ? [index] : [],
+          );
           return {
             page: Option.some(
               sliceHistoryPage(
                 cached.page,
-                Math.max(cached.page.messageHistory.startIndex, endIndex - limit),
+                cached.page.messageHistory.startIndex + (turnStarts.at(-limit) ?? 0),
                 endIndex,
               ),
             ),
             requestLimit: limit,
           };
         }
-        return {
-          page: Option.none(),
-          requestLimit: Math.min(
-            limit,
-            endIndex - (nearestEndIndex ?? Math.max(0, endIndex - limit)),
-          ),
-        };
+        return { page: Option.none(), requestLimit: limit };
       }),
     loadNext: (environmentId, threadId, startIndex, limit) =>
       Effect.sync(() => {
         let match: readonly [string, CachedHistoryPage] | null = null;
-        let nearestStartIndex: number | null = null;
         for (const entry of pages.entries()) {
           const cached = entry[1];
           if (cached.environmentId !== environmentId || cached.threadId !== threadId) {
@@ -172,31 +163,29 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
           const history = cached.page.messageHistory;
           if (history.startIndex <= startIndex && history.endIndex > startIndex) {
             match = entry;
-          } else if (
-            history.startIndex > startIndex &&
-            (nearestStartIndex === null || history.startIndex < nearestStartIndex)
-          ) {
-            nearestStartIndex = history.startIndex;
           }
         }
         if (match !== null) {
           const [key, cached] = match;
           void pages.get(key);
+          const startOffset = startIndex - cached.page.messageHistory.startIndex;
+          const turnStarts = cached.page.messages.flatMap((message, index) =>
+            message.role === "user" && index >= startOffset ? [index] : [],
+          );
+          const sliceStart = turnStarts[0] ?? startOffset;
+          const sliceEnd = turnStarts[limit] ?? cached.page.messages.length;
           return {
             page: Option.some(
               sliceHistoryPage(
                 cached.page,
-                startIndex,
-                Math.min(cached.page.messageHistory.endIndex, startIndex + limit),
+                cached.page.messageHistory.startIndex + sliceStart,
+                cached.page.messageHistory.startIndex + sliceEnd,
               ),
             ),
             requestLimit: limit,
           };
         }
-        return {
-          page: Option.none(),
-          requestLimit: Math.min(limit, (nearestStartIndex ?? startIndex + limit) - startIndex),
-        };
+        return { page: Option.none(), requestLimit: limit };
       }),
     loadAround: (environmentId, threadId, messageId, limit) =>
       Effect.sync(() => {
@@ -215,12 +204,23 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
         }
         const [key, cached, targetIndex] = match;
         void pages.get(key);
-        let startIndex = Math.max(
-          cached.page.messageHistory.startIndex,
-          targetIndex - Math.floor((limit - 1) / 2),
+        const turnStarts = cached.page.messages.flatMap((message, index) =>
+          message.role === "user" ? [index] : [],
         );
-        const endIndex = Math.min(cached.page.messageHistory.endIndex, startIndex + limit);
-        startIndex = Math.max(cached.page.messageHistory.startIndex, endIndex - limit);
+        const targetOffset = targetIndex - cached.page.messageHistory.startIndex;
+        const targetTurn = Math.max(
+          0,
+          turnStarts.findLastIndex((turnStart) => turnStart <= targetOffset),
+        );
+        const startTurn = Math.max(
+          0,
+          Math.min(targetTurn - Math.floor((limit - 1) / 2), turnStarts.length - limit),
+        );
+        const startIndex =
+          cached.page.messageHistory.startIndex + (turnStarts[startTurn] ?? targetOffset);
+        const endIndex =
+          cached.page.messageHistory.startIndex +
+          (turnStarts[startTurn + limit] ?? cached.page.messages.length);
         return Option.some(sliceHistoryPage(cached.page, startIndex, endIndex));
       }),
     loadTotalMessages: (environmentId, threadId) =>
