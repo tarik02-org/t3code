@@ -26,7 +26,7 @@ import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreads, threadEnvironment, useEnvironmentThread } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type {
   PendingApproval,
@@ -244,6 +244,16 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   }, [selectedThreadKey]);
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const loadPreviousThreadItems = useAtomCommand(environmentThreads.loadPreviousItems, {
+    reportFailure: false,
+  });
+  const threadState = useEnvironmentThread(props.environmentId, props.selectedThread.id);
+  const loadPreviousItems = useCallback(() => {
+    void loadPreviousThreadItems({
+      environmentId: props.environmentId,
+      input: { threadId: props.selectedThread.id },
+    });
+  }, [loadPreviousThreadItems, props.environmentId, props.selectedThread.id]);
   const lastDispatchedVisitRef = useRef<string | null>(null);
   const selectedThreadId = props.selectedThread.id;
   const selectedThreadUpdatedAt = props.selectedThread.updatedAt;
@@ -417,6 +427,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             layoutVariant={layoutVariant}
             usesAutomaticContentInsets={props.usesAutomaticContentInsets}
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
+            hasMorePreviousItems={threadState.visibleTurnItemHistory?.page?.hasMoreBefore === true}
+            isLoadingPreviousItems={threadState.visibleTurnItemHistory?.loadingPrevious === true}
+            onLoadPreviousItems={loadPreviousItems}
             skills={selectedProviderSkills}
           />
         </View>

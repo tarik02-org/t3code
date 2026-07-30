@@ -98,23 +98,54 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.threadSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          const snapshot = yield* threadManagement.getThreadSnapshot(args.params.threadId).pipe(
-            Effect.catch(
-              Effect.fnUntraced(function* (error) {
-                if (isThreadNotFound(error)) {
-                  return yield* failEnvironmentNotFound("thread_not_found");
-                }
-                return yield* failEnvironmentInternal(
-                  "orchestration_thread_snapshot_failed",
-                  error,
-                );
-              }),
-            ),
-          );
+          const snapshot = yield* threadManagement
+            .getThreadSnapshot(args.params.threadId, args.query.turnItemLimit)
+            .pipe(
+              Effect.catch(
+                Effect.fnUntraced(function* (error) {
+                  if (isThreadNotFound(error)) {
+                    return yield* failEnvironmentNotFound("thread_not_found");
+                  }
+                  return yield* failEnvironmentInternal(
+                    "orchestration_thread_snapshot_failed",
+                    error,
+                  );
+                }),
+              ),
+            );
           return {
             snapshotSequence: snapshot.snapshotSequence,
             projection: snapshot.projection,
+            ...(snapshot.visibleTurnItemPage === undefined
+              ? {}
+              : { visibleTurnItemPage: snapshot.visibleTurnItemPage }),
           };
+        }),
+      )
+      .handle(
+        "threadItems",
+        Effect.fn("environment.orchestration.threadItems")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          return yield* threadManagement
+            .getVisibleTurnItemPage({
+              threadId: args.params.threadId,
+              beforePosition: args.query.beforePosition,
+              limit: args.query.limit,
+            })
+            .pipe(
+              Effect.catch(
+                Effect.fnUntraced(function* (error) {
+                  if (isThreadNotFound(error)) {
+                    return yield* failEnvironmentNotFound("thread_not_found");
+                  }
+                  return yield* failEnvironmentInternal(
+                    "orchestration_thread_snapshot_failed",
+                    error,
+                  );
+                }),
+              ),
+            );
         }),
       );
   }),

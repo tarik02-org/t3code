@@ -222,7 +222,7 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
-import { threadEnvironment } from "../state/threads";
+import { environmentThreads, threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
@@ -1215,6 +1215,9 @@ function ChatViewContent(props: ChatViewProps) {
   const forkThreadFromRun = useAtomCommand(threadEnvironment.forkFromRun, {
     reportFailure: false,
   });
+  const loadPreviousThreadItems = useAtomCommand(environmentThreads.loadPreviousItems, {
+    reportFailure: false,
+  });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
   const { environments } = useEnvironments();
@@ -1241,6 +1244,19 @@ function ChatViewContent(props: ChatViewProps) {
   const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
   const serverVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
+  const serverThreadState = useEnvironmentThread(
+    routeThreadDetailRef?.environmentId ?? null,
+    routeThreadDetailRef?.threadId ?? null,
+  );
+  const loadPreviousVisibleItems = useCallback(() => {
+    if (routeThreadDetailRef === null) {
+      return;
+    }
+    void loadPreviousThreadItems({
+      environmentId: routeThreadDetailRef.environmentId,
+      input: { threadId: routeThreadDetailRef.threadId },
+    });
+  }, [loadPreviousThreadItems, routeThreadDetailRef]);
   const committedServerMessageIds = useMemo(
     () => deriveCommittedServerUserMessageIds(serverVisibleTurnItems),
     [serverVisibleTurnItems],
@@ -6271,6 +6287,13 @@ function ChatViewContent(props: ChatViewProps) {
                 contentInsetEndAdjustment={composerOverlayHeight}
                 onIsAtEndChange={onIsAtEndChange}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                hasMorePreviousItems={
+                  serverThreadState.visibleTurnItemHistory?.page?.hasMoreBefore === true
+                }
+                isLoadingPreviousItems={
+                  serverThreadState.visibleTurnItemHistory?.loadingPrevious === true
+                }
+                onLoadPreviousItems={loadPreviousVisibleItems}
                 hideEmptyPlaceholder={isDraftHeroState}
                 topFadeEnabled={!hasTimelineTopBanner}
               />

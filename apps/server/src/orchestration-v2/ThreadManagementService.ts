@@ -272,7 +272,12 @@ export interface ThreadManagementServiceShape {
   readonly getThreadProjection: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadProjection, OrchestratorV2Error>;
+  readonly getOperationalProjection: (
+    threadId: ThreadId,
+    turnItemLimit: number,
+  ) => Effect.Effect<OrchestrationV2ThreadProjection, OrchestratorV2Error>;
   readonly getThreadSnapshot: OrchestratorV2["Service"]["getThreadSnapshot"];
+  readonly getVisibleTurnItemPage: OrchestratorV2["Service"]["getVisibleTurnItemPage"];
   readonly getProjectThread: (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
@@ -408,9 +413,25 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadProjection(threadId)),
     );
 
-  const getThreadSnapshot: ThreadManagementServiceShape["getThreadSnapshot"] = (threadId) =>
+  const getOperationalProjection: ThreadManagementServiceShape["getOperationalProjection"] = (
+    threadId,
+    turnItemLimit,
+  ) =>
     ensureProjectionTranscript(threadId).pipe(
-      Effect.andThen(orchestrator.getThreadSnapshot(threadId)),
+      Effect.andThen(orchestrator.getOperationalProjection(threadId, turnItemLimit)),
+    );
+
+  const getThreadSnapshot: ThreadManagementServiceShape["getThreadSnapshot"] = (
+    threadId,
+    turnItemLimit,
+  ) =>
+    ensureProjectionTranscript(threadId).pipe(
+      Effect.andThen(orchestrator.getThreadSnapshot(threadId, turnItemLimit)),
+    );
+
+  const getVisibleTurnItemPage: ThreadManagementServiceShape["getVisibleTurnItemPage"] = (input) =>
+    ensureProjectionTranscript(input.threadId).pipe(
+      Effect.andThen(orchestrator.getVisibleTurnItemPage(input)),
     );
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
@@ -646,7 +667,9 @@ const make = Effect.gen(function* () {
     ensureLegacyTranscript,
     dispatch,
     getThreadProjection,
+    getOperationalProjection,
     getThreadSnapshot,
+    getVisibleTurnItemPage,
     getProjectThread,
     getShellSnapshot: orchestrator.getShellSnapshot,
     getThreadShell: orchestrator.getThreadShell,

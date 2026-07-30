@@ -1169,6 +1169,24 @@ export const OrchestrationV2ThreadProjection = Schema.Struct({
 });
 export type OrchestrationV2ThreadProjection = typeof OrchestrationV2ThreadProjection.Type;
 
+export const ORCHESTRATION_V2_TURN_ITEM_PAGE_MAX_LIMIT = 500;
+
+export const OrchestrationV2VisibleTurnItemPageInfo = Schema.Struct({
+  startPosition: NonNegativeInt,
+  endPosition: NonNegativeInt,
+  totalItems: NonNegativeInt,
+  hasMoreBefore: Schema.Boolean,
+  hasMoreAfter: Schema.Boolean,
+});
+export type OrchestrationV2VisibleTurnItemPageInfo =
+  typeof OrchestrationV2VisibleTurnItemPageInfo.Type;
+
+export const OrchestrationV2VisibleTurnItemPage = Schema.Struct({
+  visibleTurnItems: Schema.Array(OrchestrationV2ProjectedTurnItem),
+  page: OrchestrationV2VisibleTurnItemPageInfo,
+});
+export type OrchestrationV2VisibleTurnItemPage = typeof OrchestrationV2VisibleTurnItemPage.Type;
+
 export const OrchestrationV2ShellThreadStatus = Schema.Union([
   Schema.Literal("idle"),
   OrchestrationV2RunStatus,
@@ -2228,6 +2246,9 @@ export type OrchestrationV2SubscribeShellInput = typeof OrchestrationV2Subscribe
 
 export const OrchestrationV2SubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  turnItemLimit: Schema.optionalKey(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_V2_TURN_ITEM_PAGE_MAX_LIMIT)),
+  ),
   /**
    * When provided, the server skips the initial snapshot frame and instead
    * replays events after this sequence before streaming live events. Clients
@@ -2244,6 +2265,7 @@ export type OrchestrationV2SubscribeThreadInput = typeof OrchestrationV2Subscrib
 export const OrchestrationV2ThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projection: OrchestrationV2ThreadProjection,
+  visibleTurnItemPage: Schema.optionalKey(OrchestrationV2VisibleTurnItemPageInfo),
 });
 export type OrchestrationV2ThreadDetailSnapshot = typeof OrchestrationV2ThreadDetailSnapshot.Type;
 
@@ -2255,6 +2277,7 @@ export const OrchestrationV2ThreadStreamItem = Schema.Union([
     kind: Schema.Literal("snapshot"),
     snapshotSequence: NonNegativeInt,
     projection: OrchestrationV2ThreadProjection,
+    visibleTurnItemPage: Schema.optionalKey(OrchestrationV2VisibleTurnItemPageInfo),
   }),
   Schema.Struct({
     kind: Schema.Literal("event"),

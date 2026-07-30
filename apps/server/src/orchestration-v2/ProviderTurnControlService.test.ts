@@ -216,8 +216,16 @@ it.effect(
           apply: () => Effect.void,
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
+          getRun: () => Effect.die("unused getRun"),
+          getCheckpointScope: () => Effect.die("unused getCheckpointScope"),
+          getRunTurnItems: () => Effect.die("unused getRunTurnItems"),
+          getNodeTurnItems: () => Effect.die("unused getNodeTurnItems"),
+          getPresentTurnItemIds: () => Effect.die("unused getPresentTurnItemIds"),
           getThreadProjection: () => Ref.get(projection),
+          getOperationalProjection: () => Ref.get(projection),
+          getRecoveryProjection: () => Effect.die("unused getRecoveryProjection"),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
+          getVisibleTurnItemPage: () => Effect.die("unused getVisibleTurnItemPage"),
         }),
       );
       const sessionManagerLayer = Layer.succeed(

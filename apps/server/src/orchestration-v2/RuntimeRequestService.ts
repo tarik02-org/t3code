@@ -76,7 +76,7 @@ export const layer: Layer.Layer<
     return RuntimeRequestServiceV2.of({
       respond: (input) =>
         Effect.gen(function* () {
-          const projection = yield* projections.getThreadProjection(input.threadId);
+          const projection = yield* projections.getOperationalProjection(input.threadId, 1);
           const request = projection.runtimeRequests.find(
             (candidate) => candidate.id === input.requestId,
           );

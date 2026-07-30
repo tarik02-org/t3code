@@ -1,4 +1,8 @@
-import type { OrchestrationV2ThreadDetailSnapshot, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ThreadDetailSnapshot,
+  OrchestrationV2VisibleTurnItemPage,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -16,10 +20,10 @@ import {
 } from "../rpc/http.ts";
 import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
 
-// Bounded so a pathologically slow endpoint cannot block the (cheaper) socket
-// fallback for long. The cached thread renders while this runs, so the wait only
-// delays the transition to live data on the first open, not the initial paint.
-const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
+// Includes response decoding and validation. Falling back too quickly repeats
+// the same snapshot through the socket while the HTTP request is still useful.
+const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 30_000;
+export const ORCHESTRATION_V2_TURN_ITEM_PAGE_SIZE = 200;
 
 /**
  * Load a thread's detail snapshot over HTTP instead of embedding it in the
@@ -34,24 +38,69 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
   readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
   readonly timeoutMs?: number;
 }) {
-  const requestUrl = environmentEndpointUrl(
-    input.prepared.httpBaseUrl,
-    `/api/orchestration/threads/${input.threadId}`,
+  const requestUrl = new URL(
+    environmentEndpointUrl(
+      input.prepared.httpBaseUrl,
+      `/api/orchestration/threads/${input.threadId}`,
+    ),
   );
+  requestUrl.searchParams.set("turnItemLimit", String(ORCHESTRATION_V2_TURN_ITEM_PAGE_SIZE));
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
   const headers = yield* buildEnvironmentAuthHeaders(
     input.prepared.httpAuthorization,
     "GET",
-    requestUrl,
+    requestUrl.toString(),
     input.signer,
   );
   return yield* executeEnvironmentHttpRequest(
-    requestUrl,
+    requestUrl.toString(),
     input.timeoutMs ?? DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS,
     withEnvironmentCredentials(
       input.prepared.httpAuthorization,
       client.orchestration.threadSnapshot({
         params: { threadId: input.threadId },
+        query: { turnItemLimit: ORCHESTRATION_V2_TURN_ITEM_PAGE_SIZE },
+        headers,
+      }),
+    ),
+  );
+});
+
+export const fetchEnvironmentThreadItems = Effect.fn(
+  "clientRuntime.state.fetchEnvironmentThreadItems",
+)(function* (input: {
+  readonly prepared: PreparedConnection;
+  readonly threadId: ThreadId;
+  readonly beforePosition: number;
+  readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
+  readonly timeoutMs?: number;
+}) {
+  const requestUrl = new URL(
+    environmentEndpointUrl(
+      input.prepared.httpBaseUrl,
+      `/api/orchestration/threads/${input.threadId}/items`,
+    ),
+  );
+  requestUrl.searchParams.set("beforePosition", String(input.beforePosition));
+  requestUrl.searchParams.set("limit", String(ORCHESTRATION_V2_TURN_ITEM_PAGE_SIZE));
+  const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
+  const headers = yield* buildEnvironmentAuthHeaders(
+    input.prepared.httpAuthorization,
+    "GET",
+    requestUrl.toString(),
+    input.signer,
+  );
+  return yield* executeEnvironmentHttpRequest(
+    requestUrl.toString(),
+    input.timeoutMs ?? DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS,
+    withEnvironmentCredentials(
+      input.prepared.httpAuthorization,
+      client.orchestration.threadItems({
+        params: { threadId: input.threadId },
+        query: {
+          beforePosition: input.beforePosition,
+          limit: ORCHESTRATION_V2_TURN_ITEM_PAGE_SIZE,
+        },
         headers,
       }),
     ),
@@ -73,6 +122,11 @@ export class ThreadSnapshotLoader extends Context.Service<
       prepared: PreparedConnection,
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<OrchestrationV2ThreadDetailSnapshot>>;
+    readonly loadPreviousItems?: (
+      prepared: PreparedConnection,
+      threadId: ThreadId,
+      beforePosition: number,
+    ) => Effect.Effect<Option.Option<OrchestrationV2VisibleTurnItemPage>>;
   }
 >()("@t3tools/client-runtime/state/threadSnapshotHttp/ThreadSnapshotLoader") {}
 
@@ -112,6 +166,26 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
             ).pipe(
               Effect.annotateLogs({ threadId, cause: Cause.pretty(cause) }),
               Effect.as(Option.none<OrchestrationV2ThreadDetailSnapshot>()),
+            ),
+          ),
+        ),
+      loadPreviousItems: (
+        prepared: PreparedConnection,
+        threadId: ThreadId,
+        beforePosition: number,
+      ) =>
+        fetchEnvironmentThreadItems({
+          prepared,
+          threadId,
+          beforePosition,
+          signer,
+        }).pipe(
+          Effect.map(Option.some<OrchestrationV2VisibleTurnItemPage>),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not load previous thread items over HTTP.").pipe(
+              Effect.annotateLogs({ threadId, cause: Cause.pretty(cause) }),
+              Effect.as(Option.none<OrchestrationV2VisibleTurnItemPage>()),
             ),
           ),
         ),

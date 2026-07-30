@@ -582,6 +582,7 @@ const makeWsRpcLayer = (
       const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subscribeThread")(
         function* (input: {
           readonly threadId: ThreadId;
+          readonly turnItemLimit?: number;
           readonly afterSequence?: number;
           readonly requestCompletionMarker?: boolean;
         }) {
@@ -673,16 +674,18 @@ const makeWsRpcLayer = (
             );
           }
 
-          const snapshot = yield* threadManagement.getThreadSnapshot(input.threadId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestrationV2GetThreadProjectionError({
-                  threadId: input.threadId,
-                  message: `Failed to load orchestration V2 thread ${input.threadId}`,
-                  cause,
-                }),
-            ),
-          );
+          const snapshot = yield* threadManagement
+            .getThreadSnapshot(input.threadId, input.turnItemLimit)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationV2GetThreadProjectionError({
+                    threadId: input.threadId,
+                    message: `Failed to load orchestration V2 thread ${input.threadId}`,
+                    cause,
+                  }),
+              ),
+            );
           const { projection, snapshotSequence } = snapshot;
 
           return Stream.concat(
@@ -691,6 +694,9 @@ const makeWsRpcLayer = (
                 kind: "snapshot" as const,
                 snapshotSequence,
                 projection,
+                ...(snapshot.visibleTurnItemPage === undefined
+                  ? {}
+                  : { visibleTurnItemPage: snapshot.visibleTurnItemPage }),
               }),
               completionMarker,
             ),

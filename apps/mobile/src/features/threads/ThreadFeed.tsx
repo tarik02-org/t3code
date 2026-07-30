@@ -182,6 +182,9 @@ export interface ThreadFeedProps {
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
+  readonly hasMorePreviousItems?: boolean;
+  readonly isLoadingPreviousItems?: boolean;
+  readonly onLoadPreviousItems?: () => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
 }
 
@@ -1595,10 +1598,24 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       // header height back or the material toggles a full header too late.
       reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      if (
+        contentOffset.y + anchorTopInset < 400 &&
+        props.hasMorePreviousItems === true &&
+        props.isLoadingPreviousItems !== true
+      ) {
+        props.onLoadPreviousItems?.();
+      }
       nearListEnd.value =
         contentSize.height - layoutMeasurement.height - contentOffset.y < layoutMeasurement.height;
     },
-    [reportHeaderMaterialVisibility, anchorTopInset, nearListEnd],
+    [
+      anchorTopInset,
+      nearListEnd,
+      props.hasMorePreviousItems,
+      props.isLoadingPreviousItems,
+      props.onLoadPreviousItems,
+      reportHeaderMaterialVisibility,
+    ],
   );
 
   // Gated variant of the 180ms feed layout slide. Instant while browsing

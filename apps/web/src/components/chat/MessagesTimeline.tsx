@@ -225,6 +225,9 @@ interface MessagesTimelineProps {
   contentInsetEndAdjustment: number;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
+  hasMorePreviousItems?: boolean;
+  isLoadingPreviousItems?: boolean;
+  onLoadPreviousItems?: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
 }
@@ -265,6 +268,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   contentInsetEndAdjustment,
   onIsAtEndChange,
   onManualNavigation,
+  hasMorePreviousItems = false,
+  isLoadingPreviousItems = false,
+  onLoadPreviousItems,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
 }: MessagesTimelineProps) {
@@ -397,11 +403,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (isAtEnd !== undefined) {
       onIsAtEndChange(isAtEnd);
     }
-    if (!state || minimapItems.length === 0) {
+    if (!state) {
       return;
     }
 
     const scrollTop = state.scroll ?? 0;
+    if (scrollTop < 400 && hasMorePreviousItems && !isLoadingPreviousItems) {
+      onLoadPreviousItems?.();
+    }
+    if (minimapItems.length === 0) {
+      return;
+    }
     const scrollBottom = scrollTop + (state.scrollLength ?? 0);
 
     for (const item of minimapItems) {
@@ -424,7 +436,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         strip.dataset.inView = next;
       }
     }
-  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
+  }, [
+    hasMorePreviousItems,
+    isLoadingPreviousItems,
+    listRef,
+    minimapItems,
+    minimapStripMap,
+    onIsAtEndChange,
+    onLoadPreviousItems,
+  ]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
@@ -580,7 +600,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
             ListHeaderComponent={
-              topFadeEnabled && parentThreadLink === null ? TIMELINE_LIST_FADE_HEADER : listHeader
+              <>
+                {isLoadingPreviousItems ? (
+                  <div className="py-3 text-center text-muted-foreground text-xs">
+                    Loading older items…
+                  </div>
+                ) : null}
+                {topFadeEnabled && parentThreadLink === null
+                  ? TIMELINE_LIST_FADE_HEADER
+                  : listHeader}
+              </>
             }
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
