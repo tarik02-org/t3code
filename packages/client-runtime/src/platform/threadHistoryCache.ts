@@ -49,6 +49,7 @@ export class ThreadHistoryCacheStore extends Context.Reference<{
     threadId: ThreadId,
   ) => Effect.Effect<void, ConnectionPersistenceError>;
   readonly clear: (environmentId: EnvironmentId) => Effect.Effect<void, ConnectionPersistenceError>;
+  readonly clearAll: () => Effect.Effect<void, ConnectionPersistenceError>;
 }>("@t3tools/client-runtime/platform/threadHistoryCache/ThreadHistoryCacheStore", {
   defaultValue: () => ({
     loadPrevious: (_environmentId, _threadId, _endIndex, limit) =>
@@ -60,6 +61,7 @@ export class ThreadHistoryCacheStore extends Context.Reference<{
     save: () => Effect.void,
     remove: () => Effect.void,
     clear: () => Effect.void,
+    clearAll: () => Effect.void,
   }),
 }) {}
 
@@ -257,5 +259,6 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
           }
         }
       }),
+    clearAll: () => Effect.sync(() => pages.clear()),
   });
 }

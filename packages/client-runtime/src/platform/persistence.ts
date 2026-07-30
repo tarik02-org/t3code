@@ -28,6 +28,7 @@ export class ConnectionPersistenceError extends Schema.TaggedErrorClass<Connecti
       "remove-thread",
       "load-thread-history",
       "save-thread-history",
+      "clear-thread-history",
       "load-server-config",
       "save-server-config",
       "load-vcs-refs",

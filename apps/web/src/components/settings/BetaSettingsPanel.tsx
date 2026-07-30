@@ -1,12 +1,21 @@
 import { useEffect, useState } from "react";
 
 import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import {
   useClientSettings,
   useSidebarV2Enabled,
   useUpdateClientSettings,
 } from "../../hooks/useSettings";
+import { clearLocalThreadHistoryCache } from "../../state/threadHistoryCache";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
+import { toastManager } from "../ui/toast";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 
 const AUTO_SETTLE_MIN_DAYS = 1;
@@ -63,23 +72,14 @@ export function BetaSettingsPanel() {
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
   const updateSettings = useUpdateClientSettings();
+  const clearLocalCache = useAtomCommand(clearLocalThreadHistoryCache, {
+    reportFailure: false,
+  });
+  const [isClearingLocalCache, setIsClearingLocalCache] = useState(false);
 
   return (
     <SettingsPageContainer>
       <SettingsSection title="Beta features">
-        <SettingsRow
-          title="Progressive thread history"
-          description="Load large thread histories in pages and navigate them with a timeline minimap."
-          control={
-            <Switch
-              checked={progressiveThreadHistoryEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings({ progressiveThreadHistoryEnabled: Boolean(checked) })
-              }
-              aria-label="Enable progressive thread history"
-            />
-          }
-        />
         <SettingsRow
           title="Sidebar v2"
           description="One flat thread list in creation order. Active work renders as rich cards; settled threads collapse to compact rows. Settling requires an up-to-date server — on older servers threads simply stay active. Switch back any time."
@@ -129,6 +129,50 @@ export function BetaSettingsPanel() {
             ) : null}
           </>
         ) : null}
+        <SettingsRow
+          title="Progressive thread history"
+          description="Load large thread histories in pages and navigate them with a timeline minimap."
+          control={
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isClearingLocalCache}
+                onClick={() => {
+                  setIsClearingLocalCache(true);
+                  void (async () => {
+                    const result = await clearLocalCache(undefined);
+                    setIsClearingLocalCache(false);
+                    if (result._tag === "Success") {
+                      toastManager.add({
+                        type: "success",
+                        title: "Local thread history cache cleared",
+                      });
+                    } else if (!isAtomCommandInterrupted(result)) {
+                      const error = squashAtomCommandFailure(result);
+                      toastManager.add({
+                        type: "error",
+                        title: "Could not clear local cache",
+                        description:
+                          error instanceof Error ? error.message : "The cache was not cleared.",
+                      });
+                    }
+                  })();
+                }}
+              >
+                {isClearingLocalCache ? <Spinner data-icon="inline-start" /> : null}
+                Clear local cache
+              </Button>
+              <Switch
+                checked={progressiveThreadHistoryEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ progressiveThreadHistoryEnabled: Boolean(checked) })
+                }
+                aria-label="Enable progressive thread history"
+              />
+            </>
+          }
+        />
       </SettingsSection>
     </SettingsPageContainer>
   );

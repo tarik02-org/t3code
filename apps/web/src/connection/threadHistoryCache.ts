@@ -94,7 +94,12 @@ function transientError(operation: string, cause: unknown) {
 }
 
 function persistenceError(
-  operation: "load-thread-history" | "save-thread-history" | "remove-thread" | "clear-environment",
+  operation:
+    | "load-thread-history"
+    | "save-thread-history"
+    | "remove-thread"
+    | "clear-thread-history"
+    | "clear-environment",
   cause: unknown,
 ) {
   return new ConnectionPersistenceError({
@@ -269,6 +274,29 @@ function removeValuesInRange(database: IDBDatabase, storeName: string, range: ID
     });
   }).pipe(Effect.withSpan("web.threadHistoryCache.removeValuesInRange"));
 }
+
+const clearDatabase = Effect.fn("web.threadHistoryCache.clearDatabase")(function* (
+  database: IDBDatabase,
+) {
+  yield* Effect.callback<void, ConnectionTransientError>((resume) => {
+    const transaction = database.transaction(
+      [THREAD_STORE_NAME, MESSAGE_STORE_NAME, ACTIVITY_STORE_NAME, PLAN_STORE_NAME],
+      "readwrite",
+    );
+    transaction.addEventListener("error", () => {
+      resume(
+        Effect.fail(transientError("clear", transaction.error ?? "Unknown IndexedDB clear error")),
+      );
+    });
+    transaction.addEventListener("complete", () => {
+      resume(Effect.void);
+    });
+    transaction.objectStore(THREAD_STORE_NAME).clear();
+    transaction.objectStore(MESSAGE_STORE_NAME).clear();
+    transaction.objectStore(ACTIVITY_STORE_NAME).clear();
+    transaction.objectStore(PLAN_STORE_NAME).clear();
+  });
+});
 
 function threadScope(environmentId: EnvironmentId, threadId: ThreadId) {
   return `${environmentId}:${threadId}`;
@@ -663,6 +691,10 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
           ],
           { concurrency: "unbounded", discard: true },
         ).pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
+      clearAll: () =>
+        writeLock
+          .withPermits(1)(clearDatabase(database))
+          .pipe(Effect.mapError((cause) => persistenceError("clear-thread-history", cause))),
     });
   },
 );
