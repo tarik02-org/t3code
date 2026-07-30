@@ -28,7 +28,7 @@ import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./envir
 // delays the transition to live data on the first open, not the initial paint.
 const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
 export const THREAD_MESSAGE_PAGE_SIZE = 200;
-export const THREAD_TURN_PAGE_SIZE = 6;
+export const THREAD_TURN_PAGE_SIZE = 10;
 
 /**
  * Load a thread's detail snapshot over HTTP instead of embedding it in the
