@@ -160,6 +160,7 @@ export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, Projec
 ) {}
 
 export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
+const PROJECTION_VALIDATION_BATCH_SIZE = 256;
 
 function upsertById<T extends { readonly id: string }>(items: ReadonlyArray<T>, next: T): Array<T> {
   const index = items.findIndex((item) => item.id === next.id);
@@ -2211,16 +2212,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND (
                 ordinal > ${cursorOrdinal}
                 OR (ordinal = ${cursorOrdinal} AND turn_item_id > ${cursorTurnItemId})
-              )
+            )
             ORDER BY ordinal ASC, turn_item_id ASC
-            LIMIT 256
+            LIMIT ${PROJECTION_VALIDATION_BATCH_SIZE}
           `;
           yield* Effect.forEach(rows, (row) => decodeTurnItemPayload(row.payload_json), {
-            concurrency: 8,
             discard: true,
           });
           const last = rows.at(-1);
-          if (last === undefined || rows.length < 256) {
+          if (last === undefined || rows.length < PROJECTION_VALIDATION_BATCH_SIZE) {
             return;
           }
           cursorOrdinal = last.ordinal;
