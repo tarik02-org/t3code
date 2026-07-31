@@ -446,7 +446,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }),
         "older",
       );
-      const history: EnvironmentThreadHistoryState = { ...latest.history, window };
+      const history: EnvironmentThreadHistoryState = {
+        ...latest.history,
+        loading: null,
+        window,
+      };
       yield* SubscriptionRef.set(state, {
         ...latest,
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
@@ -565,6 +569,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       );
       const history: EnvironmentThreadHistoryState = {
         ...latest.history,
+        loading: null,
         window: nextWindow,
       };
       yield* SubscriptionRef.set(state, {
