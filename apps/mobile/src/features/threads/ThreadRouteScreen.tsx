@@ -190,6 +190,7 @@ function ThreadRouteContent(
     useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const hasNextMessages = selectedThreadDetail?.messageHistory?.hasMoreAfter === true;
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
@@ -200,6 +201,9 @@ function ThreadRouteContent(
     reportFailure: false,
   });
   const loadNextMessages = useAtomCommand(environmentThreads.loadNextMessages, {
+    reportFailure: false,
+  });
+  const showLatestMessages = useAtomCommand(environmentThreads.showLatestMessages, {
     reportFailure: false,
   });
   const navigation = useNavigation();
@@ -338,6 +342,17 @@ function ThreadRouteContent(
       input: { threadId: selectedThread.id },
     });
   }, [loadNextMessages, selectedThread]);
+  const handleSendMessage = useCallback(async () => {
+    const messageId = await composer.onSendMessage();
+    if (messageId === null || selectedThread === null || hasNextMessages === false) {
+      return messageId;
+    }
+    await showLatestMessages({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+    return messageId;
+  }, [composer.onSendMessage, hasNextMessages, selectedThread, showLatestMessages]);
 
   /* ─── Git action progress (for overlay banner) ──────────────────── */
   const gitActionProgressTarget = useMemo(
@@ -786,7 +801,7 @@ function ThreadRouteContent(
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
           hasPreviousMessages={selectedThreadDetail?.messageHistory?.hasMoreBefore === true}
-          hasNextMessages={selectedThreadDetail?.messageHistory?.hasMoreAfter === true}
+          hasNextMessages={hasNextMessages}
           isLoadingPreviousMessages={
             selectedThreadDetailState.history.kind === "ready" &&
             selectedThreadDetailState.history.loading === "before"
@@ -809,7 +824,7 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
-          onSendMessage={composer.onSendMessage}
+          onSendMessage={handleSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onLoadPreviousMessages={handleLoadPreviousMessages}
           onLoadNextMessages={handleLoadNextMessages}

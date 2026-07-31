@@ -129,10 +129,15 @@ export function boundThreadHistoryPage(
     preserve === "older" ? turnStarts[THREAD_HISTORY_WINDOW_MAX_TURNS]! : page.messages.length;
   const messages = page.messages.slice(sliceStart, sliceEnd);
   const firstMessage = messages[0];
-  const lastMessage = messages.at(-1);
-  if (firstMessage === undefined || lastMessage === undefined) {
+  if (firstMessage === undefined) {
     return page;
   }
+  // Turn telemetry can land after the turn's final message, so timestamps alone
+  // cannot decide whether it belongs to the retained window.
+  const visibleTurnIds = new Set(
+    messages.flatMap((message) => (message.turnId === null ? [] : [message.turnId])),
+  );
+  const endBoundary = preserve === "older" ? (page.messages[sliceEnd]?.createdAt ?? null) : null;
   const startIndex =
     preserve === "older"
       ? page.messageHistory.startIndex
@@ -141,12 +146,17 @@ export function boundThreadHistoryPage(
     preserve === "older" ? page.messageHistory.startIndex + sliceEnd : page.messageHistory.endIndex;
   return {
     messages,
-    activities: page.activities.filter(
-      (activity) =>
-        activity.createdAt >= firstMessage.createdAt && activity.createdAt <= lastMessage.createdAt,
+    activities: page.activities.filter((activity) =>
+      activity.turnId !== null
+        ? visibleTurnIds.has(activity.turnId)
+        : activity.createdAt >= firstMessage.createdAt &&
+          (endBoundary === null || activity.createdAt < endBoundary),
     ),
-    proposedPlans: page.proposedPlans.filter(
-      (plan) => plan.createdAt >= firstMessage.createdAt && plan.createdAt <= lastMessage.createdAt,
+    proposedPlans: page.proposedPlans.filter((plan) =>
+      plan.turnId !== null
+        ? visibleTurnIds.has(plan.turnId)
+        : plan.createdAt >= firstMessage.createdAt &&
+          (endBoundary === null || plan.createdAt < endBoundary),
     ),
     messageHistory: {
       hasMoreBefore: startIndex > 0,

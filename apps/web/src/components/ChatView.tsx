@@ -4915,6 +4915,12 @@ function ChatViewContent(props: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
+    if (activeThread.messageHistory?.hasMoreAfter === true) {
+      await showLatestMessages({
+        environmentId,
+        input: { threadId: threadIdForSend },
+      });
+    }
     // Sending always returns to the live edge. The new row becomes the
     // anchored end-space target so it lands near the top while the response
     // streams into the reserved space below it.

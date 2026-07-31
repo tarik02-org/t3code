@@ -920,8 +920,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           yield* SubscriptionRef.update(historyOutlineRefreshes, (revision) => revision + 1);
         }
       } else if (sentUserMessage) {
-        latestHistoryWindowRequestId += 1;
-        latestAroundRequestId += 1;
+        // The event may come from another paired client. Local send handlers
+        // own navigation to the live tail, so preserve this client's window.
         const current = yield* SubscriptionRef.get(state);
         const refreshOutline = current.history.kind === "ready";
         yield* invalidateHistoryOutline;
@@ -932,8 +932,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               : {
                   ...current.history,
                   outline: null,
-                  window: null,
-                  loading: null,
                 };
           return { ...current, history };
         });
