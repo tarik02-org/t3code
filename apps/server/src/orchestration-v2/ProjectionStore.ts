@@ -173,6 +173,16 @@ function upsertById<T extends { readonly id: string }>(items: ReadonlyArray<T>, 
   return updated;
 }
 
+function compareTurnItemOrder(
+  left: OrchestrationV2TurnItem,
+  right: OrchestrationV2TurnItem,
+): number {
+  if (left.ordinal !== right.ordinal) {
+    return left.ordinal - right.ordinal;
+  }
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
 export function emptyProjection(
   event: Extract<OrchestrationV2DomainEvent, { readonly type: "thread.created" }>,
 ): OrchestrationV2ThreadProjection {
@@ -2761,7 +2771,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             (existing) =>
               existing.projections
                 .get(threadId)
-                ?.turnItems.filter((candidate) => candidate.runId === runId) ?? [],
+                ?.turnItems.filter((candidate) => candidate.runId === runId)
+                .toSorted(compareTurnItemOrder) ?? [],
           ),
         ),
       getNodeTurnItems: (threadId, nodeId) =>
@@ -2770,7 +2781,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             (existing) =>
               existing.projections
                 .get(threadId)
-                ?.turnItems.filter((candidate) => candidate.nodeId === nodeId) ?? [],
+                ?.turnItems.filter((candidate) => candidate.nodeId === nodeId)
+                .toSorted(compareTurnItemOrder) ?? [],
           ),
         ),
       getPresentTurnItemIds: (threadId, itemIds) =>
@@ -2825,10 +2837,14 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           }
           return withLocalVisibleTurnItems({
             ...projection,
-            turnItems: projection.turnItems.filter(
-              (item) =>
-                item.status === "pending" || item.status === "running" || item.status === "waiting",
-            ),
+            turnItems: projection.turnItems
+              .filter(
+                (item) =>
+                  item.status === "pending" ||
+                  item.status === "running" ||
+                  item.status === "waiting",
+              )
+              .toSorted(compareTurnItemOrder),
           });
         }),
       getOperationalProjection: (threadId) =>
@@ -2839,11 +2855,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           }
           const latestTurnItem = projection.turnItems.reduce<OrchestrationV2TurnItem | null>(
             (latest, item) =>
-              latest === null ||
-              item.ordinal > latest.ordinal ||
-              (item.ordinal === latest.ordinal && item.id > latest.id)
-                ? item
-                : latest,
+              latest === null || compareTurnItemOrder(item, latest) > 0 ? item : latest,
             null,
           );
           return withLocalVisibleTurnItems({

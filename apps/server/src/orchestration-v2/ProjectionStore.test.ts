@@ -87,13 +87,20 @@ it("includes imported runless history when selecting fork context through a run"
 });
 
 it.layer(layerMemory)("ProjectionStoreV2 memory", (it) => {
-  it.effect("selects the latest operational turn item by ordinal and id", () =>
+  it.effect("orders turn item reads by ordinal and id", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStoreV2;
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("thread:projection-memory-latest-item");
       const projectId = ProjectId.make("project:projection-memory-latest-item");
+      const runId = RunId.make("run:projection-memory-latest-item");
+      const nodeId = NodeId.make("node:projection-memory-latest-item");
       const expectedItemId = TurnItemId.make("turn-item:projection-memory-latest-item:z");
+      const expectedItemIds = [
+        TurnItemId.make("turn-item:projection-memory-latest-item:last-inserted"),
+        TurnItemId.make("turn-item:projection-memory-latest-item:a"),
+        expectedItemId,
+      ];
 
       yield* projectionStore.apply({
         id: EventId.make("event:projection-memory-latest-item:thread"),
@@ -131,16 +138,16 @@ it.layer(layerMemory)("ProjectionStoreV2 memory", (it) => {
 
       const turnItemBase = {
         threadId,
-        runId: null,
-        nodeId: null,
+        runId,
+        nodeId,
         providerThreadId: null,
         providerTurnId: null,
         nativeItemRef: null,
         parentItemId: null,
-        status: "completed",
+        status: "running",
         title: null,
         startedAt: now,
-        completedAt: now,
+        completedAt: null,
         updatedAt: now,
         type: "dynamic_tool",
         toolName: null,
@@ -177,6 +184,18 @@ it.layer(layerMemory)("ProjectionStoreV2 memory", (it) => {
         { discard: true },
       );
 
+      assert.deepEqual(
+        (yield* projectionStore.getRunTurnItems(threadId, runId)).map((item) => item.id),
+        expectedItemIds,
+      );
+      assert.deepEqual(
+        (yield* projectionStore.getNodeTurnItems(threadId, nodeId)).map((item) => item.id),
+        expectedItemIds,
+      );
+      assert.deepEqual(
+        (yield* projectionStore.getRecoveryProjection(threadId)).turnItems.map((item) => item.id),
+        expectedItemIds,
+      );
       assert.deepEqual(
         (yield* projectionStore.getOperationalProjection(threadId)).turnItems.map(
           (item) => item.id,
