@@ -2837,9 +2837,18 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           if (projection === undefined) {
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
           }
+          const latestTurnItem = projection.turnItems.reduce<OrchestrationV2TurnItem | null>(
+            (latest, item) =>
+              latest === null ||
+              item.ordinal > latest.ordinal ||
+              (item.ordinal === latest.ordinal && item.id > latest.id)
+                ? item
+                : latest,
+            null,
+          );
           return withLocalVisibleTurnItems({
             ...projection,
-            turnItems: projection.turnItems.slice(-1),
+            turnItems: latestTurnItem === null ? [] : [latestTurnItem],
           });
         }),
       validateThreadProjection: (threadId) =>
