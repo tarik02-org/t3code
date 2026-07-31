@@ -359,54 +359,84 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }),
       );
     if (Option.isSome(historyLookup.page)) {
-      if (requestId !== latestHistoryWindowRequestId) {
-        return false;
-      }
-      const liveMessages = currentLiveThread.value.messages;
-      const firstLiveMessage = liveMessages[0];
-      const currentWindow = current.history.window ?? {
-        messages: liveMessages,
-        activities:
-          firstLiveMessage === undefined
-            ? []
-            : currentLiveThread.value.activities.filter(
-                (activity) => activity.createdAt >= firstLiveMessage.createdAt,
-              ),
-        proposedPlans:
-          firstLiveMessage === undefined
-            ? []
-            : currentLiveThread.value.proposedPlans.filter(
-                (plan) => plan.createdAt >= firstLiveMessage.createdAt,
-              ),
-        messageHistory: currentLiveThread.value.messageHistory ?? {
-          hasMoreBefore: false,
-          hasMoreAfter: false,
-          startIndex: 0,
-          endIndex: liveMessages.length,
-          totalMessages: liveMessages.length,
-          cursor: null,
-        },
-      };
-      const window = boundThreadHistoryPage(
-        mergeThreadHistoryPages({
-          older: historyLookup.page.value,
-          newer: currentWindow,
-        }),
-        "older",
-      );
-      const history: EnvironmentThreadHistoryState = { ...current.history, window };
-      yield* SubscriptionRef.set(state, {
-        ...current,
-        data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
-        history,
+      const cachedPage = historyLookup.page.value;
+      return yield* SubscriptionRef.modify(state, (latest) => {
+        if (
+          requestId !== latestHistoryWindowRequestId ||
+          latest.history.kind === "disabled" ||
+          latest.history.loading !== null ||
+          Option.isNone(latest.liveData)
+        ) {
+          return [false, latest];
+        }
+        const latestLiveThread = latest.liveData.value;
+        const liveMessages = latestLiveThread.messages;
+        const firstLiveMessage = liveMessages[0];
+        const currentWindow = latest.history.window ?? {
+          messages: liveMessages,
+          activities:
+            firstLiveMessage === undefined
+              ? []
+              : latestLiveThread.activities.filter(
+                  (activity) => activity.createdAt >= firstLiveMessage.createdAt,
+                ),
+          proposedPlans:
+            firstLiveMessage === undefined
+              ? []
+              : latestLiveThread.proposedPlans.filter(
+                  (plan) => plan.createdAt >= firstLiveMessage.createdAt,
+                ),
+          messageHistory: latestLiveThread.messageHistory ?? {
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+            startIndex: 0,
+            endIndex: liveMessages.length,
+            totalMessages: liveMessages.length,
+            cursor: null,
+          },
+        };
+        const window = boundThreadHistoryPage(
+          mergeThreadHistoryPages({
+            older: cachedPage,
+            newer: currentWindow,
+          }),
+          "older",
+        );
+        const history: EnvironmentThreadHistoryState = { ...latest.history, window };
+        return [
+          true,
+          {
+            ...latest,
+            data: Option.some(displayThreadHistory(latestLiveThread, history)),
+            history,
+          },
+        ];
       });
-      return true;
     }
 
-    yield* SubscriptionRef.set(state, {
-      ...current,
-      history: { ...current.history, loading: "before" },
+    const startedLoading = yield* SubscriptionRef.modify(state, (latest) => {
+      if (
+        requestId !== latestHistoryWindowRequestId ||
+        latest.history.kind === "disabled" ||
+        latest.history.loading !== null
+      ) {
+        return [false, latest];
+      }
+      const history: EnvironmentThreadHistoryState = {
+        ...latest.history,
+        loading: "before",
+      };
+      return [
+        true,
+        {
+          ...latest,
+          history,
+        },
+      ];
     });
+    if (!startedLoading) {
+      return false;
+    }
     return yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
       const page = yield* snapshotLoader.loadPreviousMessages(
@@ -524,32 +554,64 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }),
       );
     if (Option.isSome(historyLookup.page)) {
-      if (requestId !== latestHistoryWindowRequestId) {
-        return false;
-      }
-      const nextWindow = boundThreadHistoryPage(
-        mergeThreadHistoryPages({
-          older: window,
-          newer: historyLookup.page.value,
-        }),
-        "newer",
-      );
-      const history: EnvironmentThreadHistoryState = {
-        ...current.history,
-        window: nextWindow,
-      };
-      yield* SubscriptionRef.set(state, {
-        ...current,
-        data: Option.some(displayThreadHistory(currentLiveThread.value, history)),
-        history,
+      const cachedPage = historyLookup.page.value;
+      return yield* SubscriptionRef.modify(state, (latest) => {
+        if (
+          requestId !== latestHistoryWindowRequestId ||
+          latest.history.kind === "disabled" ||
+          latest.history.loading !== null ||
+          latest.history.window === null ||
+          Option.isNone(latest.liveData)
+        ) {
+          return [false, latest];
+        }
+        const latestLiveThread = latest.liveData.value;
+        const nextWindow = boundThreadHistoryPage(
+          mergeThreadHistoryPages({
+            older: latest.history.window,
+            newer: cachedPage,
+          }),
+          "newer",
+        );
+        const history: EnvironmentThreadHistoryState = {
+          ...latest.history,
+          window: nextWindow,
+        };
+        return [
+          true,
+          {
+            ...latest,
+            data: Option.some(displayThreadHistory(latestLiveThread, history)),
+            history,
+          },
+        ];
       });
-      return true;
     }
 
-    yield* SubscriptionRef.set(state, {
-      ...current,
-      history: { ...current.history, loading: "after" },
+    const startedLoading = yield* SubscriptionRef.modify(state, (latest) => {
+      if (
+        requestId !== latestHistoryWindowRequestId ||
+        latest.history.kind === "disabled" ||
+        latest.history.loading !== null ||
+        latest.history.window === null
+      ) {
+        return [false, latest];
+      }
+      const history: EnvironmentThreadHistoryState = {
+        ...latest.history,
+        loading: "after",
+      };
+      return [
+        true,
+        {
+          ...latest,
+          history,
+        },
+      ];
     });
+    if (!startedLoading) {
+      return false;
+    }
     return yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
       const page = yield* snapshotLoader.loadNextMessages(
@@ -784,25 +846,30 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     if (item.kind === "snapshot") {
-      const snapshotTotalMessages =
-        item.snapshot.thread.messageHistory?.totalMessages ?? item.snapshot.thread.messages.length;
-      const cachedTotalMessages = yield* historyCache
-        .loadTotalMessages(environmentId, threadId)
-        .pipe(
-          Effect.catchTags({
-            ConnectionPersistenceError: (error) =>
-              Effect.logWarning("Could not inspect cached thread history.").pipe(
-                Effect.annotateLogs({
-                  environmentId,
-                  threadId,
-                  error: error.message,
-                }),
-                Effect.as(Option.none<number>()),
-              ),
-          }),
-        );
-      if (Option.isSome(cachedTotalMessages) && cachedTotalMessages.value > snapshotTotalMessages) {
+      if (item.snapshot.thread.messageHistory !== undefined) {
+        // A bounded snapshot may replace an event replay, so cached segments
+        // cannot be trusted to have survived an unseen revert.
+        latestHistoryWindowRequestId += 1;
+        latestAroundRequestId += 1;
         yield* clearHistoryCache();
+        const current = yield* SubscriptionRef.get(state);
+        const refreshOutline = current.history.kind === "ready";
+        yield* invalidateHistoryOutline;
+        yield* SubscriptionRef.update(state, (current) => {
+          const history: EnvironmentThreadHistoryState =
+            current.history.kind === "disabled"
+              ? current.history
+              : {
+                  kind: "ready",
+                  outline: null,
+                  window: null,
+                  loading: null,
+                };
+          return { ...current, history };
+        });
+        if (refreshOutline) {
+          yield* SubscriptionRef.update(historyOutlineRefreshes, (revision) => revision + 1);
+        }
       }
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
@@ -827,6 +894,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       const sentUserMessage =
         item.event.type === "thread.message-sent" && item.event.payload.role === "user";
       if (item.event.type === "thread.reverted") {
+        latestHistoryWindowRequestId += 1;
+        latestAroundRequestId += 1;
         yield* clearHistoryCache();
         const current = yield* SubscriptionRef.get(state);
         const refreshOutline = current.history.kind === "ready";
@@ -847,6 +916,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           yield* SubscriptionRef.update(historyOutlineRefreshes, (revision) => revision + 1);
         }
       } else if (sentUserMessage) {
+        latestHistoryWindowRequestId += 1;
+        latestAroundRequestId += 1;
         const current = yield* SubscriptionRef.get(state);
         const refreshOutline = current.history.kind === "ready";
         yield* invalidateHistoryOutline;

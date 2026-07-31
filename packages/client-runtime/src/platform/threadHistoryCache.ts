@@ -35,10 +35,6 @@ export class ThreadHistoryCacheStore extends Context.Reference<{
     messageId: MessageId,
     limit: number,
   ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ConnectionPersistenceError>;
-  readonly loadTotalMessages: (
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-  ) => Effect.Effect<Option.Option<number>, ConnectionPersistenceError>;
   readonly captureWriteToken: () => Effect.Effect<number>;
   readonly save: (
     environmentId: EnvironmentId,
@@ -59,7 +55,6 @@ export class ThreadHistoryCacheStore extends Context.Reference<{
     loadNext: (_environmentId, _threadId, _startIndex, limit) =>
       Effect.succeed({ page: Option.none(), requestLimit: limit }),
     loadAround: () => Effect.succeed(Option.none()),
-    loadTotalMessages: () => Effect.succeed(Option.none()),
     captureWriteToken: () => Effect.succeed(0),
     save: () => Effect.void,
     remove: () => Effect.void,
@@ -228,16 +223,6 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
           cached.page.messageHistory.startIndex +
           (turnStarts[startTurn + limit] ?? cached.page.messages.length);
         return Option.some(sliceHistoryPage(cached.page, startIndex, endIndex));
-      }),
-    loadTotalMessages: (environmentId, threadId) =>
-      Effect.sync(() => {
-        let totalMessages: number | null = null;
-        for (const [, cached] of pages.entries()) {
-          if (cached.environmentId === environmentId && cached.threadId === threadId) {
-            totalMessages = Math.max(totalMessages ?? 0, cached.page.messageHistory.totalMessages);
-          }
-        }
-        return Option.fromNullishOr(totalMessages);
       }),
     captureWriteToken: () => Effect.sync(() => activeWriteToken),
     save: (environmentId, threadId, page, writeToken) =>

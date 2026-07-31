@@ -528,11 +528,6 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
             thread.value.totalMessages,
           );
         }).pipe(Effect.mapError((cause) => persistenceError("load-thread-history", cause))),
-      loadTotalMessages: (environmentId, threadId) =>
-        loadThread(database, environmentId, threadId).pipe(
-          Effect.map(Option.map((thread) => thread.totalMessages)),
-          Effect.mapError((cause) => persistenceError("load-thread-history", cause)),
-        ),
       captureWriteToken: () => Effect.sync(() => activeWriteToken),
       save: (environmentId, threadId, page, writeToken) =>
         writeLock

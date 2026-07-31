@@ -73,7 +73,8 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - The web client keeps fetched thread-history rows in an unbounded, normalized sidecar IndexedDB
   cache. Messages, activities, and plans are stored once and reused for covered history ranges.
   Cached records are schema-decoded independently so large activity batches cannot stall on a
-  cooperative runtime yield.
+  cooperative runtime yield. An authoritative bounded snapshot clears cached segments because it
+  may replace an event replay that contained a thread revert.
 - The mobile client keeps recently fetched thread-history pages in a bounded, session-only
   in-memory LRU. It avoids repeat requests while browsing nearby segments without adding mobile
   database state or migrations.
