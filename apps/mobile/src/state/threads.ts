@@ -20,6 +20,7 @@ import { environmentSnapshotAtom } from "./shell";
 
 export const threadEnvironment = createThreadEnvironmentAtoms(connectionAtomRuntime);
 export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime, {
+  loadHistoryOutline: false,
   messagePagination: {
     enabled: () => {
       const preferences = appAtomRegistry.get(mobilePreferencesAtom);

@@ -77,7 +77,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   may replace an event replay that contained a thread revert.
 - The mobile client keeps recently fetched thread-history pages in a bounded, session-only
   in-memory LRU. It avoids repeat requests while browsing nearby segments without adding mobile
-  database state or migrations.
+  database state or migrations, and it does not request the web-only minimap outline.
 
 ### Goals UI
 

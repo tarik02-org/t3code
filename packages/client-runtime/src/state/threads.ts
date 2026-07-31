@@ -49,6 +49,7 @@ import {
 } from "./threadState.ts";
 
 export interface EnvironmentThreadStateOptions {
+  readonly loadHistoryOutline?: boolean;
   readonly messagePagination?: {
     readonly enabled: () => boolean;
     readonly changes?: Stream.Stream<boolean>;
@@ -276,6 +277,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   let latestHistoryOutlineRequestId = 0;
   let historyOutlineLoading = false;
   const loadHistoryOutline = Effect.gen(function* () {
+    if (options?.loadHistoryOutline === false) {
+      return;
+    }
     const current = yield* SubscriptionRef.get(state);
     if (current.history.kind === "disabled" || current.history.outline !== null) {
       return;
