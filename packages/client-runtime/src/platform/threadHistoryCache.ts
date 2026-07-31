@@ -39,10 +39,12 @@ export class ThreadHistoryCacheStore extends Context.Reference<{
     environmentId: EnvironmentId,
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<number>, ConnectionPersistenceError>;
+  readonly captureWriteToken: () => Effect.Effect<number>;
   readonly save: (
     environmentId: EnvironmentId,
     threadId: ThreadId,
     page: OrchestrationThreadHistoryPage,
+    writeToken: number,
   ) => Effect.Effect<void, ConnectionPersistenceError>;
   readonly remove: (
     environmentId: EnvironmentId,
@@ -58,6 +60,7 @@ export class ThreadHistoryCacheStore extends Context.Reference<{
       Effect.succeed({ page: Option.none(), requestLimit: limit }),
     loadAround: () => Effect.succeed(Option.none()),
     loadTotalMessages: () => Effect.succeed(Option.none()),
+    captureWriteToken: () => Effect.succeed(0),
     save: () => Effect.void,
     remove: () => Effect.void,
     clear: () => Effect.void,
@@ -119,6 +122,7 @@ function sliceHistoryPage(
 
 export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
   const pages = new LRUCache<CachedHistoryPage>(maxPages, maxPages);
+  let activeWriteToken = 0;
 
   return ThreadHistoryCacheStore.of({
     loadPrevious: (environmentId, threadId, endIndex, limit) =>
@@ -235,9 +239,10 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
         }
         return Option.fromNullishOr(totalMessages);
       }),
-    save: (environmentId, threadId, page) =>
+    captureWriteToken: () => Effect.sync(() => activeWriteToken),
+    save: (environmentId, threadId, page, writeToken) =>
       Effect.sync(() => {
-        if (page.messages.length === 0) {
+        if (writeToken !== activeWriteToken || page.messages.length === 0) {
           return;
         }
         const key = `${environmentId}:${threadId}:${page.messageHistory.startIndex}:${page.messageHistory.endIndex}`;
@@ -245,6 +250,7 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
       }),
     remove: (environmentId, threadId) =>
       Effect.sync(() => {
+        activeWriteToken += 1;
         for (const [key, cached] of pages.entries()) {
           if (cached.environmentId === environmentId && cached.threadId === threadId) {
             pages.delete(key);
@@ -253,12 +259,17 @@ export function makeInMemoryThreadHistoryCacheStore(maxPages: number) {
       }),
     clear: (environmentId) =>
       Effect.sync(() => {
+        activeWriteToken += 1;
         for (const [key, cached] of pages.entries()) {
           if (cached.environmentId === environmentId) {
             pages.delete(key);
           }
         }
       }),
-    clearAll: () => Effect.sync(() => pages.clear()),
+    clearAll: () =>
+      Effect.sync(() => {
+        activeWriteToken += 1;
+        pages.clear();
+      }),
   });
 }

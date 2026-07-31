@@ -84,8 +84,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const environmentId = supervisor.target.environmentId;
   const cacheHistoryPage = Effect.fn("EnvironmentThreadState.cacheHistoryPage")(function* (
     page: OrchestrationThreadHistoryPage,
+    writeToken: number,
   ) {
-    yield* historyCache.save(environmentId, threadId, page).pipe(
+    yield* historyCache.save(environmentId, threadId, page, writeToken).pipe(
       Effect.catchTags({
         ConnectionPersistenceError: (error) =>
           Effect.logWarning("Could not persist cached thread history.").pipe(
@@ -149,7 +150,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
   );
   const awaitingCompletion = yield* Ref.make(false);
-  const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
+  const persistence = yield* Queue.sliding<{
+    readonly snapshot: OrchestrationThreadDetailSnapshot;
+    readonly historyCacheWriteToken: number;
+  }>(1);
   const preparedConnection = SubscriptionRef.get(supervisor.prepared).pipe(
     Effect.flatMap(
       Option.match({
@@ -165,9 +169,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     ),
   );
 
-  const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
-    snapshot: OrchestrationThreadDetailSnapshot,
-  ) {
+  const persist = Effect.fn("EnvironmentThreadState.persist")(function* (input: {
+    readonly snapshot: OrchestrationThreadDetailSnapshot;
+    readonly historyCacheWriteToken: number;
+  }) {
+    const { snapshot } = input;
     yield* cache.saveThread(environmentId, snapshot).pipe(
       Effect.catch((error) =>
         Effect.logWarning("Could not persist the thread cache.").pipe(
@@ -181,16 +187,19 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
     const firstMessage = snapshot.thread.messages[0];
     if (snapshot.thread.messageHistory !== undefined && firstMessage !== undefined) {
-      yield* cacheHistoryPage({
-        messages: snapshot.thread.messages,
-        activities: snapshot.thread.activities.filter(
-          (activity) => activity.createdAt >= firstMessage.createdAt,
-        ),
-        proposedPlans: snapshot.thread.proposedPlans.filter(
-          (plan) => plan.createdAt >= firstMessage.createdAt,
-        ),
-        messageHistory: snapshot.thread.messageHistory,
-      });
+      yield* cacheHistoryPage(
+        {
+          messages: snapshot.thread.messages,
+          activities: snapshot.thread.activities.filter(
+            (activity) => activity.createdAt >= firstMessage.createdAt,
+          ),
+          proposedPlans: snapshot.thread.proposedPlans.filter(
+            (plan) => plan.createdAt >= firstMessage.createdAt,
+          ),
+          messageHistory: snapshot.thread.messageHistory,
+        },
+        input.historyCacheWriteToken,
+      );
     }
   });
 
@@ -256,31 +265,34 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // persist once it settles so cache encoding stays off the streaming path.
     if (shouldPersistThread(boundedThread)) {
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-      yield* Queue.offer(persistence, { snapshotSequence, thread: boundedThread });
+      const historyCacheWriteToken = yield* historyCache.captureWriteToken();
+      yield* Queue.offer(persistence, {
+        snapshot: { snapshotSequence, thread: boundedThread },
+        historyCacheWriteToken,
+      });
     }
   });
 
+  let latestHistoryOutlineRequestId = 0;
+  let historyOutlineLoading = false;
   const loadHistoryOutline = Effect.gen(function* () {
     const current = yield* SubscriptionRef.get(state);
-    if (
-      current.history.kind === "disabled" ||
-      current.history.outline !== null ||
-      current.history.loading !== null
-    ) {
+    if (current.history.kind === "disabled" || current.history.outline !== null) {
       return;
     }
-    yield* SubscriptionRef.set(state, {
-      ...current,
-      history: { ...current.history, loading: "outline" },
-    });
+    if (historyOutlineLoading) {
+      return;
+    }
+    historyOutlineLoading = true;
+    const requestId = ++latestHistoryOutlineRequestId;
     yield* Effect.gen(function* () {
       const prepared = yield* preparedConnection;
       const outline = yield* snapshotLoader.loadHistoryOutline(prepared, threadId);
-      if (Option.isNone(outline)) {
+      if (Option.isNone(outline) || requestId !== latestHistoryOutlineRequestId) {
         return;
       }
       yield* SubscriptionRef.update(state, (latest) =>
-        latest.history.kind === "disabled" || latest.history.loading !== "outline"
+        latest.history.kind === "disabled"
           ? latest
           : {
               ...latest,
@@ -289,21 +301,22 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       );
     }).pipe(
       Effect.ensuring(
-        SubscriptionRef.update(state, (latest) =>
-          latest.history.kind === "ready" && latest.history.loading === "outline"
-            ? {
-                ...latest,
-                history: { ...latest.history, loading: null },
-              }
-            : latest,
-        ),
+        Effect.sync(() => {
+          if (requestId === latestHistoryOutlineRequestId) {
+            historyOutlineLoading = false;
+          }
+        }),
       ),
     );
   });
 
+  const invalidateHistoryOutline = Effect.sync(() => {
+    latestHistoryOutlineRequestId += 1;
+    historyOutlineLoading = false;
+  });
+
   let latestHistoryWindowRequestId = 0;
   const loadPreviousMessages = Effect.gen(function* () {
-    const requestId = ++latestHistoryWindowRequestId;
     const current = yield* SubscriptionRef.get(state);
     const currentLiveThread = yield* Ref.get(liveThread);
     if (
@@ -324,6 +337,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     ) {
       return false;
     }
+    const requestId = ++latestHistoryWindowRequestId;
+    const historyCacheWriteToken = yield* historyCache.captureWriteToken();
 
     const historyLookup = yield* historyCache
       .loadPrevious(environmentId, threadId, sourceHistory.startIndex, THREAD_TURN_PAGE_SIZE)
@@ -456,7 +471,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
-      yield* Effect.forkIn(cacheHistoryPage(page.value), scope);
+      yield* Effect.forkIn(cacheHistoryPage(page.value, historyCacheWriteToken), scope);
       return true;
     }).pipe(
       Effect.ensuring(
@@ -473,7 +488,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   });
 
   const loadNextMessages = Effect.gen(function* () {
-    const requestId = ++latestHistoryWindowRequestId;
     const current = yield* SubscriptionRef.get(state);
     const currentLiveThread = yield* Ref.get(liveThread);
     const window = current.history.kind === "ready" ? current.history.window : null;
@@ -488,6 +502,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     ) {
       return false;
     }
+    const requestId = ++latestHistoryWindowRequestId;
+    const historyCacheWriteToken = yield* historyCache.captureWriteToken();
 
     const historyLookup = yield* historyCache
       .loadNext(environmentId, threadId, window.messageHistory.endIndex, THREAD_TURN_PAGE_SIZE)
@@ -577,7 +593,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         data: Option.some(displayThreadHistory(latestLiveThread.value, history)),
         history,
       });
-      yield* Effect.forkIn(cacheHistoryPage(page.value), scope);
+      yield* Effect.forkIn(cacheHistoryPage(page.value, historyCacheWriteToken), scope);
       return true;
     }).pipe(
       Effect.ensuring(
@@ -603,6 +619,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       if (requestId !== latestAroundRequestId) {
         return false;
       }
+      const historyCacheWriteToken = yield* historyCache.captureWriteToken();
 
       const current = yield* SubscriptionRef.get(state);
       if (current.history.kind === "disabled") {
@@ -671,7 +688,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         history,
       });
       if (Option.isNone(cachedPage)) {
-        yield* Effect.forkIn(cacheHistoryPage(page.value), scope);
+        yield* Effect.forkIn(cacheHistoryPage(page.value, historyCacheWriteToken), scope);
       }
       return true;
     }).pipe(
@@ -714,7 +731,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     const history: EnvironmentThreadHistoryState = {
       ...current.history,
       window: null,
-      loading: current.history.loading === "outline" ? "outline" : null,
+      loading: null,
     };
     yield* SubscriptionRef.set(state, {
       ...current,
@@ -812,8 +829,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       if (item.event.type === "thread.reverted") {
         yield* clearHistoryCache();
         const current = yield* SubscriptionRef.get(state);
-        const refreshOutline =
-          current.history.kind === "ready" && current.history.loading !== "outline";
+        const refreshOutline = current.history.kind === "ready";
+        yield* invalidateHistoryOutline;
         yield* SubscriptionRef.update(state, (current) => {
           const history: EnvironmentThreadHistoryState =
             current.history.kind === "disabled"
@@ -822,7 +839,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                   kind: "ready",
                   outline: null,
                   window: null,
-                  loading: current.history.loading === "outline" ? "outline" : null,
+                  loading: null,
                 };
           return { ...current, history };
         });
@@ -831,8 +848,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
       } else if (sentUserMessage) {
         const current = yield* SubscriptionRef.get(state);
-        const refreshOutline =
-          current.history.kind === "ready" && current.history.loading !== "outline";
+        const refreshOutline = current.history.kind === "ready";
+        yield* invalidateHistoryOutline;
         yield* SubscriptionRef.update(state, (current) => {
           const history: EnvironmentThreadHistoryState =
             current.history.kind === "disabled"
@@ -841,7 +858,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                   ...current.history,
                   outline: null,
                   window: null,
-                  loading: current.history.loading === "outline" ? "outline" : null,
+                  loading: null,
                 };
           return { ...current, history };
         });
@@ -1003,7 +1020,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         Option.match(currentLiveThread, {
           onNone: () => Effect.void,
           onSome: (thread) =>
-            shouldPersistThread(thread) ? persist({ snapshotSequence, thread }) : Effect.void,
+            shouldPersistThread(thread)
+              ? historyCache.captureWriteToken().pipe(
+                  Effect.flatMap((historyCacheWriteToken) =>
+                    persist({
+                      snapshot: { snapshotSequence, thread },
+                      historyCacheWriteToken,
+                    }),
+                  ),
+                )
+              : Effect.void,
         }),
       ),
     ),

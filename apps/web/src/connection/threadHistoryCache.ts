@@ -411,6 +411,7 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
       Effect.sync(() => database.close()),
     );
     const writeLock = yield* Semaphore.make(1);
+    let activeWriteToken = 0;
 
     return ThreadHistoryCacheStore.of({
       loadPrevious: (environmentId, threadId, endIndex, limit) =>
@@ -532,11 +533,12 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
           Effect.map(Option.map((thread) => thread.totalMessages)),
           Effect.mapError((cause) => persistenceError("load-thread-history", cause)),
         ),
-      save: (environmentId, threadId, page) =>
+      captureWriteToken: () => Effect.sync(() => activeWriteToken),
+      save: (environmentId, threadId, page, writeToken) =>
         writeLock
           .withPermits(1)(
             Effect.gen(function* () {
-              if (page.messages.length === 0) {
+              if (writeToken !== activeWriteToken || page.messages.length === 0) {
                 return;
               }
               const scope = threadScope(environmentId, threadId);
@@ -629,65 +631,84 @@ export const makeWebThreadHistoryCacheStore = Effect.fn("web.threadHistoryCache.
           )
           .pipe(Effect.mapError((cause) => persistenceError("save-thread-history", cause))),
       remove: (environmentId, threadId) =>
-        Effect.all(
-          [
-            removeValue(database, THREAD_STORE_NAME, threadScope(environmentId, threadId)),
-            removeValuesInRange(
-              database,
-              MESSAGE_STORE_NAME,
-              IDBKeyRange.bound(
-                [threadScope(environmentId, threadId), 0],
-                [threadScope(environmentId, threadId), Number.MAX_SAFE_INTEGER],
-              ),
-            ),
-            removeValuesInRange(
-              database,
-              ACTIVITY_STORE_NAME,
-              IDBKeyRange.bound(
-                [threadScope(environmentId, threadId)],
-                [threadScope(environmentId, threadId), "\uffff"],
-              ),
-            ),
-            removeValuesInRange(
-              database,
-              PLAN_STORE_NAME,
-              IDBKeyRange.bound(
-                [threadScope(environmentId, threadId)],
-                [threadScope(environmentId, threadId), "\uffff"],
-              ),
-            ),
-          ],
-          { concurrency: "unbounded", discard: true },
-        ).pipe(Effect.mapError((cause) => persistenceError("remove-thread", cause))),
+        writeLock
+          .withPermits(1)(
+            Effect.gen(function* () {
+              activeWriteToken += 1;
+              yield* Effect.all(
+                [
+                  removeValue(database, THREAD_STORE_NAME, threadScope(environmentId, threadId)),
+                  removeValuesInRange(
+                    database,
+                    MESSAGE_STORE_NAME,
+                    IDBKeyRange.bound(
+                      [threadScope(environmentId, threadId), 0],
+                      [threadScope(environmentId, threadId), Number.MAX_SAFE_INTEGER],
+                    ),
+                  ),
+                  removeValuesInRange(
+                    database,
+                    ACTIVITY_STORE_NAME,
+                    IDBKeyRange.bound(
+                      [threadScope(environmentId, threadId)],
+                      [threadScope(environmentId, threadId), "\uffff"],
+                    ),
+                  ),
+                  removeValuesInRange(
+                    database,
+                    PLAN_STORE_NAME,
+                    IDBKeyRange.bound(
+                      [threadScope(environmentId, threadId)],
+                      [threadScope(environmentId, threadId), "\uffff"],
+                    ),
+                  ),
+                ],
+                { concurrency: "unbounded", discard: true },
+              );
+            }),
+          )
+          .pipe(Effect.mapError((cause) => persistenceError("remove-thread", cause))),
       clear: (environmentId) =>
-        Effect.all(
-          [
-            removeValuesInRange(
-              database,
-              THREAD_STORE_NAME,
-              IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
-            ),
-            removeValuesInRange(
-              database,
-              MESSAGE_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-            removeValuesInRange(
-              database,
-              ACTIVITY_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-            removeValuesInRange(
-              database,
-              PLAN_STORE_NAME,
-              IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
-            ),
-          ],
-          { concurrency: "unbounded", discard: true },
-        ).pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
+        writeLock
+          .withPermits(1)(
+            Effect.gen(function* () {
+              activeWriteToken += 1;
+              yield* Effect.all(
+                [
+                  removeValuesInRange(
+                    database,
+                    THREAD_STORE_NAME,
+                    IDBKeyRange.bound(`${environmentId}:`, `${environmentId}:\uffff`),
+                  ),
+                  removeValuesInRange(
+                    database,
+                    MESSAGE_STORE_NAME,
+                    IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
+                  ),
+                  removeValuesInRange(
+                    database,
+                    ACTIVITY_STORE_NAME,
+                    IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
+                  ),
+                  removeValuesInRange(
+                    database,
+                    PLAN_STORE_NAME,
+                    IDBKeyRange.bound([`${environmentId}:`], [`${environmentId}:\uffff`]),
+                  ),
+                ],
+                { concurrency: "unbounded", discard: true },
+              );
+            }),
+          )
+          .pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
       clearAll: () =>
         writeLock
-          .withPermits(1)(clearDatabase(database))
+          .withPermits(1)(
+            Effect.gen(function* () {
+              activeWriteToken += 1;
+              yield* clearDatabase(database);
+            }),
+          )
           .pipe(Effect.mapError((cause) => persistenceError("clear-thread-history", cause))),
     });
   },

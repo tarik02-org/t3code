@@ -13,7 +13,7 @@ export type EnvironmentThreadHistoryState =
       readonly kind: "ready";
       readonly outline: OrchestrationThreadHistoryOutline | null;
       readonly window: OrchestrationThreadHistoryPage | null;
-      readonly loading: "outline" | "before" | "after" | "around" | null;
+      readonly loading: "before" | "after" | "around" | null;
     };
 
 export interface EnvironmentThreadState {
