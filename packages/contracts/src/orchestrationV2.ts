@@ -35,6 +35,7 @@ import {
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { OrchestrationThreadGoal, ThreadGoalRequest } from "./orchestration.ts";
 import {
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -300,6 +301,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
+  goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
@@ -1046,6 +1048,11 @@ export const OrchestrationV2DomainEvent = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("thread.goal-updated"),
+    payload: Schema.Struct({ goal: Schema.NullOr(OrchestrationThreadGoal) }),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("run.created"),
     payload: OrchestrationV2Run,
   }),
@@ -1206,6 +1213,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
+  goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -1752,6 +1760,11 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("thread.goal-updated"),
+    payload: Schema.Struct({ goal: Schema.NullOr(OrchestrationThreadGoal) }),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("run.created"),
     payload: OrchestrationV2RunJson,
   }),
@@ -1956,6 +1969,12 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     modelSelection: ModelSelection,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.goal.request"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    request: ThreadGoalRequest,
   }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),

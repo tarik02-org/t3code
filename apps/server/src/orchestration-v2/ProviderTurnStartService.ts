@@ -7,6 +7,7 @@ import {
   type OrchestrationV2RunAttempt,
   RunId,
   ThreadId,
+  type ThreadGoalRequest,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -33,13 +34,27 @@ export class ProviderTurnStartError extends Schema.TaggedErrorClass<ProviderTurn
   },
 ) {}
 
+export class ProviderThreadGoalRequestError extends Schema.TaggedErrorClass<ProviderThreadGoalRequestError>()(
+  "ProviderThreadGoalRequestError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
+const isProviderThreadGoalRequestError = Schema.is(ProviderThreadGoalRequestError);
 
 export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
   }) => Effect.Effect<void, ProviderTurnStartError>;
+  readonly requestGoal?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThreadId: OrchestrationV2ProviderThread["id"];
+    readonly request: ThreadGoalRequest;
+  }) => Effect.Effect<void, ProviderThreadGoalRequestError>;
 }
 
 export class ProviderTurnStartServiceV2 extends Context.Service<
@@ -474,6 +489,114 @@ export const layer: Layer.Layer<
       });
     });
 
+    const requestGoal = Effect.fn("orchestrationV2.providerTurnStart.requestGoal")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly providerThreadId: OrchestrationV2ProviderThread["id"];
+        readonly request: ThreadGoalRequest;
+      }) {
+        const projection = yield* projectionStore.getOperationalProjection(input.threadId);
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === input.providerThreadId,
+        );
+        if (providerThread === undefined || providerThread.providerSessionId === null) {
+          return yield* new ProviderThreadGoalRequestError({
+            threadId: input.threadId,
+            cause: `Provider thread ${input.providerThreadId} is unavailable.`,
+          });
+        }
+
+        const providerSessionId = providerThread.providerSessionId;
+        const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+          thread: projection.thread,
+          modelSelection: projection.thread.modelSelection,
+        });
+        const existingSessionProjection = projection.providerSessions.find(
+          (candidate) => candidate.id === providerSessionId,
+        );
+        const session = yield* providerSessions.open({
+          threadId: input.threadId,
+          providerSessionId,
+          modelSelection: projection.thread.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+          ...(existingSessionProjection === undefined
+            ? {}
+            : { resumeFromSession: existingSessionProjection }),
+        });
+        const loadedProviderThread =
+          providerThread.nativeThreadRef === null
+            ? yield* session.ensureThread({
+                threadId: input.threadId,
+                modelSelection: projection.thread.modelSelection,
+                runtimePolicy: resolvedRuntimePolicy,
+                providerSessionId,
+              })
+            : yield* session.resumeThread({
+                providerThread,
+                threadId: input.threadId,
+                modelSelection: projection.thread.modelSelection,
+                runtimePolicy: resolvedRuntimePolicy,
+              });
+        const now = yield* DateTime.now;
+        const persistedProviderThread: OrchestrationV2ProviderThread = {
+          ...loadedProviderThread,
+          id: providerThread.id,
+          driver: session.driver,
+          providerInstanceId: projection.thread.providerInstanceId,
+          providerSessionId,
+          appThreadId: input.threadId,
+          ownerNodeId: providerThread.ownerNodeId,
+          firstRunOrdinal: providerThread.firstRunOrdinal,
+          lastRunOrdinal: providerThread.lastRunOrdinal,
+          handoffIds: providerThread.handoffIds,
+          forkedFrom: providerThread.forkedFrom,
+          status: "idle",
+          createdAt: providerThread.createdAt,
+          updatedAt: now,
+        };
+        const requestThreadGoal = session.requestThreadGoal;
+        if (requestThreadGoal === undefined) {
+          return yield* new ProviderThreadGoalRequestError({
+            threadId: input.threadId,
+            cause: `${session.driver} does not support thread goals.`,
+          });
+        }
+        const goal = yield* requestThreadGoal({
+          providerThread: persistedProviderThread,
+          request: input.request,
+        });
+        const occurredAt = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({
+                threadId: input.threadId,
+                providerSessionId,
+              }),
+              type: "provider-thread.updated",
+              threadId: input.threadId,
+              driver: session.driver,
+              providerInstanceId: projection.thread.providerInstanceId,
+              occurredAt,
+              payload: { ...persistedProviderThread, updatedAt: occurredAt },
+            },
+            {
+              id: yield* idAllocator.allocate.event({
+                threadId: input.threadId,
+                providerSessionId,
+              }),
+              type: "thread.goal-updated",
+              threadId: input.threadId,
+              driver: session.driver,
+              providerInstanceId: projection.thread.providerInstanceId,
+              occurredAt,
+              payload: { goal },
+            },
+          ],
+        });
+      },
+    );
+
     return ProviderTurnStartServiceV2.of({
       start: (input) =>
         start(input).pipe(
@@ -481,6 +604,14 @@ export const layer: Layer.Layer<
             isProviderTurnStartError(cause)
               ? cause
               : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
+      requestGoal: (input) =>
+        requestGoal(input).pipe(
+          Effect.mapError((cause) =>
+            isProviderThreadGoalRequestError(cause)
+              ? cause
+              : new ProviderThreadGoalRequestError({ threadId: input.threadId, cause }),
           ),
         ),
     });

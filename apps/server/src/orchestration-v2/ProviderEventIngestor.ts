@@ -230,6 +230,14 @@ export const layer: Layer.Layer<ProviderEventIngestorV2, never, EventSinkV2 | Id
                   nodeId: input.event.plan.nodeId,
                 }),
               ];
+            case "thread_goal.updated":
+              return [
+                yield* makeDomainEvent(input, {
+                  type: "thread.goal-updated",
+                  threadId: input.event.threadId,
+                  payload: { goal: input.event.goal },
+                }),
+              ];
             case "turn.terminal":
               if (input.event.status !== "failed") {
                 return [];

@@ -12,6 +12,7 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  ThreadGoalRequest,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -73,6 +74,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     answers: Schema.optional(ProviderUserInputAnswers),
   }),
   Schema.Struct({
+    type: Schema.Literal("thread-goal.request"),
+    providerThreadId: ProviderThreadId,
+    request: ThreadGoalRequest,
+  }),
+  Schema.Struct({
     type: Schema.Literal("provider-thread.rollback"),
     providerThreadId: ProviderThreadId,
     checkpointId: CheckpointId,
@@ -107,6 +113,7 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.steer",
   "provider-turn.restart",
   "runtime-request.respond",
+  "thread-goal.request",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const OrchestrationEffectStatusV2 = Schema.Literals([

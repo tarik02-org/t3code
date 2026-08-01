@@ -18,6 +18,7 @@ import {
   type RuntimeMode,
   type RuntimeRequestId,
   type ThreadId,
+  type ThreadGoalRequest,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -66,6 +67,10 @@ export interface CreateThreadInput extends CommandMetadata {
 
 export interface ThreadCommandInput extends CommandMetadata {
   readonly threadId: ThreadId;
+}
+
+export interface RequestThreadGoalInput extends ThreadCommandInput {
+  readonly request: ThreadGoalRequest;
 }
 
 export type DeleteThreadInput = ThreadCommandInput;
@@ -766,14 +771,13 @@ export const editQueuedRun = Effect.fn("EnvironmentCommands.editQueuedRun")(func
   });
 });
 
-export const requestThreadGoal: (input: RequestThreadGoalInput) => CommandEffect = Effect.fn(
-  "EnvironmentCommands.requestThreadGoal",
-)(function* (input) {
-  const metadata = yield* timestampedCommandMetadata(input);
+export const requestThreadGoal = Effect.fn("EnvironmentCommands.requestThreadGoal")(function* (
+  input: RequestThreadGoalInput,
+) {
   return yield* dispatch({
-    ...input,
     type: "thread.goal.request",
-    commandId: metadata.commandId,
-    createdAt: metadata.createdAt,
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    request: input.request,
   });
 });

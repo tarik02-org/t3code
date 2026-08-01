@@ -233,6 +233,32 @@ export const executorLayer: Layer.Layer<
                     }),
                 ),
               );
+          case "thread-goal.request": {
+            const requestGoal = providerTurnStart.requestGoal;
+            if (requestGoal === undefined) {
+              return Effect.fail(
+                new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause: "Thread goal execution is unavailable.",
+                }),
+              );
+            }
+            return requestGoal({
+              threadId: effect.threadId,
+              providerThreadId: effect.request.providerThreadId,
+              request: effect.request.request,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "provider-thread.rollback":
             return checkpointRollback
               .execute({

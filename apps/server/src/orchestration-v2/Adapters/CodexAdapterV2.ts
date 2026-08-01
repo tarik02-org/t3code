@@ -18,6 +18,7 @@ import type {
   OrchestrationV2PlanStep,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
+  OrchestrationThreadGoal,
   OrchestrationV2TurnItem,
   ProviderUserInputAnswers,
   ProviderApprovalDecision,
@@ -83,6 +84,7 @@ import {
   ProviderAdapterResumeThreadError,
   ProviderAdapterRollbackThreadError,
   ProviderAdapterRuntimeRequestResponseError,
+  ProviderAdapterThreadGoalRequestError,
   ProviderAdapterSteerRunError,
   ProviderAdapterTurnStartError,
   ProviderAdapterV2,
@@ -240,6 +242,20 @@ function codexTimestamp(seconds: number | null | undefined): DateTime.Utc {
   return seconds === null || seconds === undefined
     ? DateTime.nowUnsafe()
     : DateTime.makeUnsafe(seconds * 1000);
+}
+
+function threadGoalFromCodex(
+  goal: CodexSchema.V2ThreadGoalUpdatedNotification__ThreadGoal,
+): OrchestrationThreadGoal {
+  return {
+    objective: goal.objective,
+    status: goal.status,
+    tokensUsed: goal.tokensUsed,
+    tokenBudget: goal.tokenBudget ?? null,
+    timeUsedSeconds: goal.timeUsedSeconds,
+    createdAt: DateTime.formatIso(codexTimestamp(goal.createdAt)),
+    updatedAt: DateTime.formatIso(codexTimestamp(goal.updatedAt)),
+  };
 }
 
 function codexUserMessageText(
@@ -3088,6 +3104,36 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           }),
         );
 
+        yield* client.handleServerNotification("thread/goal/updated", (payload) =>
+          Effect.gen(function* () {
+            const context = yield* findActiveTurnByNativeThreadId(payload.threadId);
+            if (context === undefined) {
+              return;
+            }
+            yield* emitProviderEvent({
+              type: "thread_goal.updated",
+              driver: CODEX_PROVIDER,
+              threadId: context.projectionThreadId,
+              goal: threadGoalFromCodex(payload.goal),
+            });
+          }).pipe(Effect.orDie),
+        );
+
+        yield* client.handleServerNotification("thread/goal/cleared", (payload) =>
+          Effect.gen(function* () {
+            const context = yield* findActiveTurnByNativeThreadId(payload.threadId);
+            if (context === undefined) {
+              return;
+            }
+            yield* emitProviderEvent({
+              type: "thread_goal.updated",
+              driver: CODEX_PROVIDER,
+              threadId: context.projectionThreadId,
+              goal: null,
+            });
+          }).pipe(Effect.orDie),
+        );
+
         yield* client.handleServerNotification("item/plan/delta", (payload) =>
           Effect.gen(function* () {
             const context = yield* awaitActiveTurn(payload.turnId);
@@ -4385,6 +4431,45 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     providerSessionId: input.providerSessionId,
                     providerThreadId: threadInput.providerThread.id,
                     cause: normalizeCodexCause(cause),
+                  }),
+              ),
+            ),
+          requestThreadGoal: (goalInput) =>
+            Effect.gen(function* () {
+              const threadId = yield* getNativeThreadId(goalInput.providerThread);
+              yield* ensureInitialized;
+              switch (goalInput.request.kind) {
+                case "status": {
+                  const response = yield* client.request("thread/goal/get", { threadId });
+                  return response.goal == null ? null : threadGoalFromCodex(response.goal);
+                }
+                case "set": {
+                  const response = yield* client.request("thread/goal/set", {
+                    threadId,
+                    objective: goalInput.request.objective,
+                    status: "active",
+                  });
+                  return threadGoalFromCodex(response.goal);
+                }
+                case "control": {
+                  if (goalInput.request.action === "clear") {
+                    yield* client.request("thread/goal/clear", { threadId });
+                    return null;
+                  }
+                  const response = yield* client.request("thread/goal/set", {
+                    threadId,
+                    status: goalInput.request.action === "pause" ? "paused" : "active",
+                  });
+                  return threadGoalFromCodex(response.goal);
+                }
+              }
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterThreadGoalRequestError({
+                    driver: CODEX_PROVIDER,
+                    providerThreadId: goalInput.providerThread.id,
+                    cause,
                   }),
               ),
             ),

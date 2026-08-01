@@ -367,6 +367,8 @@ export function routeProviderEvent(
       return [ownsRun(event.turnItem.runId) || ownsChildThread(event.turnItem.threadId), state];
     case "plan.updated":
       return [ownsRun(event.plan.runId) || ownsChildThread(event.plan.threadId), state];
+    case "thread_goal.updated":
+      return [ownsThread(event.threadId), state];
     case "runtime_request.updated":
       return [
         (event.threadId !== undefined && ownsChildThread(event.threadId)) ||

@@ -17,6 +17,7 @@ import {
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
   OrchestrationV2TurnItem,
+  OrchestrationThreadGoal,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -31,6 +32,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  ThreadGoalRequest,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
@@ -124,6 +126,12 @@ export const ProviderAdapterV2Event = Schema.Union([
     type: Schema.Literal("plan.updated"),
     driver: ProviderDriverKind,
     plan: OrchestrationV2PlanArtifact,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread_goal.updated"),
+    driver: ProviderDriverKind,
+    threadId: ThreadId,
+    goal: Schema.NullOr(OrchestrationThreadGoal),
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
@@ -324,6 +332,19 @@ export class ProviderAdapterRuntimeRequestResponseError extends Schema.TaggedErr
   }
 }
 
+export class ProviderAdapterThreadGoalRequestError extends Schema.TaggedErrorClass<ProviderAdapterThreadGoalRequestError>()(
+  "ProviderAdapterThreadGoalRequestError",
+  {
+    driver: ProviderDriverKind,
+    providerThreadId: ProviderThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to update the goal for ${this.driver} provider thread ${this.providerThreadId}.`;
+  }
+}
+
 export class ProviderAdapterEventStreamError extends Schema.TaggedErrorClass<ProviderAdapterEventStreamError>()(
   "ProviderAdapterEventStreamError",
   {
@@ -364,6 +385,7 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterSteerRunError,
   ProviderAdapterInterruptError,
   ProviderAdapterRuntimeRequestResponseError,
+  ProviderAdapterThreadGoalRequestError,
   ProviderAdapterEventStreamError,
   ProviderAdapterProtocolError,
 ]);
@@ -419,6 +441,11 @@ export interface ProviderAdapterV2RuntimeRequestResponseInput {
   readonly decision?: ProviderApprovalDecision;
   readonly answers?: ProviderUserInputAnswers;
   readonly response?: unknown;
+}
+
+export interface ProviderAdapterV2ThreadGoalRequestInput {
+  readonly providerThread: OrchestrationV2ProviderThread;
+  readonly request: ThreadGoalRequest;
 }
 
 export interface ProviderAdapterV2ThreadSnapshot {
@@ -506,6 +533,9 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly requestThreadGoal?: (
+    input: ProviderAdapterV2ThreadGoalRequestInput,
+  ) => Effect.Effect<OrchestrationThreadGoal | null, ProviderAdapterV2Error>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;

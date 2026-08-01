@@ -101,12 +101,6 @@ export const ProviderInterruptTurnInput = Schema.Struct({
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
-export const ProviderGoalRequestInput = Schema.Struct({
-  threadId: ThreadId,
-  request: ThreadGoalRequest,
-});
-export type ProviderGoalRequestInput = typeof ProviderGoalRequestInput.Type;
-
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,
 });

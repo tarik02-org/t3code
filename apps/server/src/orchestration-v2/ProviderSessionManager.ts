@@ -1133,6 +1133,7 @@ export const layerWithOptions = (
       ): ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
         const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const requestThreadGoal = runtime.requestThreadGoal;
         return {
           ...runtime,
           subscribeEvents,
@@ -1259,6 +1260,14 @@ export const layerWithOptions = (
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(runtime.respondToRuntimeRequest(input)),
             ),
+          ...(requestThreadGoal === undefined
+            ? {}
+            : {
+                requestThreadGoal: (input) =>
+                  observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
+                    Effect.andThen(requestThreadGoal(input)),
+                  ),
+              }),
         };
       };
 

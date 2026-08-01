@@ -315,6 +315,7 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const projectEnrichment = yield* ProjectEnrichmentService;
+  const projectionThreadGoalRepository = yield* ProjectionThreadGoalRepository;
   const getAvailableRepositoryIdentities = Effect.fn(
     "ProjectionSnapshotQuery.getAvailableRepositoryIdentities",
   )(function* (
@@ -1714,6 +1715,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                         interactionMode: row.interactionMode,
                         branch: row.branch,
                         worktreePath: row.worktreePath,
+                        goal: row.goal,
                         latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                         createdAt: row.createdAt,
                         updatedAt: row.updatedAt,

@@ -247,6 +247,11 @@ export function applyToProjection(
         ...projection,
         thread: event.payload,
       };
+    case "thread.goal-updated":
+      return {
+        ...base,
+        thread: { ...base.thread, goal: event.payload.goal },
+      };
     case "run.created":
     case "run.updated":
       return withLocalVisibleTurnItems({
@@ -860,6 +865,7 @@ export function threadShellFromProjection(
     lineage: projection.thread.lineage,
     forkedFrom: projection.thread.forkedFrom,
     activeProviderThreadId: projection.thread.activeProviderThreadId,
+    goal: projection.thread.goal ?? null,
     ...(projection.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: projection.thread.historyOrigin }),
@@ -1031,6 +1037,7 @@ function shellFromState(input: {
     lineage: input.state.thread.lineage,
     forkedFrom: input.state.thread.forkedFrom,
     activeProviderThreadId: input.state.thread.activeProviderThreadId,
+    goal: input.state.thread.goal ?? null,
     ...(input.state.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: input.state.thread.historyOrigin }),
@@ -1146,6 +1153,32 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 deleted_at = excluded.deleted_at,
                 payload_json = excluded.payload_json
             `;
+            break;
+          }
+          case "thread.goal-updated": {
+            const rows = yield* sql<PayloadRow>`
+              SELECT payload_json
+              FROM orchestration_v2_projection_threads
+              WHERE thread_id = ${event.threadId}
+              LIMIT 1
+            `;
+            const row = rows[0];
+            if (row !== undefined) {
+              const thread = yield* decodeThreadPayload(row.payload_json);
+              const updatedThread = {
+                ...thread,
+                goal: event.payload.goal,
+                updatedAt: event.occurredAt,
+              };
+              const payloadJson = yield* encodeThreadPayload(updatedThread);
+              yield* sql`
+                UPDATE orchestration_v2_projection_threads
+                SET
+                  updated_at = ${stringField(parseEncodedPayload(payloadJson), "updatedAt")},
+                  payload_json = ${payloadJson}
+                WHERE thread_id = ${event.threadId}
+              `;
+            }
             break;
           }
           case "run.created":

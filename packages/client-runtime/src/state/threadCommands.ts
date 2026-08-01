@@ -212,6 +212,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    requestGoal: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:request-goal",
+      execute: (input: RequestThreadGoalInput) => requestThreadGoal(input),
+      scheduler,
+      concurrency,
+    }),
     forkFromRun: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:fork-from-run",
       execute: (input: ForkThreadFromRunInput) => forkThreadFromRun(input),

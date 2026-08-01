@@ -202,6 +202,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
+    case "thread.goal.request":
     case "provider-session.detach":
     case "message.dispatch":
     case "prepared-run.release":
@@ -906,6 +907,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
+      goal: null,
       lineage: {
         parentThreadId: null,
         relationshipToParent: null,
@@ -1424,6 +1426,117 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
   });
+
+  const dispatchThreadGoalRequest = Effect.fn("orchestrationV2.dispatch.threadGoalRequest")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "thread.goal.request" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} is not active.`,
+        });
+      }
+      const adapter = yield* providerAdapters.get(projection.thread.providerInstanceId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorProviderAdapterError({
+              commandId: command.commandId,
+              providerInstanceId: projection.thread.providerInstanceId,
+              cause,
+            }),
+        ),
+      );
+      if (adapter.driver !== "codex") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `${adapter.driver} does not support thread goals.`,
+        });
+      }
+
+      const activeProviderThread = projection.providerThreads.find(
+        (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+      );
+      const existingProviderThread =
+        activeProviderThread?.providerInstanceId === projection.thread.providerInstanceId
+          ? activeProviderThread
+          : projection.providerThreads.findLast(
+              (candidate) =>
+                candidate.appThreadId === command.threadId &&
+                candidate.providerInstanceId === projection.thread.providerInstanceId,
+            );
+      const providerSessionId =
+        existingProviderThread?.providerSessionId ??
+        (yield* mapDispatchError(command)(
+          providerSessionIdFor({
+            adapter,
+            providerInstanceId: projection.thread.providerInstanceId,
+            threadId: command.threadId,
+          }),
+        ));
+      const now = yield* DateTime.now;
+      const providerThread: OrchestrationV2ProviderThread =
+        existingProviderThread === undefined
+          ? {
+              id: idAllocator.derive.providerThread({
+                driver: adapter.driver,
+                nativeThreadId: `pending:goal:${command.commandId}`,
+              }),
+              driver: adapter.driver,
+              providerInstanceId: projection.thread.providerInstanceId,
+              providerSessionId,
+              appThreadId: command.threadId,
+              ownerNodeId: null,
+              nativeThreadRef: null,
+              nativeConversationHeadRef: null,
+              status: "not_loaded",
+              firstRunOrdinal: null,
+              lastRunOrdinal: null,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+            }
+          : {
+              ...existingProviderThread,
+              providerSessionId,
+              status:
+                existingProviderThread.providerSessionId === null
+                  ? "not_loaded"
+                  : existingProviderThread.status,
+              updatedAt: now,
+            };
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "provider-thread.updated",
+        threadId: command.threadId,
+        driver: adapter.driver,
+        providerInstanceId: projection.thread.providerInstanceId,
+        occurredAt: now,
+        payload: providerThread,
+      });
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:thread-goal.request:${providerThread.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: {
+            type: "thread-goal.request",
+            providerThreadId: providerThread.id,
+            request: command.request,
+          },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    },
+  );
 
   const dispatchProviderSessionDetach = Effect.fn("orchestrationV2.dispatch.providerSessionDetach")(
     function* (
@@ -5756,6 +5869,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.model-selection.set":
       case "provider.switch":
         yield* dispatchThreadMutation(command, events, effects);
+        break;
+      case "thread.goal.request":
+        yield* dispatchThreadGoalRequest(command, events, effects);
         break;
       case "provider-session.detach":
         yield* dispatchProviderSessionDetach(command, events, effects);
