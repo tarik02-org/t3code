@@ -4,11 +4,31 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import { autoUpdater } from "electron-updater";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import {
+  AppImageUpdater,
+  MacUpdater,
+  NsisUpdater,
+  type AppUpdater,
+  type UpdateDownloadedEvent,
+} from "electron-updater";
 
-type AutoUpdater = typeof autoUpdater;
+import { makeInstallUnsignedMacUpdate } from "./installUnsignedMacUpdate.ts";
 
-export type ElectronUpdaterFeedUrl = Parameters<AutoUpdater["setFeedURL"]>[0];
+export type ElectronUpdaterFeedUrl = Parameters<AppUpdater["setFeedURL"]>[0];
+
+function createUpdater(platform: NodeJS.Platform): AppUpdater {
+  switch (platform) {
+    case "linux":
+      return new AppImageUpdater();
+    case "darwin":
+      return new MacUpdater();
+    case "win32":
+      return new NsisUpdater();
+    default:
+      throw new Error(`Unsupported desktop update platform: ${platform}`);
+  }
+}
 
 export class ElectronUpdaterCheckForUpdatesError extends Schema.TaggedErrorClass<ElectronUpdaterCheckForUpdatesError>()(
   "ElectronUpdaterCheckForUpdatesError",
@@ -81,92 +101,125 @@ export class ElectronUpdater extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronUpdater") {}
 
-export const make = ElectronUpdater.of({
-  setFeedURL: (options) =>
-    Effect.suspend(() => {
-      autoUpdater.setFeedURL(options);
-      return Effect.void;
-    }),
-  setAutoDownload: (value) =>
-    Effect.suspend(() => {
-      autoUpdater.autoDownload = value;
-      return Effect.void;
-    }),
-  setAutoInstallOnAppQuit: (value) =>
-    Effect.suspend(() => {
-      autoUpdater.autoInstallOnAppQuit = value;
-      return Effect.void;
-    }),
-  setChannel: (channel) =>
-    Effect.suspend(() => {
-      autoUpdater.channel = channel;
-      return Effect.void;
-    }),
-  setAllowPrerelease: (value) =>
-    Effect.suspend(() => {
-      autoUpdater.allowPrerelease = value;
-      return Effect.void;
-    }),
-  allowDowngrade: Effect.sync(() => autoUpdater.allowDowngrade),
-  setAllowDowngrade: (value) =>
-    Effect.suspend(() => {
-      autoUpdater.allowDowngrade = value;
-      return Effect.void;
-    }),
-  setFullChangelog: (value) =>
-    Effect.suspend(() => {
-      autoUpdater.fullChangelog = value;
-      return Effect.void;
-    }),
-  setDisableDifferentialDownload: (value) =>
-    Effect.suspend(() => {
-      autoUpdater.disableDifferentialDownload = value;
-      return Effect.void;
-    }),
-  checkForUpdates: Effect.suspend(() => {
-    const channel = autoUpdater.channel;
-    return Effect.tryPromise({
-      try: () => autoUpdater.checkForUpdates(),
-      catch: (cause) => new ElectronUpdaterCheckForUpdatesError({ channel, cause }),
-    }).pipe(Effect.asVoid);
-  }),
-  downloadUpdate: Effect.suspend(() => {
-    const channel = autoUpdater.channel;
-    return Effect.tryPromise({
-      try: () => autoUpdater.downloadUpdate(),
-      catch: (cause) => new ElectronUpdaterDownloadUpdateError({ channel, cause }),
-    }).pipe(Effect.asVoid);
-  }),
-  quitAndInstall: ({ isSilent, isForceRunAfter }) =>
-    Effect.suspend(() => {
-      const channel = autoUpdater.channel;
-      return Effect.try({
-        try: () => autoUpdater.quitAndInstall(isSilent, isForceRunAfter),
-        catch: (cause) =>
-          new ElectronUpdaterQuitAndInstallError({
-            channel,
-            isSilent,
-            isForceRunAfter,
-            cause,
-          }),
-      });
-    }),
-  on: (eventName, listener) => {
-    const eventTarget = autoUpdater as unknown as {
-      on: (eventName: string, listener: (...args: Array<unknown>) => void) => void;
-      removeListener: (eventName: string, listener: (...args: Array<unknown>) => void) => void;
-    };
-    const untypedListener = listener as unknown as (...args: Array<unknown>) => void;
-    return Effect.acquireRelease(
-      Effect.sync(() => {
-        eventTarget.on(eventName, untypedListener);
+export const make = Effect.gen(function* () {
+  const installUnsignedMacUpdate = yield* makeInstallUnsignedMacUpdate();
+  const platform = yield* HostProcessPlatform;
+  const updater = createUpdater(platform);
+  let downloadedUpdatePath: string | undefined;
+  updater.on("update-downloaded", (event: UpdateDownloadedEvent) => {
+    downloadedUpdatePath = event.downloadedFile;
+  });
+
+  return ElectronUpdater.of({
+    setFeedURL: (options) =>
+      Effect.suspend(() => {
+        updater.setFeedURL(options);
+        return Effect.void;
       }),
-      () =>
+    setAutoDownload: (value) =>
+      Effect.suspend(() => {
+        updater.autoDownload = value;
+        return Effect.void;
+      }),
+    setAutoInstallOnAppQuit: (value) =>
+      Effect.suspend(() => {
+        updater.autoInstallOnAppQuit = value;
+        return Effect.void;
+      }),
+    setChannel: (channel) =>
+      Effect.suspend(() => {
+        updater.channel = channel;
+        return Effect.void;
+      }),
+    setAllowPrerelease: (value) =>
+      Effect.suspend(() => {
+        updater.allowPrerelease = value;
+        return Effect.void;
+      }),
+    allowDowngrade: Effect.sync(() => updater.allowDowngrade),
+    setAllowDowngrade: (value) =>
+      Effect.suspend(() => {
+        updater.allowDowngrade = value;
+        return Effect.void;
+      }),
+    setFullChangelog: (value) =>
+      Effect.suspend(() => {
+        updater.fullChangelog = value;
+        return Effect.void;
+      }),
+    setDisableDifferentialDownload: (value) =>
+      Effect.suspend(() => {
+        updater.disableDifferentialDownload = value;
+        return Effect.void;
+      }),
+    checkForUpdates: Effect.suspend(() => {
+      const channel = updater.channel;
+      return Effect.tryPromise({
+        try: () => updater.checkForUpdates(),
+        catch: (cause) => new ElectronUpdaterCheckForUpdatesError({ channel, cause }),
+      }).pipe(Effect.asVoid);
+    }),
+    downloadUpdate: Effect.suspend(() => {
+      const channel = updater.channel;
+      return Effect.tryPromise({
+        try: () => updater.downloadUpdate(),
+        catch: (cause) => new ElectronUpdaterDownloadUpdateError({ channel, cause }),
+      }).pipe(Effect.asVoid);
+    }),
+    quitAndInstall: ({ isSilent, isForceRunAfter }) =>
+      Effect.suspend(() => {
+        const channel = updater.channel;
+        if (platform === "darwin") {
+          if (downloadedUpdatePath === undefined) {
+            return Effect.fail(
+              new ElectronUpdaterQuitAndInstallError({
+                channel,
+                isSilent,
+                isForceRunAfter,
+                cause: new Error("Downloaded macOS update path is unavailable."),
+              }),
+            );
+          }
+          return installUnsignedMacUpdate(downloadedUpdatePath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ElectronUpdaterQuitAndInstallError({
+                  channel,
+                  isSilent,
+                  isForceRunAfter,
+                  cause,
+                }),
+            ),
+          );
+        }
+        return Effect.try({
+          try: () => updater.quitAndInstall(isSilent, isForceRunAfter),
+          catch: (cause) =>
+            new ElectronUpdaterQuitAndInstallError({
+              channel,
+              isSilent,
+              isForceRunAfter,
+              cause,
+            }),
+        });
+      }),
+    on: (eventName, listener) => {
+      const eventTarget = updater as unknown as {
+        on: (eventName: string, listener: (...args: Array<unknown>) => void) => void;
+        removeListener: (eventName: string, listener: (...args: Array<unknown>) => void) => void;
+      };
+      const untypedListener = listener as unknown as (...args: Array<unknown>) => void;
+      return Effect.acquireRelease(
         Effect.sync(() => {
-          eventTarget.removeListener(eventName, untypedListener);
+          eventTarget.on(eventName, untypedListener);
         }),
-    ).pipe(Effect.asVoid);
-  },
+        () =>
+          Effect.sync(() => {
+            eventTarget.removeListener(eventName, untypedListener);
+          }),
+      ).pipe(Effect.asVoid);
+    },
+  });
 });
 
-export const layer = Layer.succeed(ElectronUpdater, make);
+export const layer = Layer.effect(ElectronUpdater, make);
