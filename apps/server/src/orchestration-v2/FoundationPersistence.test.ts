@@ -1645,7 +1645,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           contextHandoffId: null,
         },
       } satisfies OrchestrationV2DomainEvent;
-      const items = Array.from({ length: 151 }, (_, index) => ({
+      const items = Array.from({ length: 301 }, (_, index) => ({
         id: TurnItemId.make(`turn-item:foundation-many-items:${index}`),
         threadId,
         runId,
@@ -1689,8 +1689,8 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       const beforeUpdate = yield* projectionStore.getThreadProjection(threadId);
       assert.equal(beforeUpdate.thread.activeProviderThreadId, providerThreadId);
       const ordinals = beforeUpdate.turnItems.map((item) => item.ordinal);
-      assert.lengthOf(ordinals, 151);
-      assert.equal(new Set(ordinals).size, 151);
+      assert.lengthOf(ordinals, 301);
+      assert.equal(new Set(ordinals).size, 301);
       assert.isTrue(ordinals.every((ordinal) => ordinal > 1_000_000));
       assert.isTrue(
         ordinals.every((ordinal, index) => index === 0 || ordinal > ordinals[index - 1]!),
@@ -1716,7 +1716,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       yield* sql`
         UPDATE orchestration_v2_projection_turn_items
         SET payload_json = '{}'
-        WHERE turn_item_id = ${items[75]!.id}
+        WHERE turn_item_id = ${beforeUpdate.turnItems[275]!.id}
       `;
       const broken = yield* maintenance.verify;
       assert.isFalse(broken.valid);
@@ -1724,7 +1724,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
 
       const rebuilt = yield* maintenance.rebuild;
       assert.isTrue(rebuilt.valid);
-      assert.lengthOf((yield* projectionStore.getThreadProjection(threadId)).turnItems, 151);
+      assert.lengthOf((yield* projectionStore.getThreadProjection(threadId)).turnItems, 301);
     }),
   );
 });

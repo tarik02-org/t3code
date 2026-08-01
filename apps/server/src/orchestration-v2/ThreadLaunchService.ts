@@ -165,7 +165,7 @@ export const make = Effect.gen(function* () {
     threadId: ThreadId,
   ) {
     const projection = yield* threads
-      .getThreadProjection(threadId)
+      .getOperationalProjection(threadId)
       .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
     if (
       projection.thread.projectId !== input.projectId ||
@@ -535,7 +535,7 @@ export const make = Effect.gen(function* () {
               const preparationStillRequired =
                 runId === null
                   ? true
-                  : yield* threads.getThreadProjection(threadId).pipe(
+                  : yield* threads.getOperationalProjection(threadId).pipe(
                       Effect.map((current) =>
                         current.runs.some((run) => run.id === runId && run.status === "preparing"),
                       ),
