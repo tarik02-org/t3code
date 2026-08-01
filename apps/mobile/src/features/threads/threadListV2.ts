@@ -121,8 +121,29 @@ export function resolveThreadListV2Enabled(input: {
   return input.preference ?? true;
 }
 
+/**
+ * Completed-but-not-yet-seen, mirroring the web sidebar's
+ * hasUnseenCompletion. The visited watermark is server state
+ * (thread.lastVisitedAt), so the marker agrees across web and mobile.
+ * Never-visited threads count as read — a fresh environment must not light
+ * up its whole history — and pre-tracking servers (field absent) never
+ * report unread.
+ */
+export function threadHasUnseenCompletion(
+  thread: Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt">,
+): boolean {
+  const completedAt = thread.latestRun?.completedAt;
+  if (!completedAt) return false;
+  const completedAtMs = Date.parse(completedAt);
+  if (Number.isNaN(completedAtMs)) return false;
+  if (!thread.lastVisitedAt) return false;
+  const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);
+  if (Number.isNaN(lastVisitedAtMs)) return true;
+  return completedAtMs > lastVisitedAtMs;
+}
+
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session">,
+  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "runtime">,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals) {
     return "approval";
@@ -130,10 +151,13 @@ export function resolveThreadListV2Status(
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  if (
+    thread.runtime !== null &&
+    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.runtime.status)
+  ) {
     return "working";
   }
-  if (thread.session?.status === "error") {
+  if (thread.runtime?.status === "failed") {
     return "failed";
   }
   return "ready";
@@ -356,6 +380,7 @@ export function buildThreadListV2Items(input: {
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   for (const thread of input.threads) {
+    if (thread.lineage.relationshipToParent === "subagent") continue;
     // Callers pass live (unarchived) shells; settled threads are among them
     // and partition into the tail via effectiveSettled.
     if (input.environmentId !== null && thread.environmentId !== input.environmentId) continue;

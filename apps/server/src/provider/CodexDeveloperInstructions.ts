@@ -1,5 +1,7 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
+import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "./T3OrchestrationInstructions.ts";
+
 const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## T3 Code collaborative browser
@@ -142,6 +144,7 @@ Your active mode changes only when new developer instructions with a different \
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, use the \`request_user_input\` tool when it is available. Otherwise, ask the user directly with a concise plain-text question. Never write a multiple-choice question as a textual assistant message.
 ${T3_CODE_BROWSER_TOOL_INSTRUCTIONS}
+${T3_CODE_ORCHESTRATION_INSTRUCTIONS}
 </collaboration_mode>`;
 
 export interface CodexRuntimeInfo {
