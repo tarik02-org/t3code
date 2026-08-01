@@ -902,6 +902,11 @@ interface PendingCodexSubagentTurnStarted {
   readonly startedAt: DateTime.Utc;
 }
 
+interface PendingCodexRootTurn {
+  readonly turnInput: ProviderAdapterV2TurnInput;
+  readonly started: Deferred.Deferred<ActiveCodexTurnContext, never>;
+}
+
 type PendingCodexRuntimeRequest =
   | {
       readonly type: "approval";
@@ -1473,7 +1478,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         });
         const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
-        const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        const pendingRootTurns = yield* Ref.make(new Map<string, PendingCodexRootTurn>());
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const pendingSubagentTurns = yield* Ref.make(
@@ -3215,11 +3220,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
             if (pendingRootTurn !== undefined) {
-              yield* registerRootTurn({
-                turnInput: pendingRootTurn,
+              const rootTurn = yield* registerRootTurn({
+                turnInput: pendingRootTurn.turnInput,
                 nativeTurnId: payload.turn.id,
                 startedAt: codexTimestamp(payload.turn.startedAt),
               });
+              yield* Deferred.succeed(pendingRootTurn.started, rootTurn);
               yield* Ref.update(pendingRootTurns, (current) => {
                 const updated = new Map(current);
                 updated.delete(payload.threadId);
@@ -4486,20 +4492,21 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 hasT3Mcp:
                   McpProviderSession.readMcpProviderSession(turnInput.threadId) !== undefined,
               });
+              const turnStarted = yield* Deferred.make<ActiveCodexTurnContext>();
               yield* Ref.update(pendingRootTurns, (current) => {
                 const updated = new Map(current);
-                updated.set(threadId, turnInput);
+                updated.set(threadId, { turnInput, started: turnStarted });
                 return updated;
               });
               const started = yield* client.request("turn/start", turnStartParams);
-              const nativeTurnId = started.turn.id;
-              const startedAt = codexTimestamp(started.turn.startedAt);
-              yield* registerRootTurn({ turnInput, nativeTurnId, startedAt });
-              yield* Ref.update(pendingRootTurns, (current) => {
-                const updated = new Map(current);
-                updated.delete(threadId);
-                return updated;
-              });
+              const rootTurn = yield* Deferred.await(turnStarted);
+              if (started.turn.id !== rootTurn.nativeTurnId) {
+                yield* Effect.logWarning("orchestration-v2.codex-turn-id-mismatch", {
+                  nativeThreadId: threadId,
+                  responseNativeTurnId: started.turn.id,
+                  notificationNativeTurnId: rootTurn.nativeTurnId,
+                });
+              }
             }).pipe(
               Effect.ensuring(
                 Effect.flatMap(getNativeThreadId(turnInput.providerThread), (threadId) =>
