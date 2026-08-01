@@ -809,16 +809,6 @@ export const WsOrchestrationV2SubscribeThreadRpc = Rpc.make(
   },
 );
 
-export const WsOrchestrationSubscribeThreadWithDeltaRpc = Rpc.make(
-  ORCHESTRATION_WS_METHODS.subscribeThreadWithDelta,
-  {
-    payload: OrchestrationRpcSchemas.subscribeThread.input,
-    success: OrchestrationThreadDeltaStreamItem,
-    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
-    stream: true,
-  },
-);
-
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
   payload: Schema.Struct({}),
   success: TerminalEvent,

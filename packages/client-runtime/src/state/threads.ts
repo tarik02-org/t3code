@@ -20,7 +20,7 @@ import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
-import { subscribeDynamicRequest } from "../rpc/client.ts";
+import { subscribeDynamic } from "../rpc/client.ts";
 import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
@@ -185,11 +185,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationV2ThreadStreamItem,
   ) {
-    if (item.kind === "not-found") {
-      yield* setDeleted();
-      return;
-    }
-
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
@@ -258,7 +253,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           Effect.map((config) => config.threadResumeCompletionMarker === true),
           Effect.orElseSucceed(() => false),
         );
-        const supportsCompletionMarker = subscriptionCapabilities.completionMarker;
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
@@ -300,14 +294,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
 
         return {
-          tag: subscriptionCapabilities.threadDeltaSubscription
-            ? ORCHESTRATION_WS_METHODS.subscribeThreadWithDelta
-            : ORCHESTRATION_WS_METHODS.subscribeThread,
-          input: {
-            threadId,
-            ...(canResume ? { afterSequence: sequence } : {}),
-            ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
-          },
+          threadId,
+          ...(canResume ? { afterSequence: sequence } : {}),
+          ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
         };
       }),
       {
