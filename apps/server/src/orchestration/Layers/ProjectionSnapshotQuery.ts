@@ -1631,6 +1631,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
             listActiveThreadRows(undefined).pipe(
+              Effect.flatMap(withThreadGoals),
               Effect.mapError(
                 toPersistenceSqlOrDecodeError(
                   "ProjectionSnapshotQuery.getShellSnapshot:listThreads:query",

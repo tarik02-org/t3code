@@ -6,6 +6,7 @@ import {
   type ProviderReplayTranscript,
   type ThreadId,
 } from "@t3tools/contracts";
+import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -566,6 +567,7 @@ function makeReplayServerConfig(
       host: undefined,
       cwd: process.cwd(),
       baseDir,
+      basePath: ROOT_BASE_PATH,
       staticDir: undefined,
       devUrl: undefined,
       devAllowedOrigins: [],
@@ -578,6 +580,7 @@ function makeReplayServerConfig(
       logWebSocketEvents: false,
       stateDir,
       dbPath: path.join(stateDir, "state.sqlite"),
+      forkDbPath: path.join(stateDir, "state-tarik02.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
       providerStatusCacheDir,

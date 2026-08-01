@@ -1,13 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
+import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
-import type { MigrationError } from "effect/unstable/sql/Migrator";
-import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -56,6 +54,12 @@ import {
   type OrchestratorV2Scenario,
   type OrchestratorV2ScenarioResult,
 } from "./OrchestratorScenario.ts";
+
+type ReplayDatabaseLayer = Layer.Layer<
+  Layer.Success<typeof SqlitePersistenceMemory>,
+  Layer.Error<typeof SqlitePersistenceMemory>
+>;
+type ReplayDatabaseError = Layer.Error<typeof SqlitePersistenceMemory>;
 
 export function makeReplayServerConfig(
   scenario: string,
@@ -107,6 +111,7 @@ export function makeReplayServerConfig(
       host: undefined,
       cwd: process.cwd(),
       baseDir,
+      basePath: ROOT_BASE_PATH,
       staticDir: undefined,
       devUrl: undefined,
       devAllowedOrigins: [],
@@ -119,6 +124,7 @@ export function makeReplayServerConfig(
       logWebSocketEvents: false,
       stateDir,
       dbPath: path.join(stateDir, "state.sqlite"),
+      forkDbPath: path.join(stateDir, "state-tarik02.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
       providerStatusCacheDir,
@@ -165,21 +171,13 @@ export function runOrchestratorV2ProviderReplayScenario<
   scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
   harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
   options: {
-    readonly databaseLayer?: Layer.Layer<
-      SqlClient.SqlClient,
-      MigrationError | PlatformError.PlatformError | SqlError
-    >;
+    readonly databaseLayer?: ReplayDatabaseLayer;
     readonly enableAssistantStreaming?: boolean;
     readonly runEffectWorker?: boolean;
   } = {},
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
-  | OrchestratorV2Error
-  | OrchestratorV2ScenarioStepError
-  | Error
-  | MigrationError
-  | PlatformError.PlatformError
-  | SqlError,
+  OrchestratorV2Error | OrchestratorV2ScenarioStepError | Error | ReplayDatabaseError,
   never
 > {
   const layer = makeOrchestratorV2ProviderReplayLayer(scenario, harness, options);
@@ -194,14 +192,11 @@ export function makeOrchestratorV2ProviderReplayLayer<
   scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
   harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
   options: {
-    readonly databaseLayer?: Layer.Layer<
-      SqlClient.SqlClient,
-      MigrationError | PlatformError.PlatformError | SqlError
-    >;
+    readonly databaseLayer?: ReplayDatabaseLayer;
     readonly enableAssistantStreaming?: boolean;
     readonly runEffectWorker?: boolean;
   } = {},
-): Layer.Layer<OrchestratorV2, Error | MigrationError | PlatformError.PlatformError | SqlError> {
+): Layer.Layer<OrchestratorV2, Error | ReplayDatabaseError> {
   const registryLayer = harness.makeProviderAdapterRegistryLayer(scenario.transcript);
   return makeOrchestratorV2ReplayLayerWithRegistry(scenario, registryLayer, options);
 }
@@ -210,14 +205,11 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<ProviderAdapterRegistryV2, Error>,
   options: {
-    readonly databaseLayer?: Layer.Layer<
-      SqlClient.SqlClient,
-      MigrationError | PlatformError.PlatformError | SqlError
-    >;
+    readonly databaseLayer?: ReplayDatabaseLayer;
     readonly enableAssistantStreaming?: boolean;
     readonly runEffectWorker?: boolean;
   } = {},
-): Layer.Layer<OrchestratorV2, Error | MigrationError | PlatformError.PlatformError | SqlError> {
+): Layer.Layer<OrchestratorV2, Error | ReplayDatabaseError> {
   const serverConfigLayer = Layer.effect(
     ServerConfig,
     makeReplayServerConfig(scenario.name).pipe(Effect.orDie),

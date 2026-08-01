@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type ProviderReplayTranscript } from "@t3tools/contracts";
+import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import * as Effect from "effect/Effect";
@@ -104,6 +105,7 @@ export function makeReplayServerConfig(
       host: undefined,
       cwd: process.cwd(),
       baseDir,
+      basePath: ROOT_BASE_PATH,
       staticDir: undefined,
       devUrl: undefined,
       devAllowedOrigins: [],
@@ -116,6 +118,7 @@ export function makeReplayServerConfig(
       logWebSocketEvents: false,
       stateDir,
       dbPath: path.join(stateDir, "state.sqlite"),
+      forkDbPath: path.join(stateDir, "state-tarik02.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
       providerStatusCacheDir,

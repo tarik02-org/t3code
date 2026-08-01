@@ -15,6 +15,7 @@ import {
   PortSchema,
 } from "@t3tools/contracts";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
+import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
 import {
   buildTailscaleHttpsBaseUrl,
   DEFAULT_TAILSCALE_SERVE_PORT,
@@ -337,6 +338,7 @@ const makePairServerConfig = Effect.fn(function* (input: {
     host: state.host,
     cwd: process.cwd(),
     baseDir,
+    basePath: ROOT_BASE_PATH,
     ...derivedPaths,
     staticDir: undefined,
     devUrl,

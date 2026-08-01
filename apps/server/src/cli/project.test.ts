@@ -7,6 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { EnvironmentInternalError } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
+import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
@@ -51,6 +52,7 @@ const makeConfig = (baseDir: string) =>
       host: "127.0.0.1",
       cwd: process.cwd(),
       baseDir,
+      basePath: ROOT_BASE_PATH,
       ...derivedPaths,
       staticDir: undefined,
       devUrl: undefined,
