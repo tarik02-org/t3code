@@ -1,3 +1,5 @@
+import * as DateTime from "effect/DateTime";
+
 interface SettlementRunLike {
   readonly turnId?: unknown;
   readonly assistantMessageId?: unknown;
@@ -360,7 +362,7 @@ function snoozeTimeOfDayLabel(date: Date): string {
 }
 
 function snoozeAtHour(base: Date, hour: number): Date {
-  const next = new Date(base);
+  const next = DateTime.toDate(DateTime.makeUnsafe(base));
   next.setHours(hour, 0, 0, 0);
   return next;
 }
@@ -369,7 +371,7 @@ function snoozeAtHour(base: Date, hour: number): Date {
 // land on the wrong local day across DST transitions (a spring-forward day
 // is 23 hours, so 23:30 + 24h skips the whole next day).
 function addSnoozeDays(base: Date, days: number): Date {
-  const next = new Date(base);
+  const next = DateTime.toDate(DateTime.makeUnsafe(base));
   next.setDate(next.getDate() + days);
   return next;
 }
@@ -380,7 +382,7 @@ function addSnoozeDays(base: Date, days: number): Date {
  * starts at "Tomorrow".
  */
 export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
-  const inAnHour = new Date(now.getTime() + HOUR_MS);
+  const inAnHour = DateTime.makeUnsafe(now).pipe(DateTime.add({ hours: 1 }), DateTime.toDate);
   const presets: SnoozePreset[] = [
     {
       id: "hour",
