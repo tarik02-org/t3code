@@ -708,6 +708,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
+    case "goal": {
+      const bg = b as typeof a;
+      return a.createdAt === bg.createdAt && a.label === bg.label && a.detail === bg.detail;
+    }
+
     case "event":
       return a.projectedItem === (b as typeof a).projectedItem;
 

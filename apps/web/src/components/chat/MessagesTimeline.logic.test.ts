@@ -1117,7 +1117,7 @@ describe("deriveMessagesTimelineRows", () => {
             id: "assistant-latest" as never,
             role: "assistant",
             text: "Still working.",
-            turnId: "turn-1" as never,
+            runId: "turn-1" as never,
             createdAt: "2026-01-01T00:00:12Z",
             updatedAt: "2026-01-01T00:00:13Z",
             streaming: false,

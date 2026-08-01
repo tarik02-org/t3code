@@ -18,6 +18,7 @@ import { useEnvironmentQuery } from "../state/query";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { vcsEnvironment } from "../state/vcs";
 import { useUiStateStore } from "../uiStateStore";
+import { goalStatusToastTitle } from "../goalPresentation";
 import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
 import {
   resolveThreadLastVisitedAt,

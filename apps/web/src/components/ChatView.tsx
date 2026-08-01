@@ -5028,7 +5028,7 @@ function ChatViewContent(props: ChatViewProps) {
           failure = createResult;
         }
       } else {
-        if (activeThread.messages.length === 0 && goalSlashCommand.kind === "set") {
+        if ((serverProjection?.messages.length ?? 0) === 0 && goalSlashCommand.kind === "set") {
           const titleResult = await updateThreadMetadata({
             environmentId,
             input: {
@@ -6559,6 +6559,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeProposedPlan={activeProposedPlan}
                             activePlan={activePlan}
                             sidebarProposedPlan={sidebarProposedPlan}
+                            activeGoal={activeThread.goal !== null}
                             planSidebarLabel={planSidebarLabel}
                             planSidebarOpen={planSidebarOpen}
                             runtimeMode={runtimeMode}

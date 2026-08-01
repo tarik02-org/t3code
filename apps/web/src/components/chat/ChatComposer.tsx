@@ -566,6 +566,7 @@ export interface ChatComposerProps {
   activeProposedPlan: LatestProposedPlanState | null;
   activePlan: { runId?: RunId | null } | null;
   sidebarProposedPlan: { runId?: RunId | null } | null;
+  activeGoal: boolean;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
 

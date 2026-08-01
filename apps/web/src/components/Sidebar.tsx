@@ -191,6 +191,7 @@ import {
   buildMultiSelectThreadContextMenuItems,
   getSidebarForkParentThreadId,
   getSidebarThreadIdsToPrewarm,
+  getVisibleThreadsForProject,
   isSidebarSubagentThread,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
