@@ -88,6 +88,7 @@ import {
   OrchestrationV2ProductionLayerLive,
   ProjectSetupScriptRunnerLayerLive,
 } from "./orchestration-v2/runtimeLayer.ts";
+import { OrchestrationInfrastructureLayerLive } from "./orchestration/runtimeLayer.ts";
 import * as ResourceCleanupService from "./orchestration-v2/ResourceCleanupService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
@@ -207,6 +208,11 @@ const PlatformServicesLive = Layer.unwrap(
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
+const ProjectLaunchEnvLayerLive = ProjectLaunchEnvLive.pipe(
+  Layer.provideMerge(OrchestrationInfrastructureLayerLive),
+  Layer.provideMerge(PersistenceLayerLive),
+);
+
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
 );
@@ -258,6 +264,14 @@ const VcsLayerLive = Layer.empty.pipe(
 
 const CheckpointStoreLayerLive = CheckpointStore.layer.pipe(
   Layer.provide(VcsDriverRegistryLayerLive),
+);
+
+const PortScannerLayerLive = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
+
+const TerminalLayerLive = TerminalManager.layer.pipe(
+  Layer.provide(PtyAdapterLive),
+  Layer.provide(PortScannerLayerLive),
+  Layer.provide(ProjectLaunchEnvLayerLive),
 );
 
 const PreviewLayerLive = Layer.empty.pipe(
