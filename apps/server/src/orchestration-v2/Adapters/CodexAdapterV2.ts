@@ -4626,68 +4626,74 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 }),
               );
               if (bufferedRootTurns.length > 1) {
-                const ambiguousNativeTurnIds = new Set(
-                  bufferedRootTurns.map((turn) => turn.nativeTurnId),
-                );
-                const runningAmbiguousTurns = bufferedRootTurns.filter(
-                  (turn) => turn.state === "running",
-                );
-                yield* Ref.update(terminalizedNonCompletedNativeTurns, (current) => {
-                  const updated = new Set(current);
-                  for (const turn of runningAmbiguousTurns) {
-                    updated.add(turn.nativeTurnId);
+                const ambiguousNativeTurnIds = new Set<string>();
+                let pendingAmbiguousTurns = bufferedRootTurns;
+                while (pendingAmbiguousTurns.length > 0) {
+                  for (const turn of pendingAmbiguousTurns) {
+                    ambiguousNativeTurnIds.add(turn.nativeTurnId);
                   }
-                  return updated;
-                });
-                const interrupted = yield* Effect.forEach(
-                  runningAmbiguousTurns,
-                  (turn) =>
-                    client
-                      .request("turn/interrupt", {
-                        threadId,
-                        turnId: turn.nativeTurnId,
-                      })
-                      .pipe(
-                        Effect.catch((cause) =>
-                          Effect.logWarning(
-                            "orchestration-v2.codex-ambiguous-root-turn-interrupt-failed",
-                            {
-                              nativeThreadId: threadId,
-                              nativeTurnId: turn.nativeTurnId,
-                              providerThreadId: turnInput.providerThread.id,
-                              runId: turnInput.runId,
-                              cause,
-                            },
+                  const runningAmbiguousTurns = pendingAmbiguousTurns.filter(
+                    (turn) => turn.state === "running",
+                  );
+                  yield* Ref.update(terminalizedNonCompletedNativeTurns, (current) => {
+                    const updated = new Set(current);
+                    for (const turn of runningAmbiguousTurns) {
+                      updated.add(turn.nativeTurnId);
+                    }
+                    return updated;
+                  });
+                  const interrupted = yield* Effect.forEach(
+                    runningAmbiguousTurns,
+                    (turn) =>
+                      client
+                        .request("turn/interrupt", {
+                          threadId,
+                          turnId: turn.nativeTurnId,
+                        })
+                        .pipe(
+                          Effect.catch((cause) =>
+                            Effect.logWarning(
+                              "orchestration-v2.codex-ambiguous-root-turn-interrupt-failed",
+                              {
+                                nativeThreadId: threadId,
+                                nativeTurnId: turn.nativeTurnId,
+                                providerThreadId: turnInput.providerThread.id,
+                                runId: turnInput.runId,
+                                cause,
+                              },
+                            ),
                           ),
                         ),
-                      ),
-                  { concurrency: "unbounded", discard: true },
-                ).pipe(Effect.timeoutOption("10 seconds"));
-                if (Option.isNone(interrupted)) {
-                  yield* Effect.logWarning(
-                    "orchestration-v2.codex-ambiguous-root-turn-interrupt-timeout",
-                    {
-                      nativeThreadId: threadId,
-                      nativeTurnIds: Array.from(ambiguousNativeTurnIds),
-                      providerThreadId: turnInput.providerThread.id,
-                      runId: turnInput.runId,
-                    },
+                    { concurrency: "unbounded", discard: true },
+                  ).pipe(Effect.timeoutOption("10 seconds"));
+                  if (Option.isNone(interrupted)) {
+                    yield* Effect.logWarning(
+                      "orchestration-v2.codex-ambiguous-root-turn-interrupt-timeout",
+                      {
+                        nativeThreadId: threadId,
+                        nativeTurnIds: runningAmbiguousTurns.map((turn) => turn.nativeTurnId),
+                        providerThreadId: turnInput.providerThread.id,
+                        runId: turnInput.runId,
+                      },
+                    );
+                  }
+                  pendingAmbiguousTurns = yield* turnTerminalizationPermit.withPermits(1)(
+                    Ref.modify(rootThreadStarts, (current) => {
+                      const pending = current.get(threadId);
+                      if (pending === undefined) {
+                        return [[], current];
+                      }
+                      const updated = new Map(current);
+                      updated.set(threadId, []);
+                      return [
+                        pending.filter((turn) => !ambiguousNativeTurnIds.has(turn.nativeTurnId)),
+                        updated,
+                      ];
+                    }),
                   );
                 }
-                yield* Ref.update(rootThreadStarts, (current) => {
-                  const pending = current.get(threadId);
-                  if (pending === undefined) {
-                    return current;
-                  }
-                  const updated = new Map(current);
-                  updated.set(
-                    threadId,
-                    pending.filter((turn) => !ambiguousNativeTurnIds.has(turn.nativeTurnId)),
-                  );
-                  return updated;
-                });
                 return yield* toProtocolError(
-                  `Codex emitted ${bufferedRootTurns.length} unmatched root turns for native thread ${threadId}`,
+                  `Codex emitted ${ambiguousNativeTurnIds.size} unmatched root turns for native thread ${threadId}`,
                 );
               }
               const bufferedRootTurn = bufferedRootTurns[0];
