@@ -40,6 +40,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Stable-version pushes wait for the matching release to finish so tag-based version resolution advances past the published version.
 - Release build jobs skip relay client tracing config because the relay config job is disabled.
 - Release builds publish updater metadata against the fork repository.
+- Unsigned macOS updates replace the installed app bundle with a detached helper instead of using Squirrel.Mac installation.
 - Fork stable release versions use date-based `YYYY.M.DDSS` numbers without build metadata. Release PRs commit them before release artifacts are built and tagged.
 - macOS release signing is separate from Apple notarization.
 - Self-signed macOS signing certificates are trusted during release builds.
