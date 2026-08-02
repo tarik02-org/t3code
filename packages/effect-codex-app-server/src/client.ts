@@ -1,7 +1,9 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
@@ -98,6 +100,11 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
 ): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
   const requestHandlers = new Map<string, ServerRequestHandler>();
   const notificationHandlers = new Map<string, Array<ServerNotificationHandler>>();
+  // Codex can emit active-turn notifications before thread/resume responds.
+  // Run those handlers on child fibers so the response can resolve, while the
+  // semaphore preserves notification order. Other notifications stay synchronous.
+  const notificationDispatchPermit = yield* Semaphore.make(1);
+  const pendingThreadResumes = yield* Ref.make(0);
   let unknownRequestHandler:
     | ((method: string, params: unknown) => Effect.Effect<unknown, CodexError.CodexAppServerError>)
     | undefined;
@@ -200,15 +207,29 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
-    onNotification: dispatchNotification,
+    onNotification: (notification) =>
+      Ref.get(pendingThreadResumes).pipe(
+        Effect.flatMap((resumeCount) => {
+          const dispatch = notificationDispatchPermit.withPermits(1)(
+            dispatchNotification(notification),
+          );
+          return resumeCount === 0
+            ? dispatch
+            : dispatch.pipe(Effect.forkChild, Effect.andThen(Effect.yieldNow));
+        }),
+      ),
     onRequest: dispatchRequest,
   });
 
   const request = <M extends CodexRpc.ClientRequestMethod>(
     method: M,
     payload: CodexRpc.ClientRequestParamsByMethod[M],
-  ): Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexError.CodexAppServerError> =>
-    encodeOptionalPayload(method, getClientRequestParamSchema(method), payload).pipe(
+  ): Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexError.CodexAppServerError> => {
+    const requested = encodeOptionalPayload(
+      method,
+      getClientRequestParamSchema(method),
+      payload,
+    ).pipe(
       Effect.flatMap((encoded) => transport.request(method, encoded)),
       Effect.flatMap(
         (
@@ -219,6 +240,14 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
         > => decodeOptionalPayload(method, getClientRequestResponseSchema(method), raw),
       ),
     );
+    if (method !== "thread/resume") {
+      return requested;
+    }
+    return Ref.update(pendingThreadResumes, (current) => current + 1).pipe(
+      Effect.andThen(requested),
+      Effect.ensuring(Ref.update(pendingThreadResumes, (current) => current - 1)),
+    );
+  };
 
   const notify = <M extends CodexRpc.ClientNotificationMethod>(
     method: M,
