@@ -210,9 +210,10 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     onNotification: (notification) =>
       Ref.get(pendingThreadResumes).pipe(
         Effect.flatMap((resumeCount) => {
-          const dispatch = notificationDispatchPermit.withPermits(1)(
-            dispatchNotification(notification),
-          );
+          const dispatch =
+            notification.method === "turn/started"
+              ? dispatchNotification(notification)
+              : notificationDispatchPermit.withPermits(1)(dispatchNotification(notification));
           return resumeCount === 0
             ? dispatch
             : dispatch.pipe(Effect.forkChild, Effect.andThen(Effect.yieldNow));
