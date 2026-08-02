@@ -36,6 +36,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -1489,6 +1490,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         });
         const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        const turnRegistrations = new Map<
+          string,
+          Deferred.Deferred<ActiveCodexTurnContext | undefined, never>
+        >();
         const pendingRootTurns = yield* Ref.make(new Map<string, PendingCodexRootTurn>());
         // Each known root thread buffers turn/started notifications until
         // startTurn has the T3 run context needed to claim them.
@@ -1612,18 +1617,31 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             );
           });
 
-        const awaitActiveTurn = (
-          nativeTurnId: string,
-          attemptsRemaining = 1_000,
-        ): Effect.Effect<ActiveCodexTurnContext | undefined> =>
-          Effect.gen(function* () {
-            const context = (yield* Ref.get(activeTurns)).get(nativeTurnId);
-            if (context !== undefined || attemptsRemaining <= 0) {
-              return context;
+        const resolveTurnRegistration = Effect.fn("CodexAdapterV2.resolveTurnRegistration")(
+          function* (nativeTurnId: string, context: ActiveCodexTurnContext | undefined) {
+            const registration = turnRegistrations.get(nativeTurnId);
+            turnRegistrations.delete(nativeTurnId);
+            if (registration !== undefined) {
+              yield* Deferred.succeed(registration, context);
             }
-            yield* Effect.yieldNow;
-            return yield* awaitActiveTurn(nativeTurnId, attemptsRemaining - 1);
-          });
+          },
+        );
+
+        const awaitActiveTurn = Effect.fn("CodexAdapterV2.awaitActiveTurn")(function* (
+          nativeTurnId: string,
+        ) {
+          const context = (yield* Ref.get(activeTurns)).get(nativeTurnId);
+          if (context !== undefined) {
+            return context;
+          }
+
+          const registration = turnRegistrations.get(nativeTurnId);
+          if (registration !== undefined) {
+            return yield* Deferred.await(registration);
+          }
+
+          return (yield* Ref.get(activeTurns)).get(nativeTurnId);
+        });
 
         /**
          * Like awaitActiveTurn, but item lifecycle events for a turn that
@@ -1848,31 +1866,34 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             while (ancestor !== undefined) {
               if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
                 const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
-                const interrupted = yield* client
-                  .request("turn/interrupt", {
-                    threadId: nativeThreadId,
-                    turnId: turn.nativeTurnId,
-                  })
-                  .pipe(
-                    Effect.as(true),
-                    Effect.catch((cause) =>
-                      Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
+                yield* resolveTurnRegistration(turn.nativeTurnId, undefined);
+                yield* Effect.gen(function* () {
+                  const interrupted = yield* client
+                    .request("turn/interrupt", {
+                      threadId: nativeThreadId,
+                      turnId: turn.nativeTurnId,
+                    })
+                    .pipe(
+                      Effect.as(true),
+                      Effect.catch((cause) =>
+                        Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
+                          nativeThreadId,
+                          nativeTurnId: turn.nativeTurnId,
+                          cause,
+                        }).pipe(Effect.as(false)),
+                      ),
+                      Effect.timeoutOption("10 seconds"),
+                    );
+                  if (Option.isNone(interrupted)) {
+                    yield* Effect.logWarning(
+                      "orchestration-v2.codex-late-subagent-interrupt-timeout",
+                      {
                         nativeThreadId,
                         nativeTurnId: turn.nativeTurnId,
-                        cause,
-                      }).pipe(Effect.as(false)),
-                    ),
-                    Effect.timeoutOption("10 seconds"),
-                  );
-                if (Option.isNone(interrupted)) {
-                  yield* Effect.logWarning(
-                    "orchestration-v2.codex-late-subagent-interrupt-timeout",
-                    {
-                      nativeThreadId,
-                      nativeTurnId: turn.nativeTurnId,
-                    },
-                  );
-                }
+                      },
+                    );
+                  }
+                }).pipe(Effect.forkChild);
                 return;
               }
               ancestor = ancestor.subagent?.parentContext;
@@ -1972,6 +1993,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 completedAt: null,
               },
             });
+            yield* resolveTurnRegistration(turn.nativeTurnId, activeContext);
           });
 
         const rememberSubagentTurnStarted = (input: {
@@ -2206,15 +2228,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               status: "running",
             });
 
-            const pendingTurns = yield* Ref.modify(pendingSubagentTurns, (current) => {
-              const pending = current.get(input.nativeThreadId) ?? [];
-              const updated = new Map(current);
-              updated.delete(input.nativeThreadId);
-              return [pending, updated];
-            });
+            const pendingTurns =
+              (yield* Ref.get(pendingSubagentTurns)).get(input.nativeThreadId) ?? [];
             for (const pendingTurn of pendingTurns) {
               yield* emitSubagentProviderTurnStarted(subagent, pendingTurn);
             }
+            yield* Ref.update(pendingSubagentTurns, (current) => {
+              const updated = new Map(current);
+              updated.delete(input.nativeThreadId);
+              return updated;
+            });
           });
 
         const registerSubagentThreads = (input: {
@@ -3244,6 +3267,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             if (context !== undefined) {
               return;
             }
+            const registration = yield* Deferred.make<ActiveCodexTurnContext | undefined>();
+            turnRegistrations.set(payload.turn.id, registration);
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
             if (
               pendingRootTurn !== undefined &&
@@ -3254,6 +3279,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 nativeTurnId: payload.turn.id,
                 startedAt: codexTimestamp(payload.turn.startedAt),
               });
+              yield* resolveTurnRegistration(payload.turn.id, rootTurn);
               yield* Deferred.succeed(pendingRootTurn.started, rootTurn);
               return;
             }
@@ -3351,13 +3377,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           }).pipe(Effect.orDie),
         );
 
-        yield* client.handleServerNotification("item/started", (payload) =>
-          Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
-            if (context === undefined) {
-              return;
-            }
-
+        const projectItemStarted = Effect.fn("CodexAdapterV2.projectItemStarted")(
+          function* projectItemStarted(
+            payload: CodexSchema.V2ItemStartedNotification,
+            context: ActiveCodexTurnContext,
+          ) {
             if (payload.item.type === "userMessage") {
               if (yield* emitSubagentUserMessage(context, payload.item)) {
                 return;
@@ -3447,17 +3471,32 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               driver: CODEX_PROVIDER,
               turnItem: artifacts.turnItem,
             });
-          }).pipe(Effect.orDie, turnTerminalizationPermit.withPermits(1)),
+          },
         );
 
-        yield* client.handleServerNotification("item/completed", (payload) =>
+        yield* client.handleServerNotification("item/started", (payload) =>
           Effect.gen(function* () {
-            const resolved = yield* resolveItemEventContext(payload.turnId);
-            if (resolved === undefined) {
+            const context = yield* awaitActiveTurn(payload.turnId);
+            if (context === undefined) {
               return;
             }
-            const { context, settled } = resolved;
+            yield* turnTerminalizationPermit.withPermits(1)(
+              Effect.gen(function* () {
+                if ((yield* Ref.get(activeTurns)).get(payload.turnId) !== context) {
+                  return;
+                }
+                yield* projectItemStarted(payload, context);
+              }),
+            );
+          }).pipe(Effect.orDie),
+        );
 
+        const projectItemCompleted = Effect.fn("CodexAdapterV2.projectItemCompleted")(
+          function* projectItemCompleted(
+            payload: CodexSchema.V2ItemCompletedNotification,
+            context: ActiveCodexTurnContext,
+            settled: boolean,
+          ) {
             if (payload.item.type === "userMessage") {
               if (yield* emitSubagentUserMessage(context, payload.item)) {
                 return;
@@ -3687,7 +3726,29 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 result: text,
               });
             }
-          }).pipe(Effect.orDie, turnTerminalizationPermit.withPermits(1)),
+          },
+        );
+
+        yield* client.handleServerNotification("item/completed", (payload) =>
+          Effect.gen(function* () {
+            const resolved = yield* resolveItemEventContext(payload.turnId);
+            if (resolved === undefined) {
+              return;
+            }
+            yield* turnTerminalizationPermit.withPermits(1)(
+              Effect.gen(function* () {
+                const settledContext = (yield* Ref.get(settledTurns)).get(payload.turnId);
+                const context =
+                  settledContext === undefined
+                    ? (yield* Ref.get(activeTurns)).get(payload.turnId)
+                    : settledContext;
+                if (context === undefined) {
+                  return;
+                }
+                yield* projectItemCompleted(payload, context, settledContext !== undefined);
+              }),
+            );
+          }).pipe(Effect.orDie),
         );
 
         yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
@@ -4589,18 +4650,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               const turnStarted = yield* Deferred.make<ActiveCodexTurnContext>();
               const bufferedRootTurns = yield* turnTerminalizationPermit.withPermits(1)(
                 Effect.gen(function* () {
-                  const pendingStartedTurns = yield* Ref.modify(rootThreadStarts, (current) => {
-                    const pending = current.get(threadId);
-                    if (pending === undefined) {
-                      return [[], current];
-                    }
-                    if (pending.length > 1) {
-                      return [pending, current];
-                    }
-                    const updated = new Map(current);
-                    updated.set(threadId, []);
-                    return [pending, updated];
-                  });
+                  const pendingStartedTurns =
+                    (yield* Ref.get(rootThreadStarts)).get(threadId) ?? [];
                   if (pendingStartedTurns.length > 1) {
                     return pendingStartedTurns;
                   }
@@ -4618,7 +4669,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     nativeTurnId: pendingStartedTurn.nativeTurnId,
                     startedAt: pendingStartedTurn.startedAt,
                   });
+                  yield* resolveTurnRegistration(pendingStartedTurn.nativeTurnId, rootTurn);
                   yield* Deferred.succeed(turnStarted, rootTurn);
+                  yield* Ref.update(rootThreadStarts, (current) => {
+                    const updated = new Map(current);
+                    updated.set(
+                      threadId,
+                      (current.get(threadId) ?? []).filter((turn) => turn !== pendingStartedTurn),
+                    );
+                    return updated;
+                  });
                   yield* Effect.logInfo("orchestration-v2.codex-root-turn-reconciled", {
                     nativeThreadId: threadId,
                     nativeTurnId: rootTurn.nativeTurnId,
@@ -4634,6 +4694,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 while (pendingAmbiguousTurns.length > 0) {
                   for (const turn of pendingAmbiguousTurns) {
                     ambiguousNativeTurnIds.add(turn.nativeTurnId);
+                    yield* resolveTurnRegistration(turn.nativeTurnId, undefined);
                   }
                   const runningAmbiguousTurns = pendingAmbiguousTurns.filter(
                     (turn) => turn.state === "running",
@@ -4653,25 +4714,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                           threadId,
                           turnId: turn.nativeTurnId,
                         })
-                        .pipe(
-                          Effect.catch((cause) =>
-                            Effect.logWarning(
-                              "orchestration-v2.codex-ambiguous-root-turn-interrupt-failed",
-                              {
-                                nativeThreadId: threadId,
-                                nativeTurnId: turn.nativeTurnId,
-                                providerThreadId: turnInput.providerThread.id,
-                                runId: turnInput.runId,
-                                cause,
-                              },
-                            ),
-                          ),
-                        ),
-                    { concurrency: "unbounded", discard: true },
+                        .pipe(Effect.exit),
+                    { concurrency: "unbounded" },
                   ).pipe(Effect.timeoutOption("10 seconds"));
-                  if (Option.isNone(interrupted)) {
+                  if (
+                    Option.exists(interrupted, (exits) => exits.every(Exit.isSuccess)) === false
+                  ) {
                     yield* Effect.logWarning(
-                      "orchestration-v2.codex-ambiguous-root-turn-interrupt-timeout",
+                      "orchestration-v2.codex-ambiguous-root-turn-interrupt-incomplete",
                       {
                         nativeThreadId: threadId,
                         nativeTurnIds: runningAmbiguousTurns.map((turn) => turn.nativeTurnId),
@@ -4713,47 +4763,50 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 });
                 return;
               }
+
               const started = yield* client.request("turn/start", turnStartParams);
               const rootTurn = yield* Deferred.await(turnStarted);
               if (started.turn.id !== rootTurn.nativeTurnId) {
                 const rootTurnStillActive =
                   (yield* Ref.get(activeTurns)).get(rootTurn.nativeTurnId) === rootTurn;
                 if (!rootTurnStillActive) {
-                  const [replacementRootTurn, bufferedResponseTurn] =
-                    yield* turnTerminalizationPermit.withPermits(1)(
-                      Effect.gen(function* () {
-                        const responseTurn = yield* Ref.modify(rootThreadStarts, (current) => {
-                          const pending = current.get(threadId);
-                          const buffered = pending?.find(
-                            (turn) => turn.nativeTurnId === started.turn.id,
-                          );
-                          if (pending === undefined || buffered === undefined) {
-                            return [undefined, current];
-                          }
+                  const rebound = yield* turnTerminalizationPermit.withPermits(1)(
+                    Effect.gen(function* () {
+                      const responseTurn = (yield* Ref.get(rootThreadStarts))
+                        .get(threadId)
+                        ?.find((turn) => turn.nativeTurnId === started.turn.id);
+                      yield* Ref.update(deferredRootTerminals, (current) => {
+                        const updated = new Map(current);
+                        updated.delete(rootTurn.nativeTurnId);
+                        return updated;
+                      });
+                      const replacement = yield* registerRootTurn({
+                        turnInput,
+                        nativeTurnId: started.turn.id,
+                        startedAt:
+                          responseTurn === undefined
+                            ? codexTimestamp(started.turn.startedAt)
+                            : responseTurn.startedAt,
+                        providerTurnOrdinal: rootTurn.providerTurnOrdinal + 1,
+                      });
+                      if (responseTurn !== undefined) {
+                        yield* resolveTurnRegistration(responseTurn.nativeTurnId, replacement);
+                        yield* Ref.update(rootThreadStarts, (current) => {
                           const updated = new Map(current);
                           updated.set(
                             threadId,
-                            pending.filter((turn) => turn.nativeTurnId !== started.turn.id),
+                            (current.get(threadId) ?? []).filter(
+                              (turn) => turn.nativeTurnId !== started.turn.id,
+                            ),
                           );
-                          return [buffered, updated];
-                        });
-                        yield* Ref.update(deferredRootTerminals, (current) => {
-                          const updated = new Map(current);
-                          updated.delete(rootTurn.nativeTurnId);
                           return updated;
                         });
-                        const replacement = yield* registerRootTurn({
-                          turnInput,
-                          nativeTurnId: started.turn.id,
-                          startedAt:
-                            responseTurn === undefined
-                              ? codexTimestamp(started.turn.startedAt)
-                              : responseTurn.startedAt,
-                          providerTurnOrdinal: rootTurn.providerTurnOrdinal + 1,
-                        });
-                        return [replacement, responseTurn] as const;
-                      }),
-                    );
+                      }
+                      return { context: replacement, turn: responseTurn };
+                    }),
+                  );
+                  const replacementRootTurn = rebound.context;
+                  const bufferedResponseTurn = rebound.turn;
                   if (bufferedResponseTurn?.state === "terminal") {
                     yield* finalizeCodexTurn({
                       context: replacementRootTurn,
