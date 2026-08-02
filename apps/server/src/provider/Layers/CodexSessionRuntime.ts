@@ -876,6 +876,7 @@ export const makeCodexSessionRuntime = (
         const payload = notification.params;
         const route = readRouteFields(notification);
         const providerThreadId = readNotificationThreadId(notification);
+        const rootProviderThreadId = yield* currentSessionProviderThreadId;
         const childThreadTurns = yield* Ref.get(childThreadTurnsRef);
         const childParentTurnId =
           providerThreadId === undefined ? undefined : childThreadTurns.get(providerThreadId);
@@ -883,7 +884,13 @@ export const makeCodexSessionRuntime = (
 
         rememberChildThreadTurns(childThreadTurns, notification, parentTurnId);
 
-        if (childParentTurnId !== undefined && !shouldKeepChildNotification(notification)) {
+        const belongsToChild =
+          childParentTurnId !== undefined ||
+          (providerThreadId !== undefined &&
+            rootProviderThreadId !== undefined &&
+            providerThreadId !== rootProviderThreadId);
+
+        if (belongsToChild && !shouldKeepChildNotification(notification)) {
           yield* Ref.set(childThreadTurnsRef, childThreadTurns);
           return;
         }
