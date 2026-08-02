@@ -200,10 +200,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
-    onNotification: (notification) =>
-      notification.method === "turn/started"
-        ? dispatchNotification(notification)
-        : dispatchNotification(notification).pipe(Effect.forkChild, Effect.asVoid),
+    onNotification: dispatchNotification,
     onRequest: dispatchRequest,
   });
 
