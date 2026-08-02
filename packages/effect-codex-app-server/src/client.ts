@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stdio from "effect/Stdio";
@@ -37,6 +38,14 @@ interface CodexAppServerClientRaw {
   readonly respondError: CodexProtocol.CodexAppServerPatchedProtocol["respondError"];
 }
 
+type NotificationDispatchState =
+  | { readonly kind: "direct" }
+  | {
+      readonly kind: "queued";
+      readonly registrationCount: number;
+      readonly notificationCount: number;
+    };
+
 export class CodexAppServerClient extends Context.Service<
   CodexAppServerClient,
   {
@@ -49,6 +58,8 @@ export class CodexAppServerClient extends Context.Service<
       method: M,
       payload: CodexRpc.ClientNotificationParamsByMethod[M],
     ) => Effect.Effect<void, CodexError.CodexAppServerError>;
+    readonly registerUnresolvedTurn: Effect.Effect<void>;
+    readonly resolveUnresolvedTurn: Effect.Effect<void>;
     readonly handleServerRequest: <M extends CodexRpc.ServerRequestMethod>(
       method: M,
       handler: (
@@ -195,11 +206,45 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       : Effect.fail(CodexError.CodexAppServerRequestError.methodNotFound(request.method));
   };
 
-  const notificationDispatchQueue =
+  const notificationDispatchState = yield* Ref.make<NotificationDispatchState>({ kind: "direct" });
+  const queuedNotifications =
     yield* Queue.unbounded<CodexProtocol.CodexAppServerIncomingNotification>();
   yield* Effect.forever(
-    Queue.take(notificationDispatchQueue).pipe(Effect.flatMap(dispatchNotification)),
+    Queue.take(queuedNotifications).pipe(
+      Effect.flatMap((notification) =>
+        dispatchNotification(notification).pipe(
+          Effect.ensuring(
+            Ref.update(notificationDispatchState, (state): NotificationDispatchState => {
+              if (state.kind === "direct") {
+                return state;
+              }
+              const notificationCount = state.notificationCount - 1;
+              return notificationCount === 0 && state.registrationCount === 0
+                ? { kind: "direct" }
+                : { ...state, notificationCount };
+            }),
+          ),
+        ),
+      ),
+    ),
   ).pipe(Effect.forkScoped);
+
+  const registerUnresolvedTurn = Ref.update(
+    notificationDispatchState,
+    (state): NotificationDispatchState =>
+      state.kind === "direct"
+        ? { kind: "queued", registrationCount: 1, notificationCount: 0 }
+        : { ...state, registrationCount: state.registrationCount + 1 },
+  );
+  const resolveUnresolvedTurn = Ref.update(
+    notificationDispatchState,
+    (state): NotificationDispatchState =>
+      state.kind === "direct"
+        ? state
+        : state.registrationCount === 1 && state.notificationCount === 0
+          ? { kind: "direct" }
+          : { ...state, registrationCount: state.registrationCount - 1 },
+  );
 
   const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
     stdio,
@@ -208,12 +253,21 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
     // Establish the native turn before later notifications can wait for it.
-    // The queue keeps every other handler ordered without blocking responses.
+    // The ordered worker keeps reconciliation notifications off the protocol reader.
     onNotification: (notification) =>
       notification.method === "turn/started"
         ? dispatchNotification(notification)
-        : Queue.offer(notificationDispatchQueue, notification).pipe(
-            Effect.andThen(Effect.yieldNow),
+        : Ref.modify(notificationDispatchState, (state) => {
+            if (state.kind === "direct") {
+              return [true, state] as const;
+            }
+            return [false, { ...state, notificationCount: state.notificationCount + 1 }] as const;
+          }).pipe(
+            Effect.flatMap((dispatch) =>
+              dispatch
+                ? dispatchNotification(notification)
+                : Queue.offer(queuedNotifications, notification).pipe(Effect.asVoid),
+            ),
           ),
     onRequest: dispatchRequest,
   });
@@ -253,6 +307,8 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     },
     request,
     notify,
+    registerUnresolvedTurn,
+    resolveUnresolvedTurn,
     handleServerRequest: (method, handler) =>
       Effect.sync(() => {
         requestHandlers.set(method, handler as ServerRequestHandler);
