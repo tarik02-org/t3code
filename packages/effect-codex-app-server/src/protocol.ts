@@ -285,6 +285,8 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
                     ),
                   onSuccess: (result) => respond(request.id, result),
                 }),
+                Effect.forkChild,
+                Effect.asVoid,
               )
             : Effect.void,
         ),
