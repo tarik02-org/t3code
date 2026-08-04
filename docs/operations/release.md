@@ -171,7 +171,7 @@ One-time Vercel dashboard setup:
 - Tag format: `vX.Y.Z-canary.YYYYMMDD.<run_number>`.
 - Uses the next stable patch version as its base, independently of the nightly tag series.
 - Publishes Electron metadata to the `canary` updater channel. Canary desktop builds select it by default.
-- Uses `T3 Code (Canary)` branding and stores desktop and its managed server state under `~/.t3/canary`. Electron user data uses `t3code-canary`, so canary cannot migrate stable state.
+- Uses `T3 Code (Canary)` branding, isolates client and managed server state under `~/.t3/canary`, and stores Electron data under `t3code-canary`. Desktop settings remain shared so switching update tracks persists across restarts.
 - Does not publish the CLI package or deploy the hosted web app in the fork.
 - Does not change package versions on `canary` or `main`.
 - Merge `main` into `canary` regularly. Develop experiments on focused branches and merge them into `canary`; promote proven changes to `main` through separate focused PRs.
@@ -180,7 +180,8 @@ One-time Vercel dashboard setup:
 
 Connected servers update to the client's exact version, not to an npm dist-tag. The fork disables
 `publish_cli`, so its GitHub releases do not create matching `t3@<version>` packages. Remote server
-self-update cannot target those release versions unless npm publishing is enabled again.
+self-update cannot target those release versions unless npm publishing is enabled again. Canary SSH
+environments use the published `t3@nightly` runner instead of requesting a missing canary package.
 
 If npm publishing is enabled again, confirm `npm view t3@<version> version` returns the expected
 version before testing remote server self-update.

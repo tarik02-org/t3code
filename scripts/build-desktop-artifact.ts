@@ -1607,9 +1607,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "linux") {
+    const executableName = updateChannel === "canary" ? "t3code-canary" : "t3code";
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName,
       icon: "icons",
       category: "Development",
       // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
@@ -1623,7 +1624,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ],
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: executableName,
         },
       },
     };

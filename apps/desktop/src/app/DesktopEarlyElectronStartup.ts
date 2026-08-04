@@ -54,15 +54,12 @@ function resolveEarlyDesktopSettingsPath(input: EarlyDesktopSettingsInput): stri
     t3Home,
   });
   const isDevelopment = isDevelopmentEnvironment(input.env);
-  const stateDir =
-    !isDevelopment && isCanaryDesktopVersion(input.appVersion)
-      ? input.joinPath(baseDir, "canary")
-      : resolveDesktopStateDir({
-          baseDir,
-          isDevelopment,
-          joinPath: input.joinPath,
-          t3Home,
-        });
+  const stateDir = resolveDesktopStateDir({
+    baseDir,
+    isDevelopment,
+    joinPath: input.joinPath,
+    t3Home,
+  });
   return input.joinPath(stateDir, "desktop-settings.json");
 }
 

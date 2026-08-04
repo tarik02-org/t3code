@@ -167,14 +167,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appVersion: input.appVersion,
   });
   const displayName = branding.displayName;
-  const stateDir = isCanary
-    ? path.join(baseDir, "canary")
-    : resolveDesktopStateDir({
-        baseDir,
-        isDevelopment,
-        joinPath: path.join,
-        t3Home: config.t3Home,
-      });
+  const desktopSettingsDir = resolveDesktopStateDir({
+    baseDir,
+    isDevelopment,
+    joinPath: path.join,
+    t3Home: config.t3Home,
+  });
+  const stateDir = isCanary ? path.join(baseDir, "canary") : desktopSettingsDir;
   const appIdentitySuffix = isDevelopment ? "dev" : isCanary ? "canary" : null;
   const userDataDirName = appIdentitySuffix !== null ? `t3code-${appIdentitySuffix}` : "t3code";
   const legacyUserDataDirName = isDevelopment
@@ -204,7 +203,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appDataDirectory,
     baseDir,
     stateDir,
-    desktopSettingsPath: path.join(stateDir, "desktop-settings.json"),
+    desktopSettingsPath: path.join(desktopSettingsDir, "desktop-settings.json"),
     clientSettingsPath: path.join(stateDir, "client-settings.json"),
     savedEnvironmentRegistryPath: path.join(stateDir, "saved-environments.json"),
     serverSettingsPath: path.join(stateDir, "settings.json"),

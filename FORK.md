@@ -66,7 +66,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - Stable builds use `latest`, nightly builds use `nightly`, and canary builds use `canary`.
 - Nightly and canary detection accepts fork release metadata while preserving separate updater feeds.
-- Canary desktop builds use distinct branding and isolated `~/.t3/canary` and `t3code-canary` application state.
+- Canary desktop builds isolate server and client state under `~/.t3/canary` and Electron data under `t3code-canary`. Desktop settings stay shared so update-track changes survive channel switches.
 
 ### Fork Persistence
 

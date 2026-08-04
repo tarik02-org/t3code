@@ -370,6 +370,9 @@ export function resolveRemoteT3CliPackageSpec(input: {
   readonly isDevelopment?: boolean;
 }): string {
   const appVersion = input.appVersion.trim();
+  if (!input.isDevelopment && appVersion.includes("-canary.")) {
+    return "t3@nightly";
+  }
   if (!input.isDevelopment && PUBLISHABLE_T3_VERSION_PATTERN.test(appVersion)) {
     return `t3@${appVersion}`;
   }
