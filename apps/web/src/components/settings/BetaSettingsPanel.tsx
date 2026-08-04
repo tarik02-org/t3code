@@ -17,6 +17,7 @@ import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { searchableSetting } from "./settingsSearch";
 
 const AUTO_SETTLE_MIN_DAYS = 1;
 const AUTO_SETTLE_MAX_DAYS = 90;
@@ -81,7 +82,7 @@ export function BetaSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection title="Beta features">
         <SettingsRow
-          title="Sidebar v2"
+          {...searchableSetting("sidebar-v2")}
           description="One flat thread list in creation order. Active work renders as rich cards; settled threads collapse to compact rows. Settling requires an up-to-date server — on older servers threads simply stay active. Switch back any time."
           control={
             <Switch
@@ -101,7 +102,7 @@ export function BetaSettingsPanel() {
         {sidebarV2Enabled ? (
           <>
             <SettingsRow
-              title="Auto-settle inactive threads"
+              title={searchableSetting("auto-settle-inactive-threads").title}
               description="Threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle."
               control={
                 <Switch

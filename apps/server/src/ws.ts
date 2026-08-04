@@ -38,6 +38,7 @@ import {
   type ProjectFileOperation,
   ProjectListEntriesError,
   ProjectReadFileError,
+  ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   RelayClientInstallFailedError,
@@ -297,7 +298,7 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 // past this gap a single O(active-threads) snapshot is cheaper and bounded.
 // Matches the event store's default page size (DEFAULT_READ_FROM_SEQUENCE_LIMIT).
 const SHELL_RESUME_MAX_GAP = 1_000;
-const THREAD_DELTA_SUBSCRIPTION_MAX_GAP = 1_000;
+const THREAD_RESUME_MAX_GAP = 1_000;
 
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
@@ -991,7 +992,7 @@ const makeWsRpcLayer = (
 
       const makeThreadSubscription = Effect.fn("Ws.makeThreadSubscription")(function* (input: {
         readonly request: OrchestrationSubscribeThreadInput;
-        readonly maxReplayGap: number | null;
+        readonly missingThread: "error" | "not-found";
       }) {
         const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
           event.aggregateKind === "thread" &&
@@ -1025,60 +1026,45 @@ const makeWsRpcLayer = (
 
         if (input.request.afterSequence !== undefined) {
           const afterSequence = input.request.afterSequence;
-          if (input.maxReplayGap !== null) {
-            const headSequence = yield* orchestrationEngine.latestSequence;
-            const replayGap = headSequence - afterSequence;
-            if (replayGap < 0 || replayGap > input.maxReplayGap) {
-              // Keep the requested live-tail bound when replay falls back to a fresh snapshot.
-              const snapshot = yield* loadThreadSnapshot(
-                input.request.threadId,
-                input.request.turnLimit,
-              );
-              if (Option.isNone(snapshot)) {
+          const headSequence = yield* orchestrationEngine.latestSequence;
+          const replayGap = headSequence - afterSequence;
+          if (replayGap < 0 || replayGap > THREAD_RESUME_MAX_GAP) {
+            const snapshot = yield* loadThreadSnapshot(
+              input.request.threadId,
+              input.request.turnLimit,
+            );
+            if (Option.isNone(snapshot)) {
+              if (input.missingThread === "not-found") {
                 return Stream.concat(
                   Stream.make({ kind: "not-found" as const }),
                   synchronizedThenLive,
                 );
               }
-              return Stream.concat(
-                Stream.make({ kind: "snapshot" as const, snapshot: snapshot.value }),
-                synchronizedThenLive,
-              );
+              return yield* new OrchestrationGetSnapshotError({
+                message: `Thread ${input.request.threadId} was not found`,
+                cause: input.request.threadId,
+              });
             }
-
-            const catchUpStream = orchestrationEngine.readEvents(afterSequence, replayGap).pipe(
-              Stream.filter(isThisThreadDetailEvent),
-              Stream.map((event) => ({
-                kind: "event" as const,
-                event: projectActivityEvent(event),
-              })),
-              Stream.mapError(
-                (cause) =>
-                  new OrchestrationGetSnapshotError({
-                    message: `Failed to replay thread ${input.request.threadId} events`,
-                    cause,
-                  }),
-              ),
+            return Stream.concat(
+              Stream.make({ kind: "snapshot" as const, snapshot: snapshot.value }),
+              synchronizedThenLive,
             );
-            return Stream.concat(catchUpStream, synchronizedThenLive);
           }
 
-          const catchUpStream = orchestrationEngine
-            .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
-            .pipe(
-              Stream.filter(isThisThreadDetailEvent),
-              Stream.map((event) => ({
-                kind: "event" as const,
-                event: projectActivityEvent(event),
-              })),
-              Stream.mapError(
-                (cause) =>
-                  new OrchestrationGetSnapshotError({
-                    message: `Failed to replay thread ${input.request.threadId} events`,
-                    cause,
-                  }),
-              ),
-            );
+          const catchUpStream = orchestrationEngine.readEvents(afterSequence, replayGap).pipe(
+            Stream.filter(isThisThreadDetailEvent),
+            Stream.map((event) => ({
+              kind: "event" as const,
+              event: projectActivityEvent(event),
+            })),
+            Stream.mapError(
+              (cause) =>
+                new OrchestrationGetSnapshotError({
+                  message: `Failed to replay thread ${input.request.threadId} events`,
+                  cause,
+                }),
+            ),
+          );
           return Stream.concat(catchUpStream, synchronizedThenLive);
         }
 
@@ -1373,7 +1359,7 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
-            makeThreadSubscription({ request: input, maxReplayGap: null }).pipe(
+            makeThreadSubscription({ request: input, missingThread: "error" }).pipe(
               Effect.map((stream) =>
                 Stream.filter(
                   stream,
@@ -1388,7 +1374,7 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.subscribeThreadWithDelta,
             makeThreadSubscription({
               request: input,
-              maxReplayGap: THREAD_DELTA_SUBSCRIPTION_MAX_GAP,
+              missingThread: "not-found",
             }),
             { "rpc.aggregate": "orchestration" },
           ),
@@ -1627,6 +1613,23 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new ProjectSearchEntriesError({
+                    cwd: input.cwd,
+                    queryLength: input.query.length,
+                    limit: input.limit,
+                    ...projectEntriesFailureContext(cause),
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsSearchContents]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsSearchContents,
+            workspaceEntries.searchContents(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectSearchContentsError({
                     cwd: input.cwd,
                     queryLength: input.query.length,
                     limit: input.limit,

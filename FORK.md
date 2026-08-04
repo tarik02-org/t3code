@@ -8,7 +8,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Keep workflow-only fork changes narrow and prefer job-level disables over broad refactors.
 - Do not commit package version bumps solely to represent fork releases.
 - Re-check Electron updater channel behavior when changing version strings, release metadata, or desktop packaging.
-- Prepare fork PR branches from `origin/main` and target `tarik02/t3code:main`.
+- Prepare fork PR branches from `origin/main` and target `tarik02-org/t3code:main`.
 - If a fork PR branch includes unintended upstream history, rebuild it from `origin/main` and replay only the intended diff.
 
 ## Changes
@@ -82,12 +82,6 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 ### Goals UI
 
 - The fork adds thread goal support, goal activity rendering, and goal sidebar/panel UI.
-
-### Subagent Activity
-
-- Parent timelines keep subagent commands, file changes, tool calls, web searches, image views, and diffs.
-- Subagent messages, reasoning, goals, plans, token usage, and thread/turn state stay out of the parent timeline. Codex child relationships are recognized from both `collabAgentToolCall` and `subAgentActivity` items.
-- Root-agent activity remains visible. Filtering applies only to provider thread IDs explicitly discovered through those child relationship items.
 
 ### Provider Launch Environment
 

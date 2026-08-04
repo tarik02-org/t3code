@@ -49,7 +49,7 @@ stdenv.mkDerivation (finalAttrs: {
       ;
     inherit pnpm;
     fetcherVersion = 4;
-    hash = "sha256-Lnbxd6gQ9Seu6XUPXVmumf/i/phFEWhnZGjj4sCagmI=";
+    hash = "sha256-IeltjX3+YO/culJWPByxsp0YxFset9Ahn5N/YE4lWDs=";
   };
 
   postPatch = lib.optionalString (finalAttrs.version != sourceVersion) ''
@@ -112,7 +112,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description = "Remote control for coding agents";
-    homepage = "https://github.com/tarik02/t3code";
+    homepage = "https://github.com/tarik02-org/t3code";
     license = lib.licenses.mit;
     mainProgram = "t3";
     platforms = [ "x86_64-linux" ];
