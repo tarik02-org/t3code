@@ -124,7 +124,5 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
   input immediately cancels target alignment. Minimap dragging follows the pointer immediately while
   throttling segment requests, and only the latest explicit jump may replace the active segment.
 - Desktop context-menu style is configurable from Appearance settings.
-- The sidebar follows the active thread when it appears or when navigation originates elsewhere.
-- Sidebar environments can be hidden or shown dynamically from the project toolbar.
-- Threads can be archived with middle click.
+- Legacy sidebar threads can be archived with middle click.
 - Terminal selection has a copy action.
