@@ -1,6 +1,7 @@
 import { connectionStatusText, connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { CableIcon, RadioTowerIcon } from "lucide-react";
+import type { ReactElement, ReactNode } from "react";
 
 import { useEnvironment } from "~/state/environments";
 import { useEnvironmentRpcTransport } from "~/state/session";
@@ -8,11 +9,15 @@ import { useEnvironmentRpcTransport } from "~/state/session";
 import { Badge } from "./ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-interface EnvironmentConnectionBadgeProps {
+interface EnvironmentConnectionStatusProps {
   readonly environmentId: EnvironmentId;
+  readonly children: (indicator: ReactNode) => ReactElement;
 }
 
-export function EnvironmentConnectionBadge({ environmentId }: EnvironmentConnectionBadgeProps) {
+export function EnvironmentConnectionStatus({
+  environmentId,
+  children,
+}: EnvironmentConnectionStatusProps) {
   const environment = useEnvironment(environmentId);
   const transport = useEnvironmentRpcTransport(environmentId);
   const phase = environment?.connection.phase ?? "available";
@@ -25,10 +30,10 @@ export function EnvironmentConnectionBadge({ environmentId }: EnvironmentConnect
         ? "WebSocket"
         : "Not connected";
 
-  let variant: "error" | "secondary" | "success" | "warning" = "secondary";
+  let variant: "error" | "info" | "secondary" | "success" | "warning" = "secondary";
   switch (phase) {
     case "connected":
-      variant = "success";
+      variant = transport === "webrtc" ? "info" : "success";
       break;
     case "connecting":
     case "reconnecting":
@@ -43,21 +48,16 @@ export function EnvironmentConnectionBadge({ environmentId }: EnvironmentConnect
   }
 
   const TransportIcon = transport === "webrtc" ? RadioTowerIcon : CableIcon;
-  const badge = (
-    <Badge
-      variant={variant}
-      size="sm"
-      aria-label={`${status}. RPC transport: ${transportLabel}.`}
-      className="size-5 px-0 sm:size-4"
-    >
+  const indicator = (
+    <Badge variant={variant} size="sm" aria-hidden className="size-5 px-0 sm:size-4">
       <TransportIcon aria-hidden className="size-3 mx-0!" />
     </Badge>
   );
 
   return (
     <Tooltip>
-      <TooltipTrigger render={badge} />
-      <TooltipPopup side="top" className="max-w-80 text-left text-pretty">
+      <TooltipTrigger render={children(indicator)} />
+      <TooltipPopup hoverable side="top" className="max-w-80 text-left text-pretty">
         <dl className="grid min-w-52 grid-cols-[auto_1fr] gap-x-3 gap-y-1 py-0.5">
           <dt className="text-muted-foreground">Status</dt>
           <dd className="font-medium text-foreground">{statusDetail}</dd>
