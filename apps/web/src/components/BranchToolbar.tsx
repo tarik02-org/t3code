@@ -28,6 +28,7 @@ import {
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
+import { EnvironmentConnectionBadge } from "./EnvironmentConnectionBadge";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -111,6 +112,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
     <span className="inline-flex shrink-0 items-center gap-0.5">
       <EnvironmentIcon className="size-3 shrink-0 mx-0!" />
       <WorkspaceIcon className="size-3 shrink-0 mx-0!" />
+      <EnvironmentConnectionBadge environmentId={environmentId} />
     </span>
   ) : (
     <WorkspaceIcon className="size-3 shrink-0" />

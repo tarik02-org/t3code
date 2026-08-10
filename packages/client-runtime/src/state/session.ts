@@ -13,6 +13,7 @@ import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeEnvironmentHttpRequest, makeEnvironmentHttpApiClient } from "../rpc/http.ts";
+import type { RpcTransport } from "../rpc/session.ts";
 import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 
@@ -122,6 +123,44 @@ export function createEnvironmentSessionAtoms<R, E>(
     ).pipe(Atom.withLabel(`environment-prepared-connection:${environmentId}`)),
   );
 
+  const rpcTransportAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(
+      followStreamInEnvironment(
+        environmentId,
+        Stream.unwrap(
+          EnvironmentSupervisor.pipe(
+            Effect.map((supervisor) =>
+              SubscriptionRef.changes(supervisor.session).pipe(
+                Stream.switchMap(
+                  Option.match({
+                    onNone: () => Stream.succeed<RpcTransport | null>(null),
+                    onSome: (session) => {
+                      const currentTransport = session.transport ?? "websocket";
+                      return session.transportChanges === undefined
+                        ? Stream.succeed<RpcTransport>(currentTransport)
+                        : Stream.concat(
+                            Stream.succeed<RpcTransport>(currentTransport),
+                            session.transportChanges,
+                          );
+                    },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      { initialValue: null as RpcTransport | null },
+    ),
+  );
+
+  const rpcTransportValueAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get): RpcTransport | null =>
+        Option.getOrNull(AsyncResult.value(get(rpcTransportAtom(environmentId)))) ?? null,
+    ).pipe(Atom.withLabel(`environment-rpc-transport:${environmentId}`)),
+  );
+
   // Keyed on the prepared connection's identity: a reconnect (new credential,
   // new base URL) swaps the prepared value, which re-runs the fetch, so scope
   // changes from re-pairing are picked up without an explicit refresh.
@@ -156,6 +195,8 @@ export function createEnvironmentSessionAtoms<R, E>(
     initialConfigValueAtom,
     preparedConnectionAtom,
     preparedConnectionValueAtom,
+    rpcTransportAtom,
+    rpcTransportValueAtom,
     sessionStateAtom,
     sessionStateValueAtom,
   };

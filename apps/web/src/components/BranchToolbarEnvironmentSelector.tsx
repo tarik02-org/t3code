@@ -3,6 +3,7 @@ import { CloudIcon, MonitorIcon } from "lucide-react";
 import { memo, useMemo } from "react";
 
 import type { EnvironmentOption } from "./BranchToolbar.logic";
+import { EnvironmentConnectionBadge } from "./EnvironmentConnectionBadge";
 import {
   Select,
   SelectGroup,
@@ -54,6 +55,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         ) : (
           <CloudIcon className="size-3 shrink-0" />
         )}
+        <EnvironmentConnectionBadge environmentId={environmentId} />
         <span
           data-composer-label
           className="min-w-0 max-w-[240px] truncate transition-[max-width,opacity] duration-300 ease-out group-data-[compact]/composer-context:max-w-0 group-data-[compact]/composer-context:opacity-0"
@@ -82,6 +84,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         ) : (
           <CloudIcon className="size-3 shrink-0" />
         )}
+        <EnvironmentConnectionBadge environmentId={environmentId} />
         <span
           data-composer-label
           className="min-w-0 max-w-[240px] truncate transition-[max-width,opacity] duration-300 ease-out group-data-[compact]/composer-context:max-w-0 group-data-[compact]/composer-context:opacity-0"

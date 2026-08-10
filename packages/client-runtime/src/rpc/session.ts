@@ -35,14 +35,16 @@ import {
 
 const SOCKET_OPEN_TIMEOUT = "15 seconds";
 
+export type RpcTransport = "websocket" | "webrtc";
+
 export interface RpcSession {
   readonly client: WsRpcProtocolClient;
   readonly initialConfig: Effect.Effect<ServerConfig, ConnectionAttemptError>;
   readonly ready: Effect.Effect<void, ConnectionAttemptError>;
   readonly probe: Effect.Effect<void, ConnectionAttemptError>;
   readonly closed: Effect.Effect<never, ConnectionTransientError>;
-  readonly transport?: "websocket" | "webrtc";
-  readonly transportChanges?: Stream.Stream<"websocket" | "webrtc">;
+  readonly transport?: RpcTransport;
+  readonly transportChanges?: Stream.Stream<RpcTransport>;
 }
 
 export class RpcSessionFactory extends Context.Service<
@@ -140,7 +142,7 @@ export const make = Effect.gen(function* () {
     );
 
     interface SelectedTransport {
-      readonly kind: "websocket" | "webrtc";
+      readonly kind: RpcTransport;
       readonly client: WsRpcProtocolClient;
       readonly initialConfig: Effect.Effect<ServerConfig, ConnectionAttemptError>;
       readonly closed: Effect.Effect<never, ConnectionTransientError>;
