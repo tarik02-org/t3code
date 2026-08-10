@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -9,11 +10,45 @@ export const WebRtcIceServer = Schema.Struct({
 });
 export type WebRtcIceServer = typeof WebRtcIceServer.Type;
 
-export const WebRtcRpcFastPathCapability = Schema.Struct({
+const WebRtcRpcFastPathCapabilityCurrent = Schema.Struct({
   version: Schema.Literal(1),
   signaling: Schema.Literal("same-websocket-rpc"),
   iceServers: Schema.Array(WebRtcIceServer),
 });
+
+const WebRtcRpcFastPathCapabilityStunOnlyEncoded = Schema.Struct({
+  version: Schema.Literal(1),
+  signaling: Schema.Literal("same-websocket-rpc"),
+  turn: Schema.Literal(false),
+  stunUrls: Schema.Array(TrimmedNonEmptyString),
+});
+
+const WebRtcRpcFastPathCapabilityStunOnly = WebRtcRpcFastPathCapabilityStunOnlyEncoded.pipe(
+  Schema.decodeTo(
+    WebRtcRpcFastPathCapabilityCurrent,
+    SchemaTransformation.transform<
+      typeof WebRtcRpcFastPathCapabilityCurrent.Encoded,
+      typeof WebRtcRpcFastPathCapabilityStunOnlyEncoded.Type
+    >({
+      decode: (capability) => ({
+        version: capability.version,
+        signaling: capability.signaling,
+        iceServers: capability.stunUrls.length === 0 ? [] : [{ urls: capability.stunUrls }],
+      }),
+      encode: (capability) => ({
+        version: capability.version,
+        signaling: capability.signaling,
+        turn: false,
+        stunUrls: capability.iceServers.flatMap((server) => server.urls),
+      }),
+    }),
+  ),
+);
+
+export const WebRtcRpcFastPathCapability = Schema.Union([
+  WebRtcRpcFastPathCapabilityCurrent,
+  WebRtcRpcFastPathCapabilityStunOnly,
+]);
 export type WebRtcRpcFastPathCapability = typeof WebRtcRpcFastPathCapability.Type;
 
 export const WebRtcNegotiateInput = Schema.Struct({
