@@ -10,8 +10,10 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
@@ -451,7 +453,7 @@ describe("RpcSessionFactory", () => {
     }),
   );
 
-  it.effect("selects WebRTC after its RPC probe and closes it with the control WebSocket", () =>
+  it.effect("reaches WebSocket readiness before selecting WebRTC", () =>
     Effect.gen(function* () {
       const rtc = yield* makeRtcHarness();
       const { factory, sockets } = yield* makeFactory(rtc.peerFactory);
@@ -461,9 +463,21 @@ describe("RpcSessionFactory", () => {
 
       socket.open();
       yield* completeInitialConfig(socket, ENCODED_WEBRTC_SERVER_CONFIG);
-      yield* completeWebRtcSignaling(socket);
       yield* Fiber.join(readyFiber);
 
+      expect(session.transport).toBe("websocket");
+      const transportChanges = session.transportChanges;
+      if (transportChanges === undefined) {
+        return yield* Effect.die(new Error("Expected session transport changes."));
+      }
+      const upgraded = yield* transportChanges.pipe(
+        Stream.filter((transport) => transport === "webrtc"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.forkChild,
+      );
+      yield* completeWebRtcSignaling(socket);
+      expect(yield* Fiber.join(upgraded)).toBe("webrtc");
       expect(session.transport).toBe("webrtc");
       expect(yield* Queue.take(rtc.rtcRequests)).toBe(WS_METHODS.serverProbe);
       expect(yield* Queue.take(rtc.rtcRequests)).toBe(WS_METHODS.serverGetConfig);
@@ -489,8 +503,21 @@ describe("RpcSessionFactory", () => {
 
       firstSocket.open();
       yield* completeInitialConfig(firstSocket, ENCODED_WEBRTC_SERVER_CONFIG);
-      yield* completeWebRtcSignaling(firstSocket);
       yield* Fiber.join(firstReady);
+
+      expect(firstSession.transport).toBe("websocket");
+      const transportChanges = firstSession.transportChanges;
+      if (transportChanges === undefined) {
+        return yield* Effect.die(new Error("Expected session transport changes."));
+      }
+      const upgraded = yield* transportChanges.pipe(
+        Stream.filter((transport) => transport === "webrtc"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.forkChild,
+      );
+      yield* completeWebRtcSignaling(firstSocket);
+      expect(yield* Fiber.join(upgraded)).toBe("webrtc");
       expect(firstSession.transport).toBe("webrtc");
 
       const firstClosed = yield* Effect.flip(firstSession.closed).pipe(Effect.forkChild);

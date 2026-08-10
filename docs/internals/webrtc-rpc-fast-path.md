@@ -5,7 +5,8 @@ T3 Code can run `WsRpcGroup` over one reliable, ordered WebRTC DataChannel named
 mode.
 
 The client first establishes and authenticates the normal environment WebSocket.
-It reads `server.getConfig` there and negotiates WebRTC through
+It reads `server.getConfig` there and exposes the WebSocket session immediately.
+WebRTC negotiation then runs as a background upgrade through
 `transport.webrtc.negotiate` on that same socket. The server binds the new
 DataChannel to the authenticated WebSocket with a short-lived attempt ID and a
 one-time random token. The client selects WebRTC only after `server.probe` and a

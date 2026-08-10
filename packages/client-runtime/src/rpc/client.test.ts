@@ -185,6 +185,59 @@ describe("environment RPC", () => {
     }),
   );
 
+  it.effect("switches durable subscriptions when the active session upgrades transport", () =>
+    Effect.gen(function* () {
+      const subscriptions: string[] = [];
+      const websocketClient = {
+        [WS_METHODS.subscribeTerminalEvents]: () => {
+          subscriptions.push("websocket");
+          return Stream.never;
+        },
+      } as unknown as WsRpcProtocolClient;
+      const webRtcClient = {
+        [WS_METHODS.subscribeTerminalEvents]: () => {
+          subscriptions.push("webrtc");
+          return Stream.never;
+        },
+      } as unknown as WsRpcProtocolClient;
+      const selectedClient = yield* SubscriptionRef.make(websocketClient);
+      const transport = yield* SubscriptionRef.make<"websocket" | "webrtc">("websocket");
+      const upgradingSession = {
+        get client() {
+          return SubscriptionRef.getUnsafe(selectedClient);
+        },
+        initialConfig: Effect.never,
+        ready: Effect.void,
+        probe: Effect.void,
+        closed: Effect.never,
+        get transport() {
+          return SubscriptionRef.getUnsafe(transport);
+        },
+        transportChanges: SubscriptionRef.changes(transport),
+      } satisfies RpcSession.RpcSession;
+      const { activeSession, supervisor } = yield* makeHarness();
+
+      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+        Stream.runDrain,
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+      yield* SubscriptionRef.set(activeSession, Option.some(upgradingSession));
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 1; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      yield* SubscriptionRef.set(selectedClient, webRtcClient);
+      yield* SubscriptionRef.set(transport, "webrtc");
+      for (let attempt = 0; attempt < 100 && subscriptions.length < 2; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      yield* Fiber.interrupt(subscriptionFiber);
+
+      expect(subscriptions).toEqual(["websocket", "webrtc"]);
+    }),
+  );
+
   it.effect("keeps durable subscriptions alive across a transport failure and new session", () =>
     Effect.gen(function* () {
       const subscriptions: string[] = [];

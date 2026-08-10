@@ -193,7 +193,17 @@ export function subscribeDynamicRequest<TTag extends EnvironmentSubscriptionRpcT
     Effect.gen(function* () {
       const supervisor = yield* EnvironmentSupervisor;
       const observer = yield* EnvironmentRpcSubscriptionObserver;
-      const sessionChanges = SubscriptionRef.changes(supervisor.session);
+      const sessionChanges = SubscriptionRef.changes(supervisor.session).pipe(
+        Stream.switchMap(
+          Option.match({
+            onNone: () => Stream.succeed(Option.none<RpcSession>()),
+            onSome: (session) =>
+              session.transportChanges === undefined
+                ? Stream.succeed(Option.some(session))
+                : session.transportChanges.pipe(Stream.map(() => Option.some(session))),
+          }),
+        ),
+      );
       const sessions =
         options?.resubscribe === undefined
           ? sessionChanges
