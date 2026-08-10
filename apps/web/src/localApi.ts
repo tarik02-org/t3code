@@ -1,14 +1,16 @@
 import {
   DEFAULT_CLIENT_SETTINGS,
+  type ConfirmDialogOptions,
   type ContextMenuItem,
   type ContextMenuStyle,
   type LocalApi,
 } from "@t3tools/contracts";
 
-import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
+import { requestConfirmDialog } from "./confirmDialog";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { isMacPlatform } from "./lib/utils";
+import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
 
 let cachedApi: LocalApi | undefined;
 
@@ -41,11 +43,8 @@ function createBrowserLocalApi(): LocalApi {
         if (!window.desktopBridge) return null;
         return window.desktopBridge.pickFolder(options);
       },
-      confirm: async (message) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.confirm(message);
-        }
-        return window.confirm(message);
+      confirm: async (message, options?: ConfirmDialogOptions) => {
+        return requestConfirmDialog(message, options) ?? false;
       },
     },
     shell: {
