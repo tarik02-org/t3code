@@ -76,7 +76,7 @@ it.effect("binds and fragments RPC messages over a real DataChannel", () =>
     );
     const controller = yield* makeWebRtcFastPathController({
       enabled: true,
-      stunUrls: [],
+      iceServers: [],
       runtime: Option.some(runtime),
       socketServer,
     });
@@ -88,7 +88,7 @@ it.effect("binds and fragments RPC messages over a real DataChannel", () =>
     yield* Effect.addFinalizer(() =>
       Effect.tryPromise({
         try: () => clientPeer.close(),
-        catch: () => new ServerWebRtcPeerError("connection"),
+        catch: (cause) => new ServerWebRtcPeerError({ stage: "connection", cause }),
       }).pipe(Effect.ignore),
     );
     const clientChannel = clientPeer.createDataChannel("t3-rpc-v1");
@@ -101,7 +101,7 @@ it.effect("binds and fragments RPC messages over a real DataChannel", () =>
         await clientPeer.setLocalDescription(pendingOffer);
         return clientPeer.localDescription;
       },
-      catch: () => new ServerWebRtcPeerError("offer"),
+      catch: (cause) => new ServerWebRtcPeerError({ stage: "offer", cause }),
     });
     if (offer === null || offer.type !== "offer") {
       return yield* Effect.die(new Error("WebRTC did not create an offer."));
@@ -113,7 +113,7 @@ it.effect("binds and fragments RPC messages over a real DataChannel", () =>
     });
     yield* Effect.tryPromise({
       try: () => clientPeer.setRemoteDescription({ type: "answer", sdp: answer.answerSdp }),
-      catch: () => new ServerWebRtcPeerError("offer"),
+      catch: (cause) => new ServerWebRtcPeerError({ stage: "offer", cause }),
     });
     yield* withPeerTimeout(clientConnection.awaitOpen, "DataChannel open");
     yield* clientConnection.sendBinding(
@@ -155,7 +155,7 @@ it.effect("buffers a binding frame sent before the server socket attaches", () =
   Effect.gen(function* () {
     const stateChanged = new Event<["connecting" | "open" | "closing" | "closed"]>();
     const messages = new Event<[string | Buffer]>();
-    const readyState: "open" = "open";
+    const readyState = "open" as const;
     const channel = {
       label: "t3-rpc-v1",
       ordered: true,

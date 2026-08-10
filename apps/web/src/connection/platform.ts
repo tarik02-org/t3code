@@ -39,6 +39,7 @@ import {
   type DesktopEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
+  type WebRtcIceServer,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -110,19 +111,26 @@ function webDataChannelPort(channel: RTCDataChannel): WebRtcDataChannelPort {
 
 function webSessionDescription(
   description: RTCSessionDescription | RTCSessionDescriptionInit,
-): WebRtcSessionDescription {
+): WebRtcSessionDescription | null {
   if (
     (description.type !== "offer" && description.type !== "answer") ||
     description.sdp === undefined
   ) {
-    throw new Error("Browser WebRTC returned an invalid session description.");
+    return null;
   }
   return { type: description.type, sdp: description.sdp };
 }
 
-function createWebPeerConnection(stunUrls: ReadonlyArray<string>): PlatformWebRtcPeerConnection {
+function createWebPeerConnection(
+  iceServers: ReadonlyArray<WebRtcIceServer>,
+): PlatformWebRtcPeerConnection {
   const peer = new RTCPeerConnection({
-    iceServers: stunUrls.map((urls) => ({ urls })),
+    iceServers: iceServers.map((server) => ({
+      urls: [...server.urls],
+      ...(server.username !== undefined && server.credential !== undefined
+        ? { username: server.username, credential: server.credential }
+        : {}),
+    })),
   });
   return {
     createDataChannel: (label) =>

@@ -5,7 +5,9 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 
+import type { WebRtcIceServer } from "@t3tools/contracts";
 import type { WebRtcDataChannelPort } from "@t3tools/shared/webrtcDataChannel";
 import { isTerminalWebRtcPeerConnectionState } from "@t3tools/shared/webrtcPeerState";
 
@@ -29,20 +31,22 @@ export interface ServerWebRtcPeer {
   readonly close: Effect.Effect<void>;
 }
 
-export class ServerWebRtcPeerError extends Error {
-  readonly stage: "create" | "offer" | "connection";
-
-  constructor(stage: "create" | "offer" | "connection") {
-    super(`Server WebRTC peer failed during ${stage}.`);
-    this.name = "ServerWebRtcPeerError";
-    this.stage = stage;
+export class ServerWebRtcPeerError extends Schema.TaggedErrorClass<ServerWebRtcPeerError>()(
+  "ServerWebRtcPeerError",
+  {
+    stage: Schema.Literals(["create", "offer", "connection"]),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Server WebRTC peer failed during ${this.stage}.`;
   }
 }
 
 export interface ServerWebRtcRuntime {
   readonly createPeer: (
     attemptId: string,
-    stunUrls: ReadonlyArray<string>,
+    iceServers: ReadonlyArray<WebRtcIceServer>,
     udpPortRange: WebRtcUdpPortRange,
   ) => Effect.Effect<ServerWebRtcPeer, ServerWebRtcPeerError>;
 }
@@ -121,7 +125,8 @@ export function weriftDataChannelPort(channel: WeriftDataChannelAdapter): WebRtc
     },
     onMessage: (listener) => {
       if (messageListener !== null) {
-        throw new Error("WebRTC DataChannel already has a message listener.");
+        channel.close();
+        return () => undefined;
       }
       messageListener = listener;
       for (const message of earlyMessages.splice(0)) {
@@ -161,7 +166,15 @@ function makeWeriftPeer(connection: RTCPeerConnection): Effect.Effect<ServerWebR
     const dataChannels: Array<RTCDataChannel> = [];
     const stateSubscription = connection.connectionStateChange.subscribe((state) => {
       if (isTerminalWebRtcPeerConnectionState(state)) {
-        Deferred.doneUnsafe(closed, Effect.fail(new ServerWebRtcPeerError("connection")));
+        Deferred.doneUnsafe(
+          closed,
+          Effect.fail(
+            new ServerWebRtcPeerError({
+              stage: "connection",
+              cause: new Error(`WebRTC peer entered ${state} state.`),
+            }),
+          ),
+        );
       }
     });
     const dataChannelSubscription = connection.onDataChannel.subscribe((channel) => {
@@ -176,18 +189,21 @@ function makeWeriftPeer(connection: RTCPeerConnection): Effect.Effect<ServerWebR
           const answer = await connection.createAnswer();
           await connection.setLocalDescription(answer);
         },
-        catch: () => new ServerWebRtcPeerError("offer"),
+        catch: (cause) => new ServerWebRtcPeerError({ stage: "offer", cause }),
       }).pipe(Effect.raceFirst(Deferred.await(closed)));
       const answer = connection.localDescription;
       if (answer === null || answer.type !== "answer") {
-        return yield* Effect.fail(new ServerWebRtcPeerError("offer"));
+        return yield* new ServerWebRtcPeerError({
+          stage: "offer",
+          cause: new Error("WebRTC peer did not produce a complete answer."),
+        });
       }
       return answer.sdp;
     });
 
     const close = Effect.tryPromise({
       try: () => connection.close(),
-      catch: () => new ServerWebRtcPeerError("connection"),
+      catch: (cause) => new ServerWebRtcPeerError({ stage: "connection", cause }),
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -201,7 +217,7 @@ function makeWeriftPeer(connection: RTCPeerConnection): Effect.Effect<ServerWebR
     return {
       acceptOffer,
       takeDataChannel: Queue.take(channels).pipe(
-        Effect.mapError(() => new ServerWebRtcPeerError("connection")),
+        Effect.mapError((cause) => new ServerWebRtcPeerError({ stage: "connection", cause })),
         Effect.raceFirst(Deferred.await(closed)),
       ),
       closed: Deferred.await(closed),
@@ -233,24 +249,29 @@ function makeWeriftPeer(connection: RTCPeerConnection): Effect.Effect<ServerWebR
 export const loadServerWebRtcRuntime: Effect.Effect<Option.Option<ServerWebRtcRuntime>> =
   Effect.tryPromise({
     try: () => import("werift"),
-    catch: () => new ServerWebRtcPeerError("create"),
+    catch: (cause) => new ServerWebRtcPeerError({ stage: "create", cause }),
   }).pipe(
     Effect.map(
       (werift) =>
         ({
           createPeer: Effect.fn("ServerWebRtcRuntime.createPeer")(function* (
             _attemptId: string,
-            stunUrls: ReadonlyArray<string>,
+            iceServers: ReadonlyArray<WebRtcIceServer>,
             udpPortRange: WebRtcUdpPortRange,
           ) {
             const connection = yield* Effect.try({
               try: () =>
                 new werift.RTCPeerConnection({
-                  iceServers: stunUrls.map((urls) => ({ urls })),
+                  iceServers: iceServers.map((server) => ({
+                    urls: [...server.urls],
+                    ...(server.username === undefined
+                      ? {}
+                      : { username: server.username, credential: server.credential }),
+                  })),
                   icePortRange: [...udpPortRange],
                   maxMessageSize: 16 * 1024,
                 }),
-              catch: () => new ServerWebRtcPeerError("create"),
+              catch: (cause) => new ServerWebRtcPeerError({ stage: "create", cause }),
             });
             return yield* makeWeriftPeer(connection);
           }),

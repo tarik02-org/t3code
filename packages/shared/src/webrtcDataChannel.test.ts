@@ -157,7 +157,11 @@ it.effect("allocates a new message ID when a write effect is reused", () =>
     yield* write;
 
     const decoder = new WebRtcMessageReassembler();
-    expect(port.sent.map((frame) => decoder.push(frame, 0)?.messageId)).toEqual([1, 2]);
+    const messageIds: Array<number | undefined> = [];
+    for (const frame of port.sent) {
+      messageIds.push((yield* decoder.push(frame, 0))?.messageId);
+    }
+    expect(messageIds).toEqual([1, 2]);
   }),
 );
 
@@ -195,7 +199,7 @@ it.effect("expires an idle partial message without waiting for another frame", (
     const exitFiber = yield* receiver.socket
       .run(() => undefined)
       .pipe(Effect.exit, Effect.forkScoped);
-    const frames = encodeWebRtcMessage({
+    const frames = yield* encodeWebRtcMessage({
       kind: "rpc",
       messageId: 1,
       payload: new Uint8Array(WEBRTC_RPC_FRAGMENT_PAYLOAD_BYTES + 1),

@@ -27,11 +27,15 @@ const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
 
-it("parses and bounds the WebRTC UDP port range", () => {
-  expect(parseWebRtcUdpPortRange("60000-61000")).toEqual([60_000, 61_000]);
-  expect(() => parseWebRtcUdpPortRange("61000-60000")).toThrow();
-  expect(() => parseWebRtcUdpPortRange("80-81")).toThrow();
-});
+it.effect("parses and bounds the WebRTC UDP port range", () =>
+  Effect.gen(function* () {
+    expect(yield* parseWebRtcUdpPortRange("60000-61000")).toEqual([60_000, 61_000]);
+    expect((yield* Effect.flip(parseWebRtcUdpPortRange("61000-60000"))).reason).toBe(
+      "invalid-range",
+    );
+    expect((yield* Effect.flip(parseWebRtcUdpPortRange("80-81"))).reason).toBe("invalid-range");
+  }),
+);
 
 const makeDesktopBootstrap = (
   overrides: Partial<DesktopBackendBootstrapValue> = {},
@@ -65,7 +69,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     desktopTelemetryControlFd: undefined,
     resourceMonitorPath: undefined,
     webRtcFastPathEnabled: true,
-    webRtcStunUrls: ["stun:stun.cloudflare.com:3478"],
+    webRtcIceServers: [{ urls: ["stun:stun.cloudflare.com:3478"] }],
     webRtcUdpPortRange: [60_000, 61_000],
   } as const;
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -124,6 +128,10 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
                   T3CODE_WEBRTC_FAST_PATH: "0",
                   T3CODE_WEBRTC_STUN_URLS:
                     "stun:stun1.example.test:3478, stuns:stun2.example.test:5349",
+                  T3CODE_WEBRTC_TURN_URLS:
+                    "turn:turn1.example.test:3478?transport=udp, turns:turn2.example.test:5349?transport=tcp",
+                  T3CODE_WEBRTC_TURN_USERNAME: "turn-user",
+                  T3CODE_WEBRTC_TURN_CREDENTIAL: "turn-credential",
                   T3CODE_WEBRTC_UDP_PORT_RANGE: "62000-62100",
                 },
               }),
@@ -155,7 +163,19 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
         webRtcFastPathEnabled: false,
-        webRtcStunUrls: ["stun:stun1.example.test:3478", "stuns:stun2.example.test:5349"],
+        webRtcIceServers: [
+          {
+            urls: ["stun:stun1.example.test:3478", "stuns:stun2.example.test:5349"],
+          },
+          {
+            urls: [
+              "turn:turn1.example.test:3478?transport=udp",
+              "turns:turn2.example.test:5349?transport=tcp",
+            ],
+            username: "turn-user",
+            credential: "turn-credential",
+          },
+        ],
         webRtcUdpPortRange: [62_000, 62_100],
       });
       assert.equal(resolved.stateDir, join(baseDir, "userdata"));

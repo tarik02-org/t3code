@@ -1,6 +1,6 @@
 import * as NetService from "@t3tools/shared/Net";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
-import { DesktopBackendBootstrap, PortSchema } from "@t3tools/contracts";
+import { DesktopBackendBootstrap, PortSchema, type WebRtcIceServer } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -8,13 +8,18 @@ import * as FileSystem from "effect/FileSystem";
 import * as LogLevel from "effect/LogLevel";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Argument, Flag } from "effect/unstable/cli";
 
 import { normalizeBasePath } from "@t3tools/shared/basePath";
-import { DEFAULT_WEBRTC_STUN_URLS, validateStunUrls } from "@t3tools/shared/webrtcCandidatePolicy";
+import {
+  DEFAULT_WEBRTC_STUN_URLS,
+  validateStunUrls,
+  validateTurnUrls,
+} from "@t3tools/shared/webrtcCandidatePolicy";
 import { readBootstrapEnvelope } from "../bootstrap.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
@@ -151,43 +156,106 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   webRtcFastPathEnabled: Config.boolean("T3CODE_WEBRTC_FAST_PATH").pipe(Config.withDefault(true)),
-  webRtcStunUrls: Config.string("T3CODE_WEBRTC_STUN_URLS").pipe(
-    Config.withDefault(DEFAULT_WEBRTC_STUN_URLS.join(",")),
-    Config.map((value) =>
-      value
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0),
+  webRtcIceServers: Config.all({
+    stunUrls: Config.string("T3CODE_WEBRTC_STUN_URLS").pipe(
+      Config.withDefault(DEFAULT_WEBRTC_STUN_URLS.join(",")),
+      Config.map((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0),
+      ),
     ),
-    Config.mapOrFail((urls) =>
-      Effect.try({
-        try: () => validateStunUrls(urls),
-        catch: () =>
-          new Config.ConfigError(
-            new Schema.SchemaError(
-              new SchemaIssue.InvalidValue({
-                message: "T3CODE_WEBRTC_STUN_URLS accepts only comma-separated stun: URLs.",
-              }),
+    turnUrls: Config.string("T3CODE_WEBRTC_TURN_URLS").pipe(
+      Config.withDefault(""),
+      Config.map((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0),
+      ),
+    ),
+    turnUsername: Config.string("T3CODE_WEBRTC_TURN_USERNAME").pipe(
+      Config.option,
+      Config.map(Option.getOrUndefined),
+    ),
+    turnCredential: Config.redacted("T3CODE_WEBRTC_TURN_CREDENTIAL").pipe(
+      Config.option,
+      Config.map(Option.getOrUndefined),
+    ),
+  }).pipe(
+    Config.mapOrFail((settings) =>
+      Effect.gen(function* () {
+        const stunUrls = yield* validateStunUrls(settings.stunUrls);
+        const turnUrls = yield* validateTurnUrls(settings.turnUrls);
+        const trimmedTurnUsername = settings.turnUsername?.trim();
+        const turnUsername =
+          trimmedTurnUsername === undefined || trimmedTurnUsername.length === 0
+            ? undefined
+            : trimmedTurnUsername;
+        const trimmedTurnCredential =
+          settings.turnCredential === undefined
+            ? undefined
+            : Redacted.value(settings.turnCredential).trim();
+        const turnCredentialValue =
+          trimmedTurnCredential === undefined || trimmedTurnCredential.length === 0
+            ? undefined
+            : trimmedTurnCredential;
+        if ((turnUsername === undefined) !== (turnCredentialValue === undefined)) {
+          return yield* Effect.fail(
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue({
+                  message:
+                    "T3CODE_WEBRTC_TURN_USERNAME and T3CODE_WEBRTC_TURN_CREDENTIAL must be configured together.",
+                }),
+              ),
+            ),
+          );
+        }
+
+        const iceServers: Array<WebRtcIceServer> = [];
+        if (stunUrls.length > 0) {
+          iceServers.push({ urls: stunUrls });
+        }
+        if (turnUrls.length > 0) {
+          iceServers.push(
+            turnUsername !== undefined && turnCredentialValue !== undefined
+              ? { urls: turnUrls, username: turnUsername, credential: turnCredentialValue }
+              : { urls: turnUrls },
+          );
+        }
+        return iceServers;
+      }).pipe(
+        Effect.catchTag("WebRtcCandidatePolicyError", (error) =>
+          Effect.fail(
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue({
+                  message: error.message,
+                }),
+              ),
             ),
           ),
-      }),
+        ),
+      ),
     ),
   ),
   webRtcUdpPortRange: Config.string("T3CODE_WEBRTC_UDP_PORT_RANGE").pipe(
     Config.withDefault(DEFAULT_WEBRTC_UDP_PORT_RANGE.join("-")),
     Config.mapOrFail((value) =>
-      Effect.try({
-        try: () => parseWebRtcUdpPortRange(value),
-        catch: () =>
-          new Config.ConfigError(
-            new Schema.SchemaError(
-              new SchemaIssue.InvalidValue({
-                message:
-                  "T3CODE_WEBRTC_UDP_PORT_RANGE must be two ports from 1024 to 65535 in min-max order.",
-              }),
+      parseWebRtcUdpPortRange(value).pipe(
+        Effect.mapError(
+          (error) =>
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue({
+                  message: error.message,
+                }),
+              ),
             ),
-          ),
-      }),
+        ),
+      ),
     ),
   ),
 });
@@ -447,7 +515,7 @@ export const resolveServerConfig = (
       tailscaleServeEnabled,
       tailscaleServePort,
       webRtcFastPathEnabled: env.webRtcFastPathEnabled,
-      webRtcStunUrls: env.webRtcStunUrls,
+      webRtcIceServers: env.webRtcIceServers,
       webRtcUdpPortRange: env.webRtcUdpPortRange,
     };
 

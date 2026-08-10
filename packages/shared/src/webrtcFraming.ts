@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
 export const WEBRTC_RPC_FRAGMENT_PAYLOAD_BYTES = 12 * 1024;
 export const WEBRTC_RPC_MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const WEBRTC_RPC_MAX_PARTIAL_MESSAGES = 8;
@@ -27,29 +30,63 @@ export interface DecodedWebRtcMessage {
   readonly payload: Uint8Array;
 }
 
-export type WebRtcFramingErrorCode =
-  | "frame-too-small"
-  | "invalid-header"
-  | "invalid-kind"
-  | "invalid-flags"
-  | "fragment-too-large"
-  | "message-too-large"
-  | "invalid-bounds"
-  | "missing-start"
-  | "duplicate-message"
-  | "too-many-partials"
-  | "partial-expired"
-  | "overlapping-fragment"
-  | "mismatched-message"
-  | "invalid-control-frame";
+export const WebRtcFramingErrorCode = Schema.Literals([
+  "frame-too-small",
+  "invalid-header",
+  "invalid-kind",
+  "invalid-flags",
+  "fragment-too-large",
+  "message-too-large",
+  "invalid-bounds",
+  "missing-start",
+  "duplicate-message",
+  "too-many-partials",
+  "partial-expired",
+  "overlapping-fragment",
+  "mismatched-message",
+  "invalid-control-frame",
+]);
+export type WebRtcFramingErrorCode = typeof WebRtcFramingErrorCode.Type;
 
-export class WebRtcFramingError extends Error {
-  readonly code: WebRtcFramingErrorCode;
-
-  constructor(code: WebRtcFramingErrorCode, message: string) {
-    super(message);
-    this.name = "WebRtcFramingError";
-    this.code = code;
+export class WebRtcFramingError extends Schema.TaggedErrorClass<WebRtcFramingError>()(
+  "WebRtcFramingError",
+  { code: WebRtcFramingErrorCode },
+) {
+  override get message(): string {
+    switch (this.code) {
+      case "frame-too-small":
+        return "WebRTC frame is shorter than its header.";
+      case "invalid-header":
+        return "WebRTC frame header is invalid.";
+      case "invalid-kind":
+        return "Unknown WebRTC frame kind.";
+      case "invalid-flags":
+        return "WebRTC frame flags are invalid.";
+      case "fragment-too-large":
+        return "WebRTC fragment exceeds the size limit.";
+      case "message-too-large":
+        return "WebRTC message exceeds the size limit.";
+      case "invalid-bounds":
+        return "WebRTC fragment is out of bounds.";
+      case "missing-start":
+        return "WebRTC message is missing its start frame.";
+      case "duplicate-message":
+        return "WebRTC message contains duplicate data.";
+      case "too-many-partials":
+        return "WebRTC has too many partial messages.";
+      case "partial-expired":
+        return "WebRTC partial message exceeded its lifetime.";
+      case "overlapping-fragment":
+        return "WebRTC fragment overlaps or skips existing message data.";
+      case "mismatched-message":
+        return "WebRTC fragment does not match its partial message.";
+      case "invalid-control-frame":
+        return "WebRTC control frame has an invalid shape.";
+      default: {
+        const exhaustive: never = this.code;
+        return exhaustive;
+      }
+    }
   }
 }
 
@@ -61,7 +98,7 @@ interface PartialMessage {
   receivedLength: number;
 }
 
-function frameKindFromCode(code: number): WebRtcFrameKind {
+const frameKindFromCode = Effect.fn("WebRtcFraming.frameKindFromCode")(function* (code: number) {
   switch (code) {
     case 1:
       return "binding";
@@ -70,9 +107,9 @@ function frameKindFromCode(code: number): WebRtcFrameKind {
     case 3:
       return "rpc";
     default:
-      throw new WebRtcFramingError("invalid-kind", "Unknown WebRTC frame kind.");
+      return yield* new WebRtcFramingError({ code: "invalid-kind" });
   }
-}
+});
 
 function makeFrame(input: {
   readonly kind: WebRtcFrameKind;
@@ -102,21 +139,18 @@ function makeFrame(input: {
   return frame;
 }
 
-export function encodeWebRtcMessage(input: {
+export const encodeWebRtcMessage = Effect.fn("WebRtcFraming.encodeMessage")(function* (input: {
   readonly kind: WebRtcFrameKind;
   readonly messageId: number;
   readonly payload: Uint8Array;
   readonly fragmentPayloadBytes?: number;
-}): ReadonlyArray<Uint8Array> {
+}) {
   const fragmentPayloadBytes = input.fragmentPayloadBytes ?? WEBRTC_RPC_FRAGMENT_PAYLOAD_BYTES;
   if (fragmentPayloadBytes <= 0 || fragmentPayloadBytes > WEBRTC_RPC_FRAGMENT_PAYLOAD_BYTES) {
-    throw new WebRtcFramingError(
-      "fragment-too-large",
-      "WebRTC fragment payload size is outside the supported range.",
-    );
+    return yield* new WebRtcFramingError({ code: "fragment-too-large" });
   }
   if (input.payload.byteLength > WEBRTC_RPC_MAX_MESSAGE_BYTES) {
-    throw new WebRtcFramingError("message-too-large", "WebRTC message exceeds the size limit.");
+    return yield* new WebRtcFramingError({ code: "message-too-large" });
   }
   if (input.kind !== "rpc") {
     if (
@@ -124,10 +158,7 @@ export function encodeWebRtcMessage(input: {
       input.payload.byteLength > WEBRTC_BINDING_MAX_BYTES ||
       (input.kind === "binding-ack" && input.payload.byteLength !== 0)
     ) {
-      throw new WebRtcFramingError(
-        "invalid-control-frame",
-        "WebRTC control frame has an invalid shape.",
-      );
+      return yield* new WebRtcFramingError({ code: "invalid-control-frame" });
     }
     return [
       makeFrame({
@@ -142,7 +173,7 @@ export function encodeWebRtcMessage(input: {
     ];
   }
   if (input.messageId === 0) {
-    throw new WebRtcFramingError("invalid-header", "WebRTC RPC message ID must be non-zero.");
+    return yield* new WebRtcFramingError({ code: "invalid-header" });
   }
   if (input.payload.byteLength === 0) {
     return [
@@ -174,7 +205,7 @@ export function encodeWebRtcMessage(input: {
     );
   }
   return frames;
-}
+});
 
 export class WebRtcMessageReassembler {
   readonly #maxMessageBytes: number;
@@ -205,7 +236,10 @@ export class WebRtcMessageReassembler {
     return nextExpiryAtMs;
   }
 
-  expirePartials(nowMs: number): void {
+  readonly expirePartials = Effect.fn("WebRtcMessageReassembler.expirePartials")(function* (
+    this: WebRtcMessageReassembler,
+    nowMs: number,
+  ) {
     let expired = false;
     for (const [messageId, partial] of this.#partials) {
       if (nowMs >= partial.createdAtMs + this.#partialTtlMs) {
@@ -214,17 +248,18 @@ export class WebRtcMessageReassembler {
       }
     }
     if (expired) {
-      throw new WebRtcFramingError(
-        "partial-expired",
-        "WebRTC partial message exceeded its lifetime.",
-      );
+      return yield* new WebRtcFramingError({ code: "partial-expired" });
     }
-  }
+  });
 
-  push(frame: Uint8Array, nowMs: number): DecodedWebRtcMessage | null {
-    this.expirePartials(nowMs);
+  readonly push = Effect.fn("WebRtcMessageReassembler.push")(function* (
+    this: WebRtcMessageReassembler,
+    frame: Uint8Array,
+    nowMs: number,
+  ) {
+    yield* this.expirePartials(nowMs);
     if (frame.byteLength < FRAME_HEADER_BYTES) {
-      throw new WebRtcFramingError("frame-too-small", "WebRTC frame is shorter than its header.");
+      return yield* new WebRtcFramingError({ code: "frame-too-small" });
     }
     const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
     if (
@@ -232,35 +267,35 @@ export class WebRtcMessageReassembler {
       view.getUint8(4) !== FRAME_VERSION ||
       view.getUint8(7) !== 0
     ) {
-      throw new WebRtcFramingError("invalid-header", "WebRTC frame header is invalid.");
+      return yield* new WebRtcFramingError({ code: "invalid-header" });
     }
-    const kind = frameKindFromCode(view.getUint8(5));
+    const kind = yield* frameKindFromCode(view.getUint8(5));
     const flags = view.getUint8(6);
     if ((flags & ~KNOWN_FLAGS) !== 0) {
-      throw new WebRtcFramingError("invalid-flags", "WebRTC frame has unknown flags.");
+      return yield* new WebRtcFramingError({ code: "invalid-flags" });
     }
     const start = (flags & START_FLAG) !== 0;
     const end = (flags & END_FLAG) !== 0;
     const control = (flags & CONTROL_FLAG) !== 0;
     if (control !== (kind !== "rpc")) {
-      throw new WebRtcFramingError("invalid-flags", "WebRTC frame control flag is invalid.");
+      return yield* new WebRtcFramingError({ code: "invalid-flags" });
     }
     const messageId = view.getUint32(8);
     const totalLength = view.getUint32(12);
     const offset = view.getUint32(16);
     const payload = frame.subarray(FRAME_HEADER_BYTES);
     if (payload.byteLength > WEBRTC_RPC_FRAGMENT_PAYLOAD_BYTES) {
-      throw new WebRtcFramingError("fragment-too-large", "WebRTC fragment exceeds the size limit.");
+      return yield* new WebRtcFramingError({ code: "fragment-too-large" });
     }
     if (totalLength > this.#maxMessageBytes) {
-      throw new WebRtcFramingError("message-too-large", "WebRTC message exceeds the size limit.");
+      return yield* new WebRtcFramingError({ code: "message-too-large" });
     }
     if (offset > totalLength || payload.byteLength > totalLength - offset) {
-      throw new WebRtcFramingError("invalid-bounds", "WebRTC fragment is out of bounds.");
+      return yield* new WebRtcFramingError({ code: "invalid-bounds" });
     }
     const reachesEnd = offset + payload.byteLength === totalLength;
     if (start !== (offset === 0) || end !== reachesEnd) {
-      throw new WebRtcFramingError("invalid-flags", "WebRTC fragment boundary flags are invalid.");
+      return yield* new WebRtcFramingError({ code: "invalid-flags" });
     }
 
     if (kind !== "rpc") {
@@ -271,27 +306,24 @@ export class WebRtcMessageReassembler {
         totalLength > WEBRTC_BINDING_MAX_BYTES ||
         (kind === "binding-ack" && totalLength !== 0)
       ) {
-        throw new WebRtcFramingError(
-          "invalid-control-frame",
-          "WebRTC control frame has an invalid shape.",
-        );
+        return yield* new WebRtcFramingError({ code: "invalid-control-frame" });
       }
-      return { kind, messageId, payload: payload.slice() };
+      return { kind, messageId, payload: payload.slice() } satisfies DecodedWebRtcMessage;
     }
     if (messageId === 0) {
-      throw new WebRtcFramingError("invalid-header", "WebRTC RPC message ID must be non-zero.");
+      return yield* new WebRtcFramingError({ code: "invalid-header" });
     }
     if (this.#completedMessageIds.has(messageId)) {
-      throw new WebRtcFramingError("duplicate-message", "WebRTC message ID was already completed.");
+      return yield* new WebRtcFramingError({ code: "duplicate-message" });
     }
 
     let partial = this.#partials.get(messageId);
     if (partial === undefined) {
       if (!start) {
-        throw new WebRtcFramingError("missing-start", "WebRTC message is missing its start frame.");
+        return yield* new WebRtcFramingError({ code: "missing-start" });
       }
       if (this.#partials.size >= this.#maxPartialMessages) {
-        throw new WebRtcFramingError("too-many-partials", "WebRTC has too many partial messages.");
+        return yield* new WebRtcFramingError({ code: "too-many-partials" });
       }
       partial = {
         kind,
@@ -303,20 +335,14 @@ export class WebRtcMessageReassembler {
       this.#partials.set(messageId, partial);
     } else {
       if (start) {
-        throw new WebRtcFramingError("duplicate-message", "WebRTC message has a duplicate start.");
+        return yield* new WebRtcFramingError({ code: "duplicate-message" });
       }
       if (partial.kind !== kind || partial.totalLength !== totalLength) {
-        throw new WebRtcFramingError(
-          "mismatched-message",
-          "WebRTC fragment does not match its partial message.",
-        );
+        return yield* new WebRtcFramingError({ code: "mismatched-message" });
       }
     }
     if (offset !== partial.receivedLength) {
-      throw new WebRtcFramingError(
-        "overlapping-fragment",
-        "WebRTC fragment overlaps or skips existing message data.",
-      );
+      return yield* new WebRtcFramingError({ code: "overlapping-fragment" });
     }
     partial.chunks.push(payload.slice());
     partial.receivedLength += payload.byteLength;
@@ -339,6 +365,6 @@ export class WebRtcMessageReassembler {
         this.#completedMessageIds.delete(oldest);
       }
     }
-    return { kind: "rpc", messageId, payload: message };
-  }
+    return { kind: "rpc", messageId, payload: message } satisfies DecodedWebRtcMessage;
+  });
 }

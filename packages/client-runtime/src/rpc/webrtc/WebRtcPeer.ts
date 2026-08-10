@@ -1,6 +1,7 @@
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 
+import type { WebRtcIceServer } from "@t3tools/contracts";
 import {
   isTerminalWebRtcPeerConnectionState,
   type WebRtcPeerConnectionState,
@@ -21,7 +22,7 @@ export interface WebRtcSessionDescription {
 
 export interface PlatformWebRtcPeerConnection {
   readonly createDataChannel: (label: string) => WebRtcDataChannelPort;
-  readonly createOffer: () => Promise<WebRtcSessionDescription>;
+  readonly createOffer: () => Promise<WebRtcSessionDescription | null>;
   readonly setLocalDescription: (description: WebRtcSessionDescription) => Promise<void>;
   readonly localDescription: () => WebRtcSessionDescription | null;
   readonly setRemoteDescription: (description: WebRtcSessionDescription) => Promise<void>;
@@ -91,12 +92,16 @@ export function selectedIcePairTypeFromStats(stats: WebRtcStatsReportLike): stri
 }
 
 export function makeWebRtcPeerFactory(
-  createPeerConnection: (stunUrls: ReadonlyArray<string>) => PlatformWebRtcPeerConnection,
+  createPeerConnection: (
+    iceServers: ReadonlyArray<WebRtcIceServer>,
+  ) => PlatformWebRtcPeerConnection,
 ): WebRtcPeerFactoryService {
   return {
-    create: Effect.fn("WebRtcPeerFactory.create")(function* (stunUrls: ReadonlyArray<string>) {
+    create: Effect.fn("WebRtcPeerFactory.create")(function* (
+      iceServers: ReadonlyArray<WebRtcIceServer>,
+    ) {
       const peer = yield* Effect.try({
-        try: () => createPeerConnection(stunUrls),
+        try: () => createPeerConnection(iceServers),
         catch: (cause) => new WebRtcPeerError({ stage: "create", cause }),
       });
       const gathered = yield* Deferred.make<void, WebRtcPeerError>();
@@ -136,6 +141,12 @@ export function makeWebRtcPeerFactory(
           try: () => peer.createOffer(),
           catch: (cause) => new WebRtcPeerError({ stage: "offer", cause }),
         });
+        if (offer === null) {
+          return yield* new WebRtcPeerError({
+            stage: "offer",
+            cause: new Error("WebRTC peer did not produce a valid offer."),
+          });
+        }
         yield* Effect.tryPromise({
           try: () => peer.setLocalDescription(offer),
           catch: (cause) => new WebRtcPeerError({ stage: "offer", cause }),

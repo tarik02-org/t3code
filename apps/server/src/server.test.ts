@@ -4379,7 +4379,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         config: {
           webRtcFastPathEnabled: true,
-          webRtcStunUrls: [],
+          webRtcIceServers: [],
         },
       });
 
@@ -4390,7 +4390,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* Effect.addFinalizer(() =>
         Effect.tryPromise({
           try: () => clientPeer.close(),
-          catch: () => new ServerWebRtcPeerError("connection"),
+          catch: (cause) => new ServerWebRtcPeerError({ stage: "connection", cause }),
         }).pipe(Effect.ignore),
       );
       const rtcClosed = yield* Deferred.make<void>();
@@ -4412,8 +4412,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             assert.deepEqual(controlConfig.environment.capabilities.webRtcRpcFastPath, {
               version: 1,
               signaling: "same-websocket-rpc",
-              turn: false,
-              stunUrls: [],
+              iceServers: [],
             });
 
             const offer = yield* Effect.tryPromise({
@@ -4422,7 +4421,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 await clientPeer.setLocalDescription(pendingOffer);
                 return clientPeer.localDescription;
               },
-              catch: () => new ServerWebRtcPeerError("offer"),
+              catch: (cause) => new ServerWebRtcPeerError({ stage: "offer", cause }),
             });
             if (offer === null || offer.type !== "offer") {
               return yield* Effect.die(new Error("WebRTC client did not produce an offer."));
@@ -4434,7 +4433,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             });
             yield* Effect.tryPromise({
               try: () => clientPeer.setRemoteDescription({ type: "answer", sdp: answer.answerSdp }),
-              catch: () => new ServerWebRtcPeerError("offer"),
+              catch: (cause) => new ServerWebRtcPeerError({ stage: "offer", cause }),
             });
             yield* rtcConnection.awaitOpen.pipe(Effect.timeout("10 seconds"));
             yield* rtcConnection.sendBinding(

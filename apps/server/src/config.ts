@@ -14,6 +14,7 @@ import * as LogLevel from "effect/LogLevel";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import type { WebRtcIceServer } from "@t3tools/contracts";
 import { ROOT_BASE_PATH, type NormalizedBasePath } from "@t3tools/shared/basePath";
 import type { WebRtcUdpPortRange } from "./webrtc/config.ts";
 
@@ -89,7 +90,7 @@ export class ServerConfig extends Context.Service<
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
     readonly webRtcFastPathEnabled?: boolean;
-    readonly webRtcStunUrls?: ReadonlyArray<string>;
+    readonly webRtcIceServers?: ReadonlyArray<WebRtcIceServer>;
     readonly webRtcUdpPortRange?: WebRtcUdpPortRange;
   }
 >()("t3/config/ServerConfig") {

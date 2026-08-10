@@ -8,13 +8,11 @@ import {
   WebRtcFastPathUnsupportedError,
   type WebRtcNegotiateInput,
   type WebRtcNegotiateResult,
+  type WebRtcIceServer,
   type WebRtcRpcFastPathCapability,
   type WebRtcSignalingError,
 } from "@t3tools/contracts";
-import {
-  validateSessionDescription,
-  validateStunUrls,
-} from "@t3tools/shared/webrtcCandidatePolicy";
+import { validateSessionDescription } from "@t3tools/shared/webrtcCandidatePolicy";
 import { makeWebRtcDataChannelConnection } from "@t3tools/shared/webrtcDataChannel";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -57,7 +55,7 @@ export interface WebRtcFastPathController {
 
 export interface WebRtcFastPathControllerOptions {
   readonly enabled: boolean;
-  readonly stunUrls: ReadonlyArray<string>;
+  readonly iceServers: ReadonlyArray<WebRtcIceServer>;
   readonly runtime: Option.Option<ServerWebRtcRuntime>;
   readonly socketServer: SingleSocketServer;
   readonly udpPortRange?: WebRtcUdpPortRange;
@@ -78,17 +76,17 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
   const attemptTimes = yield* Ref.make<ReadonlyArray<number>>([]);
   const attemptTtlMs = options.attemptTtlMs ?? DEFAULT_ATTEMPT_TTL_MS;
   const runtime = Option.getOrNull(options.runtime);
-  const stunUrls = yield* Effect.try({
-    try: () => validateStunUrls(options.stunUrls),
-    catch: () => null,
-  });
   const capability: WebRtcRpcFastPathCapability | null =
-    options.enabled && runtime !== null && stunUrls !== null
+    options.enabled && runtime !== null
       ? {
           version: 1,
           signaling: "same-websocket-rpc",
-          turn: false,
-          stunUrls: [...stunUrls],
+          iceServers: options.iceServers.map((server) => ({
+            urls: [...server.urls],
+            ...(server.username === undefined
+              ? {}
+              : { username: server.username, credential: server.credential }),
+          })),
         }
       : null;
 
@@ -117,9 +115,10 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
     const bindingBytes = yield* connection.awaitBinding;
     const binding = yield* decodeBindingFrame(new TextDecoder().decode(bindingBytes)).pipe(
       Effect.mapError(
-        () =>
+        (cause) =>
           new WebRtcFastPathInvalidAttemptError({
             message: "WebRTC binding frame is invalid.",
+            cause,
           }),
       ),
     );
@@ -175,15 +174,20 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
     if (!options.enabled) {
       return yield* new WebRtcFastPathDisabledError({ message: "WebRTC fast path is disabled." });
     }
-    if (runtime === null || capability === null || stunUrls === null) {
+    if (runtime === null || capability === null) {
       return yield* new WebRtcFastPathUnsupportedError({
         message: "WebRTC fast path is unavailable on this server.",
       });
     }
-    yield* Effect.try({
-      try: () => validateSessionDescription(input.offerSdp),
-      catch: () => new WebRtcFastPathInvalidSdpError({ message: "WebRTC offer SDP is invalid." }),
-    });
+    yield* validateSessionDescription(input.offerSdp).pipe(
+      Effect.mapError(
+        (cause) =>
+          new WebRtcFastPathInvalidSdpError({
+            message: "WebRTC offer SDP is invalid.",
+            cause,
+          }),
+      ),
+    );
     const nowMs = yield* Clock.currentTimeMillis;
     const recentAttempts = (yield* Ref.get(attemptTimes)).filter(
       (attemptedAtMs) => nowMs - attemptedAtMs < RATE_LIMIT_WINDOW_MS,
@@ -197,37 +201,46 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
     const previous = yield* Ref.getAndSet(active, null);
     yield* closeAttempt(previous);
     const peer = yield* runtime
-      .createPeer(input.attemptId, stunUrls, options.udpPortRange ?? DEFAULT_WEBRTC_UDP_PORT_RANGE)
+      .createPeer(
+        input.attemptId,
+        options.iceServers,
+        options.udpPortRange ?? DEFAULT_WEBRTC_UDP_PORT_RANGE,
+      )
       .pipe(
         Effect.mapError(
-          () =>
+          (cause) =>
             new WebRtcFastPathNegotiationError({
               message: "WebRTC peer initialization failed.",
+              cause,
             }),
         ),
       );
     return yield* Effect.gen(function* () {
-      const answerSdp = yield* peer
-        .acceptOffer(input.offerSdp)
-        .pipe(
-          Effect.mapError(
-            () =>
-              new WebRtcFastPathNegotiationError({ message: "WebRTC offer negotiation failed." }),
-          ),
-        );
-      yield* Effect.try({
-        try: () => validateSessionDescription(answerSdp),
-        catch: () =>
-          new WebRtcFastPathNegotiationError({
-            message: "WebRTC generated an invalid answer.",
-          }),
-      });
+      const answerSdp = yield* peer.acceptOffer(input.offerSdp).pipe(
+        Effect.mapError(
+          (cause) =>
+            new WebRtcFastPathNegotiationError({
+              message: "WebRTC offer negotiation failed.",
+              cause,
+            }),
+        ),
+      );
+      yield* validateSessionDescription(answerSdp).pipe(
+        Effect.mapError(
+          (cause) =>
+            new WebRtcFastPathNegotiationError({
+              message: "WebRTC generated an invalid answer.",
+              cause,
+            }),
+        ),
+      );
       const bindingToken = yield* crypto.randomBytes(32).pipe(
         Effect.map(Encoding.encodeBase64Url),
         Effect.mapError(
-          () =>
+          (cause) =>
             new WebRtcFastPathNegotiationError({
               message: "WebRTC binding token generation failed.",
+              cause,
             }),
         ),
       );

@@ -4,6 +4,7 @@ import {
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
   EnvironmentId,
+  type WebRtcIceServer,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -91,7 +92,7 @@ export interface WebRtcPeer {
 
 export interface WebRtcPeerFactoryService {
   readonly create: (
-    stunUrls: ReadonlyArray<string>,
+    iceServers: ReadonlyArray<WebRtcIceServer>,
   ) => Effect.Effect<WebRtcPeer, WebRtcPeerError, Scope.Scope>;
 }
 

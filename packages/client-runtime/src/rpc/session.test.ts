@@ -156,8 +156,7 @@ const WEBRTC_SERVER_CONFIG: ServerConfigType = {
       webRtcRpcFastPath: {
         version: 1,
         signaling: "same-websocket-rpc",
-        turn: false,
-        stunUrls: [],
+        iceServers: [],
       },
     },
   },

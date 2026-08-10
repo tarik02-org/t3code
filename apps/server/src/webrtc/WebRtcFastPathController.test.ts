@@ -1,4 +1,4 @@
-import { WebRtcBindingFrame } from "@t3tools/contracts";
+import { WebRtcBindingFrame, type WebRtcIceServer } from "@t3tools/contracts";
 import {
   makeWebRtcDataChannelConnection,
   type WebRtcDataChannelPort,
@@ -134,7 +134,7 @@ const makeHarness = Effect.fn("WebRtcFastPathController.test.makeHarness")(funct
     .pipe(Effect.forkScoped);
   const controller = yield* makeWebRtcFastPathController({
     enabled: true,
-    stunUrls: [],
+    iceServers: [],
     runtime: Option.some(runtime),
     socketServer,
     attemptTtlMs,
@@ -159,7 +159,7 @@ describe("WebRtcFastPathController", () => {
     Effect.gen(function* () {
       const controller = yield* makeWebRtcFastPathController({
         enabled: true,
-        stunUrls: [],
+        iceServers: [],
         runtime: Option.none(),
         socketServer: yield* makeSingleSocketServer(),
       });
@@ -173,6 +173,51 @@ describe("WebRtcFastPathController", () => {
         }),
       );
       expect(error._tag).toBe("WebRtcFastPathUnsupportedError");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("advertises and applies configured STUN and TURN servers", () =>
+    Effect.gen(function* () {
+      const configuredIceServers: ReadonlyArray<WebRtcIceServer> = [
+        { urls: ["stun:stun.example.test:3478"] },
+        {
+          urls: ["turns:turn.example.test:5349?transport=tcp"],
+          username: "turn-user",
+          credential: "turn-credential",
+        },
+      ];
+      const receivedIceServers = yield* Deferred.make<ReadonlyArray<WebRtcIceServer>>();
+      const peer: ServerWebRtcPeer = {
+        acceptOffer: () => Effect.succeed("v=0\r\n"),
+        takeDataChannel: Effect.never,
+        closed: Effect.never,
+        diagnosticState: Effect.succeed({
+          connectionState: "new",
+          gatheringState: "new",
+          iceState: "new",
+        }),
+        selectedIcePairType: Effect.succeed(null),
+        bytesSent: Effect.succeed(0),
+        bytesReceived: Effect.succeed(0),
+        close: Effect.void,
+      };
+      const controller = yield* makeWebRtcFastPathController({
+        enabled: true,
+        iceServers: configuredIceServers,
+        runtime: Option.some({
+          createPeer: (_attemptId, iceServers) =>
+            Deferred.succeed(receivedIceServers, iceServers).pipe(Effect.as(peer)),
+        }),
+        socketServer: yield* makeSingleSocketServer(),
+      });
+
+      expect(controller.capability?.iceServers).toEqual(configuredIceServers);
+      yield* controller.negotiate({
+        version: 1,
+        attemptId: "attempt-with-turn",
+        offerSdp: "v=0\r\n",
+      });
+      expect(yield* Deferred.await(receivedIceServers)).toEqual(configuredIceServers);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -252,8 +297,12 @@ describe("WebRtcFastPathController", () => {
   it.effect("closes a partially initialized peer when offer negotiation fails", () =>
     Effect.gen(function* () {
       const closeCount = yield* Ref.make(0);
+      const peerError = new ServerWebRtcPeerError({
+        stage: "offer",
+        cause: new Error("Test offer failure."),
+      });
       const peer: ServerWebRtcPeer = {
-        acceptOffer: () => Effect.fail(new ServerWebRtcPeerError("offer")),
+        acceptOffer: () => Effect.fail(peerError),
         takeDataChannel: Effect.never,
         closed: Effect.never,
         diagnosticState: Effect.succeed({
@@ -268,7 +317,7 @@ describe("WebRtcFastPathController", () => {
       };
       const controller = yield* makeWebRtcFastPathController({
         enabled: true,
-        stunUrls: [],
+        iceServers: [],
         runtime: Option.some({ createPeer: () => Effect.succeed(peer) }),
         socketServer: yield* makeSingleSocketServer(),
       });
@@ -282,6 +331,10 @@ describe("WebRtcFastPathController", () => {
       );
 
       expect(error._tag).toBe("WebRtcFastPathNegotiationError");
+      if (error._tag !== "WebRtcFastPathNegotiationError") {
+        return yield* Effect.die(new Error("Expected WebRtcFastPathNegotiationError."));
+      }
+      expect(error.cause).toBe(peerError);
       expect(yield* Ref.get(closeCount)).toBe(1);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
@@ -307,7 +360,7 @@ describe("WebRtcFastPathController", () => {
       };
       const controller = yield* makeWebRtcFastPathController({
         enabled: true,
-        stunUrls: [],
+        iceServers: [],
         runtime: Option.some({ createPeer: () => Effect.succeed(peer) }),
         socketServer: yield* makeSingleSocketServer(),
       });

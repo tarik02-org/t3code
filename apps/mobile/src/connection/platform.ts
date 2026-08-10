@@ -22,7 +22,7 @@ import {
   Wakeups,
 } from "@t3tools/client-runtime/connection";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
-import { AuthStandardClientScopes } from "@t3tools/contracts";
+import { AuthStandardClientScopes, type WebRtcIceServer } from "@t3tools/contracts";
 import type { WebRtcDataChannelPort } from "@t3tools/shared/webrtcDataChannel";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -117,16 +117,25 @@ function mobileDataChannelPort(channel: MobileDataChannel): WebRtcDataChannelPor
   };
 }
 
-function mobileSessionDescription(description: RTCSessionDescription): WebRtcSessionDescription {
+function mobileSessionDescription(
+  description: RTCSessionDescription,
+): WebRtcSessionDescription | null {
   if (description.type !== "offer" && description.type !== "answer") {
-    throw new Error("Mobile WebRTC returned an invalid session description.");
+    return null;
   }
   return { type: description.type, sdp: description.sdp };
 }
 
-function createMobilePeerConnection(stunUrls: ReadonlyArray<string>): PlatformWebRtcPeerConnection {
+function createMobilePeerConnection(
+  iceServers: ReadonlyArray<WebRtcIceServer>,
+): PlatformWebRtcPeerConnection {
   const peer = new RTCPeerConnection({
-    iceServers: stunUrls.map((urls) => ({ urls })),
+    iceServers: iceServers.map((server) => ({
+      urls: [...server.urls],
+      ...(server.username !== undefined && server.credential !== undefined
+        ? { username: server.username, credential: server.credential }
+        : {}),
+    })),
   });
   return {
     createDataChannel: (label) =>

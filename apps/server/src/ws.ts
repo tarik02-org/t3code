@@ -2304,7 +2304,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           config.webRtcFastPathEnabled === true ? yield* loadServerWebRtcRuntime : Option.none();
         const webRtc = yield* makeWebRtcFastPathController({
           enabled: config.webRtcFastPathEnabled === true,
-          stunUrls: config.webRtcStunUrls ?? [],
+          iceServers: config.webRtcIceServers ?? [],
           ...(config.webRtcUdpPortRange === undefined
             ? {}
             : { udpPortRange: config.webRtcUdpPortRange }),

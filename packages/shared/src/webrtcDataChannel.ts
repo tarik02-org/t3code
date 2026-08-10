@@ -9,7 +9,6 @@ import * as Socket from "effect/unstable/socket/Socket";
 import {
   encodeWebRtcMessage,
   type DecodedWebRtcMessage,
-  WebRtcFramingError,
   WebRtcMessageReassembler,
 } from "./webrtcFraming.ts";
 
@@ -116,10 +115,13 @@ export const makeWebRtcDataChannelConnection = Effect.fn("WebRtcDataChannelConne
                   Effect.sleep(Duration.millis(Math.max(0, expiresAtMs - nowMs))).pipe(
                     Effect.andThen(Clock.currentTimeMillis),
                     Effect.flatMap((expiredAtMs) =>
-                      Effect.try({
-                        try: () => decoder.expirePartials(expiredAtMs),
-                        catch: (cause) => socketError(new Socket.SocketReadError({ cause })),
-                      }),
+                      decoder
+                        .expirePartials(expiredAtMs)
+                        .pipe(
+                          Effect.mapError((cause) =>
+                            socketError(new Socket.SocketReadError({ cause })),
+                          ),
+                        ),
                     ),
                     Effect.tapError(failConnection),
                     Effect.andThen(Effect.never),
@@ -128,16 +130,7 @@ export const makeWebRtcDataChannelConnection = Effect.fn("WebRtcDataChannelConne
                 Effect.raceFirst(takeFrame),
               );
         const nowMs = yield* Clock.currentTimeMillis;
-        const message = yield* Effect.try({
-          try: () => decoder.push(frame, nowMs),
-          catch: (cause) =>
-            cause instanceof WebRtcFramingError
-              ? cause
-              : new WebRtcFramingError(
-                  "invalid-header",
-                  "WebRTC framing decoder failed unexpectedly.",
-                ),
-        }).pipe(
+        const message = yield* decoder.push(frame, nowMs).pipe(
           Effect.tapError((error) =>
             Effect.logWarning("WebRTC framing rejected a DataChannel frame.").pipe(
               Effect.annotateLogs({ "webrtc.framing.error_code": error.code }),
@@ -171,10 +164,10 @@ export const makeWebRtcDataChannelConnection = Effect.fn("WebRtcDataChannelConne
       );
 
     const sendControl = (kind: "binding" | "binding-ack", payload: Uint8Array) =>
-      Effect.try({
-        try: () => encodeWebRtcMessage({ kind, messageId: 0, payload }),
-        catch: (cause) => socketError(new Socket.SocketWriteError({ cause })),
-      }).pipe(Effect.flatMap(sendFrames));
+      encodeWebRtcMessage({ kind, messageId: 0, payload }).pipe(
+        Effect.mapError((cause) => socketError(new Socket.SocketWriteError({ cause }))),
+        Effect.flatMap(sendFrames),
+      );
 
     const expectControl = Effect.fn("WebRtcDataChannelConnection.expectControl")(function* (
       expected: "binding" | "binding-ack",
@@ -217,14 +210,15 @@ export const makeWebRtcDataChannelConnection = Effect.fn("WebRtcDataChannelConne
           return Effect.sync(() => port.close());
         }
         const payload = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
-        return Effect.try({
-          try: () => {
-            const messageId = nextMessageId;
-            nextMessageId = nextMessageId === 0xffff_ffff ? 1 : nextMessageId + 1;
-            return encodeWebRtcMessage({ kind: "rpc", messageId, payload });
-          },
-          catch: (cause) => socketError(new Socket.SocketWriteError({ cause })),
-        }).pipe(Effect.flatMap(sendFrames));
+        return Effect.sync(() => {
+          const messageId = nextMessageId;
+          nextMessageId = nextMessageId === 0xffff_ffff ? 1 : nextMessageId + 1;
+          return messageId;
+        }).pipe(
+          Effect.flatMap((messageId) => encodeWebRtcMessage({ kind: "rpc", messageId, payload })),
+          Effect.mapError((cause) => socketError(new Socket.SocketWriteError({ cause }))),
+          Effect.flatMap(sendFrames),
+        );
       }),
     });
 

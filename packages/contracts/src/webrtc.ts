@@ -2,11 +2,17 @@ import * as Schema from "effect/Schema";
 
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
+export const WebRtcIceServer = Schema.Struct({
+  urls: Schema.Array(TrimmedNonEmptyString),
+  username: Schema.optionalKey(TrimmedNonEmptyString),
+  credential: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type WebRtcIceServer = typeof WebRtcIceServer.Type;
+
 export const WebRtcRpcFastPathCapability = Schema.Struct({
   version: Schema.Literal(1),
   signaling: Schema.Literal("same-websocket-rpc"),
-  turn: Schema.Literal(false),
-  stunUrls: Schema.Array(TrimmedNonEmptyString),
+  iceServers: Schema.Array(WebRtcIceServer),
 });
 export type WebRtcRpcFastPathCapability = typeof WebRtcRpcFastPathCapability.Type;
 
@@ -58,17 +64,17 @@ export class WebRtcFastPathBusyError extends Schema.TaggedErrorClass<WebRtcFastP
 
 export class WebRtcFastPathInvalidAttemptError extends Schema.TaggedErrorClass<WebRtcFastPathInvalidAttemptError>()(
   "WebRtcFastPathInvalidAttemptError",
-  { message: TrimmedNonEmptyString },
+  { message: TrimmedNonEmptyString, cause: Schema.optionalKey(Schema.Defect()) },
 ) {}
 
 export class WebRtcFastPathInvalidSdpError extends Schema.TaggedErrorClass<WebRtcFastPathInvalidSdpError>()(
   "WebRtcFastPathInvalidSdpError",
-  { message: TrimmedNonEmptyString },
+  { message: TrimmedNonEmptyString, cause: Schema.Defect() },
 ) {}
 
 export class WebRtcFastPathNegotiationError extends Schema.TaggedErrorClass<WebRtcFastPathNegotiationError>()(
   "WebRtcFastPathNegotiationError",
-  { message: TrimmedNonEmptyString },
+  { message: TrimmedNonEmptyString, cause: Schema.Defect() },
 ) {}
 
 export const WebRtcSignalingError = Schema.Union([

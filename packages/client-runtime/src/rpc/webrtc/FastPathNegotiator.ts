@@ -6,8 +6,8 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import {
+  validateIceServers,
   validateSessionDescription,
-  validateStunUrls,
 } from "@t3tools/shared/webrtcCandidatePolicy";
 import {
   makeWebRtcDataChannelConnection,
@@ -44,7 +44,7 @@ export type WebRtcFastPathFallbackReason = typeof WebRtcFastPathFallbackReason.T
 
 export class WebRtcFastPathNegotiationError extends Schema.TaggedErrorClass<WebRtcFastPathNegotiationError>()(
   "WebRtcFastPathNegotiationError",
-  { reason: WebRtcFastPathFallbackReason },
+  { reason: WebRtcFastPathFallbackReason, cause: Schema.optionalKey(Schema.Defect()) },
 ) {
   override get message(): string {
     return `WebRTC fast path negotiation failed: ${this.reason}.`;
@@ -53,7 +53,7 @@ export class WebRtcFastPathNegotiationError extends Schema.TaggedErrorClass<WebR
 
 export class WebRtcFastPathTransportClosedError extends Schema.TaggedErrorClass<WebRtcFastPathTransportClosedError>()(
   "WebRtcFastPathTransportClosedError",
-  {},
+  { cause: Schema.Defect() },
 ) {
   override get message(): string {
     return "WebRTC fast path transport closed.";
@@ -111,48 +111,63 @@ export const negotiateWebRtcFastPath = Effect.fn("RpcSession.negotiateWebRtcFast
 
     const negotiate = Effect.gen(function* () {
       const startedAtMs = yield* Clock.currentTimeMillis;
-      const stunUrls = yield* Effect.try({
-        try: () => validateStunUrls(options.capability.stunUrls),
-        catch: () => new WebRtcFastPathNegotiationError({ reason: "invalid-capability" }),
-      });
+      const iceServers = yield* validateIceServers(options.capability.iceServers).pipe(
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "invalid-capability", cause }),
+        ),
+      );
       const peer = yield* options.peerFactory
-        .create(stunUrls)
+        .create(iceServers)
         .pipe(
-          Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "offer-failed" })),
+          Effect.mapError(
+            (cause) => new WebRtcFastPathNegotiationError({ reason: "offer-failed", cause }),
+          ),
         );
       const offerSdp = yield* peer.createOffer.pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "offer-failed" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "offer-failed", cause }),
+        ),
       );
-      yield* Effect.try({
-        try: () => validateSessionDescription(offerSdp),
-        catch: () => new WebRtcFastPathNegotiationError({ reason: "offer-failed" }),
-      });
+      yield* validateSessionDescription(offerSdp).pipe(
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "offer-failed", cause }),
+        ),
+      );
       signalingStarted = true;
       const answer = yield* options.controlClient[WS_METHODS.transportWebRtcNegotiate]({
         version: 1,
         attemptId,
         offerSdp,
       }).pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "signaling-rejected" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "signaling-rejected", cause }),
+        ),
       );
       if (answer.attemptId !== attemptId) {
         return yield* new WebRtcFastPathNegotiationError({ reason: "invalid-answer" });
       }
-      yield* Effect.try({
-        try: () => validateSessionDescription(answer.answerSdp),
-        catch: () => new WebRtcFastPathNegotiationError({ reason: "invalid-answer" }),
-      });
+      yield* validateSessionDescription(answer.answerSdp).pipe(
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "invalid-answer", cause }),
+        ),
+      );
       yield* peer
         .acceptAnswer(answer.answerSdp)
         .pipe(
-          Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "invalid-answer" })),
+          Effect.mapError(
+            (cause) => new WebRtcFastPathNegotiationError({ reason: "invalid-answer", cause }),
+          ),
         );
       const dataChannelStartedAtMs = yield* Clock.currentTimeMillis;
       const dataChannel = yield* makeWebRtcDataChannelConnection(peer.dataChannel).pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "datachannel-failed" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "datachannel-failed", cause }),
+        ),
       );
       yield* dataChannel.awaitOpen.pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "datachannel-failed" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "datachannel-failed", cause }),
+        ),
       );
       const dataChannelOpenedAtMs = yield* Clock.currentTimeMillis;
       yield* dataChannel
@@ -166,17 +181,25 @@ export const negotiateWebRtcFastPath = Effect.fn("RpcSession.negotiateWebRtcFast
           ),
         )
         .pipe(
-          Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "binding-failed" })),
+          Effect.mapError(
+            (cause) => new WebRtcFastPathNegotiationError({ reason: "binding-failed", cause }),
+          ),
         );
       yield* dataChannel.awaitBindingAck.pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "binding-failed" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "binding-failed", cause }),
+        ),
       );
       const client = yield* makeRtcRpcClient(dataChannel);
       yield* client[WS_METHODS.serverProbe]({}).pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "rpc-probe-failed" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "rpc-probe-failed", cause }),
+        ),
       );
       const initialConfig = yield* client[WS_METHODS.serverGetConfig]({}).pipe(
-        Effect.mapError(() => new WebRtcFastPathNegotiationError({ reason: "rpc-probe-failed" })),
+        Effect.mapError(
+          (cause) => new WebRtcFastPathNegotiationError({ reason: "rpc-probe-failed", cause }),
+        ),
       );
       if (initialConfig.environment.environmentId !== options.environmentId) {
         return yield* new WebRtcFastPathNegotiationError({ reason: "identity-mismatch" });
@@ -210,7 +233,7 @@ export const negotiateWebRtcFastPath = Effect.fn("RpcSession.negotiateWebRtcFast
         ),
       );
       const closed = Effect.raceFirst(peer.closed, dataChannel.closed).pipe(
-        Effect.mapError(() => new WebRtcFastPathTransportClosedError({})),
+        Effect.mapError((cause) => new WebRtcFastPathTransportClosedError({ cause })),
       );
       const close = Effect.all([peer.close, dataChannel.close], {
         discard: true,
