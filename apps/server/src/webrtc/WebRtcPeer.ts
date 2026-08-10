@@ -11,6 +11,9 @@ import { isTerminalWebRtcPeerConnectionState } from "@t3tools/shared/webrtcPeerS
 
 import type { WebRtcUdpPortRange } from "./config.ts";
 
+const EARLY_DATA_CHANNEL_MESSAGE_LIMIT = 4;
+const EARLY_DATA_CHANNEL_BYTES_LIMIT = 64 * 1024;
+
 export interface ServerWebRtcPeer {
   readonly acceptOffer: (offerSdp: string) => Effect.Effect<string, ServerWebRtcPeerError>;
   readonly takeDataChannel: Effect.Effect<WebRtcDataChannelPort, ServerWebRtcPeerError>;
@@ -44,12 +47,59 @@ export interface ServerWebRtcRuntime {
   ) => Effect.Effect<ServerWebRtcPeer, ServerWebRtcPeerError>;
 }
 
+type WeriftDataChannelAdapter = Pick<
+  RTCDataChannel,
+  | "label"
+  | "ordered"
+  | "readyState"
+  | "bufferedAmount"
+  | "bufferedAmountLowThreshold"
+  | "send"
+  | "close"
+  | "stateChanged"
+  | "onMessage"
+  | "error"
+  | "bufferedAmountLow"
+>;
+
 function iceCandidateType(candidate: string): string {
   const match = /(?:^|\s)typ\s+(host|srflx|prflx|relay)(?:\s|$)/i.exec(candidate);
   return match?.[1]?.toLowerCase() ?? "unknown";
 }
 
-export function weriftDataChannelPort(channel: RTCDataChannel): WebRtcDataChannelPort {
+export function weriftDataChannelPort(channel: WeriftDataChannelAdapter): WebRtcDataChannelPort {
+  const earlyMessages: Array<Uint8Array> = [];
+  let earlyMessageBytes = 0;
+  let messageListener: ((data: Uint8Array) => void) | null = null;
+  let messageSubscriptionClosed = false;
+  const messageSubscription = channel.onMessage.subscribe((message) => {
+    const data =
+      typeof message === "string" ? new TextEncoder().encode(message) : Uint8Array.from(message);
+    if (messageListener !== null) {
+      messageListener(data);
+      return;
+    }
+    if (
+      earlyMessages.length >= EARLY_DATA_CHANNEL_MESSAGE_LIMIT ||
+      earlyMessageBytes + data.byteLength > EARLY_DATA_CHANNEL_BYTES_LIMIT
+    ) {
+      channel.close();
+      return;
+    }
+    earlyMessages.push(data);
+    earlyMessageBytes += data.byteLength;
+  });
+  const closeMessageSubscription = () => {
+    if (messageSubscriptionClosed) {
+      return;
+    }
+    messageSubscriptionClosed = true;
+    messageSubscription.unSubscribe();
+    earlyMessages.length = 0;
+    earlyMessageBytes = 0;
+    messageListener = null;
+  };
+
   return {
     label: channel.label,
     ordered: channel.ordered,
@@ -59,7 +109,10 @@ export function weriftDataChannelPort(channel: RTCDataChannel): WebRtcDataChanne
       channel.bufferedAmountLowThreshold = bytes;
     },
     send: (data) => channel.send(NodeBuffer.Buffer.from(data)),
-    close: () => channel.close(),
+    close: () => {
+      closeMessageSubscription();
+      channel.close();
+    },
     onOpen: (listener) => {
       const subscription = channel.stateChanged.subscribe((state) => {
         if (state === "open") listener();
@@ -67,18 +120,26 @@ export function weriftDataChannelPort(channel: RTCDataChannel): WebRtcDataChanne
       return subscription.unSubscribe;
     },
     onMessage: (listener) => {
-      const subscription = channel.onMessage.subscribe((message) => {
-        if (typeof message === "string") {
-          listener(new TextEncoder().encode(message));
-          return;
+      if (messageListener !== null) {
+        throw new Error("WebRTC DataChannel already has a message listener.");
+      }
+      messageListener = listener;
+      for (const message of earlyMessages.splice(0)) {
+        listener(message);
+      }
+      earlyMessageBytes = 0;
+      return () => {
+        if (messageListener === listener) {
+          messageListener = null;
         }
-        listener(Uint8Array.from(message));
-      });
-      return subscription.unSubscribe;
+      };
     },
     onClose: (listener) => {
       const subscription = channel.stateChanged.subscribe((state) => {
-        if (state === "closed") listener();
+        if (state === "closed") {
+          closeMessageSubscription();
+          listener();
+        }
       });
       return subscription.unSubscribe;
     },

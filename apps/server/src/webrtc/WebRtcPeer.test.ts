@@ -2,6 +2,7 @@ import { WebRtcBindingFrame } from "@t3tools/contracts";
 import { makeWebRtcDataChannelConnection } from "@t3tools/shared/webrtcDataChannel";
 import { NodeServices } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -14,7 +15,7 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
-import { RTCPeerConnection } from "werift";
+import { Event, RTCPeerConnection } from "werift";
 
 import { makeSingleSocketServer } from "./SingleSocketServer.ts";
 import { makeWebRtcFastPathController } from "./WebRtcFastPathController.ts";
@@ -148,4 +149,37 @@ it.effect("binds and fragments RPC messages over a real DataChannel", () =>
       yield* withPeerTimeout(client.Events({}).pipe(Stream.runCollect), "streaming RPC"),
     ).toEqual(["first", "second", "third"]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("buffers a binding frame sent before the server socket attaches", () =>
+  Effect.gen(function* () {
+    const stateChanged = new Event<["connecting" | "open" | "closing" | "closed"]>();
+    const messages = new Event<[string | Buffer]>();
+    const readyState: "open" = "open";
+    const channel = {
+      label: "t3-rpc-v1",
+      ordered: true,
+      readyState,
+      bufferedAmount: 0,
+      bufferedAmountLowThreshold: 0,
+      send: () => undefined,
+      close: () => stateChanged.execute("closed"),
+      stateChanged,
+      onMessage: messages,
+      error: new Event<[Error]>(),
+      bufferedAmountLow: new Event<[]>(),
+    };
+    const port = weriftDataChannelPort(channel);
+    messages.execute("binding-before-listener");
+
+    const received = yield* Deferred.make<Uint8Array>();
+    const removeListener = port.onMessage((message) => {
+      Deferred.doneUnsafe(received, Effect.succeed(message));
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(removeListener));
+
+    expect(new TextDecoder().decode(yield* Deferred.await(received))).toBe(
+      "binding-before-listener",
+    );
+  }).pipe(Effect.scoped),
 );
