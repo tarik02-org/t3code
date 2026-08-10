@@ -47,6 +47,9 @@
     "effect-codex-app-server": "workspace:*",
     "vite-plus": "catalog:"
   },
+  "optionalDependencies": {
+    "werift": "^0.24.3"
+  },
   "engines": {
     "node": "^22.16 || ^23.11 || >=24.10"
   }

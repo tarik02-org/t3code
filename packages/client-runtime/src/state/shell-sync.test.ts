@@ -47,17 +47,90 @@ const LIVE_SHELL_SNAPSHOT: OrchestrationShellSnapshot = {
   updatedAt: "2026-06-06T00:00:00.000Z",
 };
 
-function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
+function session(
+  client: WsRpcProtocolClient,
+  transport: "websocket" | "webrtc" = "websocket",
+): RpcSession.RpcSession {
   return {
     client,
     initialConfig: Effect.succeed({ shellResumeCompletionMarker: true } as never),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
+    transport,
   };
 }
 
 describe("environment shell synchronization", () => {
+  it.effect("uses a complete WebRTC subscription snapshot without an HTTP load", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
+      const subscribeInputs = yield* Queue.unbounded<{
+        readonly afterSequence?: number;
+        readonly requestCompletionMarker?: boolean;
+      }>();
+      const loaderCalls = yield* Ref.make(0);
+      const client = {
+        [ORCHESTRATION_WS_METHODS.subscribeShell]: (input: {
+          readonly afterSequence?: number;
+          readonly requestCompletionMarker?: boolean;
+        }) =>
+          Stream.unwrap(
+            Queue.offer(subscribeInputs, input).pipe(Effect.as(Stream.fromQueue(events))),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(session(client, "webrtc"))),
+        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeed(Option.none()),
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeed(Option.none()),
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeed(Option.none()),
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeed(Option.none()),
+        saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
+        clearVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const shellState = yield* makeEnvironmentShellState().pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(
+          ShellSnapshotLoader,
+          ShellSnapshotLoader.of({
+            load: () =>
+              Ref.update(loaderCalls, (count) => count + 1).pipe(Effect.as(Option.none())),
+          }),
+        ),
+      );
+
+      const input = yield* Queue.take(subscribeInputs);
+      expect(input.afterSequence).toBeUndefined();
+      expect(input.requestCompletionMarker).toBe(true);
+      expect(yield* Ref.get(loaderCalls)).toBe(0);
+
+      yield* Queue.offer(events, { kind: "snapshot", snapshot: LIVE_SHELL_SNAPSHOT });
+      yield* Queue.offer(events, { kind: "synchronized" });
+      yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter((value) => value.status === "live"),
+        Stream.runHead,
+      );
+      expect(Option.getOrThrow((yield* SubscriptionRef.get(shellState)).snapshot)).toEqual(
+        LIVE_SHELL_SNAPSHOT,
+      );
+    }),
+  );
+
   it.effect("publishes live state before persistence and preserves it when ready", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();

@@ -28,6 +28,7 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { ThreadHistoryCacheStore } from "../platform/threadHistoryCache.ts";
 import { subscribeDynamicRequest } from "../rpc/client.ts";
+import type { RpcSession } from "../rpc/session.ts";
 import { THREAD_TURN_PAGE_SIZE, ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import {
   boundLiveThread,
@@ -229,6 +230,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       : Option.flatMap(cached, (snapshot) => pageStateFromSnapshot(snapshot.page)),
   });
   const liveThread = yield* Ref.make(cachedThread);
+  const lastAuthoritativeSession = yield* Ref.make<RpcSession | null>(null);
+  const activeSubscriptionSession = yield* Ref.make<RpcSession | null>(null);
   const historyOutlineRefreshes = yield* SubscriptionRef.make(0);
   const threadSnapshotRefreshes = yield* SubscriptionRef.make(0);
   const messagePaginationSupported = yield* SubscriptionRef.make(false);
@@ -1013,6 +1016,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       }
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread, pageStateFromSnapshot(item.snapshot.page));
+      const session = yield* Ref.get(activeSubscriptionSession);
+      if (session !== null) {
+        yield* Ref.set(lastAuthoritativeSession, session);
+      }
       return;
     }
 
@@ -1291,6 +1298,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   yield* Effect.forkScoped(
     subscribeDynamicRequest(
       Effect.fn("EnvironmentThreadState.makeSubscriptionRequest")(function* (session) {
+        yield* Ref.set(activeSubscriptionSession, session);
         const messagePaginationEnabled = options?.messagePagination?.enabled() ?? false;
         const subscriptionCapabilities = yield* session.initialConfig.pipe(
           Effect.map((config) => ({
@@ -1365,7 +1373,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           yield* SubscriptionRef.set(lastSequence, 0);
           current = yield* SubscriptionRef.get(state);
         }
-        if (Option.isNone(current.data) && current.status !== "deleted") {
+        if (
+          session.transport !== "webrtc" &&
+          Option.isNone(current.data) &&
+          current.status !== "deleted"
+        ) {
           const prepared = yield* preparedConnection;
           const httpSnapshot = supportsMessagePagination
             ? yield* snapshotLoader.loadMessageHistory(prepared, threadId, THREAD_TURN_PAGE_SIZE)
@@ -1385,8 +1397,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
 
         const sequence = yield* SubscriptionRef.get(lastSequence);
+        const hasAuthoritativeSnapshot = (yield* Ref.get(lastAuthoritativeSession)) === session;
         const canResume =
           Option.isSome(current.data) &&
+          (session.transport !== "webrtc" || hasAuthoritativeSnapshot) &&
           (!supportsMessagePagination || current.data.value.messageHistory !== undefined);
         if (!supportsCompletionMarker && canResume) {
           yield* SubscriptionRef.update(state, (value) => ({

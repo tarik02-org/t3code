@@ -7,7 +7,14 @@ import {
   RelayDeviceIdentity,
   SshEnvironmentGateway,
   ThreadHistoryCacheStore,
+  WebRtcPeerFactory,
 } from "@t3tools/client-runtime/platform";
+import {
+  makeWebRtcPeerFactory,
+  selectedIcePairTypeFromStats,
+  type PlatformWebRtcPeerConnection,
+  type WebRtcSessionDescription,
+} from "@t3tools/client-runtime/rpc";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -16,6 +23,7 @@ import {
 } from "@t3tools/client-runtime/connection";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
+import type { WebRtcDataChannelPort } from "@t3tools/shared/webrtcDataChannel";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,6 +32,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
+import { RTCPeerConnection, RTCSessionDescription } from "react-native-webrtc";
 
 import { authClientMetadata } from "../lib/authClientMetadata";
 import * as Runtime from "../lib/runtime";
@@ -33,6 +42,123 @@ import { clearThreadOutboxEnvironment } from "../state/thread-outbox";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import { connectionStorageLayer } from "./storage";
+
+type MobileDataChannel = ReturnType<RTCPeerConnection["createDataChannel"]>;
+
+interface MobileDataChannelMessageEvent {
+  readonly data: string | ArrayBuffer | Blob;
+}
+
+interface MobileDataChannelEventTarget {
+  addEventListener(type: "message", listener: (event: MobileDataChannelMessageEvent) => void): void;
+  addEventListener(
+    type: "bufferedamountlow" | "close" | "error" | "open",
+    listener: () => void,
+  ): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: MobileDataChannelMessageEvent) => void,
+  ): void;
+  removeEventListener(
+    type: "bufferedamountlow" | "close" | "error" | "open",
+    listener: () => void,
+  ): void;
+}
+
+function mobileDataChannelPort(channel: MobileDataChannel): WebRtcDataChannelPort {
+  // RTCDataChannel inherits the package's EventTarget shim at runtime, but the
+  // published declaration omits that shim from its generated type artifacts.
+  const eventChannel = channel as MobileDataChannel & MobileDataChannelEventTarget;
+  channel.binaryType = "arraybuffer";
+  return {
+    label: channel.label,
+    ordered: channel.ordered,
+    isOpen: () => channel.readyState === "open",
+    bufferedAmount: () => channel.bufferedAmount,
+    setBufferedAmountLowThreshold: (bytes) => {
+      channel.bufferedAmountLowThreshold = bytes;
+    },
+    send: (data) => channel.send(data),
+    close: () => channel.close(),
+    onOpen: (listener) => {
+      eventChannel.addEventListener("open", listener);
+      return () => eventChannel.removeEventListener("open", listener);
+    },
+    onMessage: (listener) => {
+      const onMessage = (event: MobileDataChannelMessageEvent) => {
+        if (event.data instanceof ArrayBuffer) {
+          listener(new Uint8Array(event.data));
+          return;
+        }
+        if (typeof event.data === "string") {
+          listener(new TextEncoder().encode(event.data));
+          return;
+        }
+        void event.data
+          .arrayBuffer()
+          .then((buffer: ArrayBuffer) => listener(new Uint8Array(buffer)));
+      };
+      eventChannel.addEventListener("message", onMessage);
+      return () => eventChannel.removeEventListener("message", onMessage);
+    },
+    onClose: (listener) => {
+      eventChannel.addEventListener("close", listener);
+      return () => eventChannel.removeEventListener("close", listener);
+    },
+    onError: (listener) => {
+      const onError = () => listener(new Error("Mobile WebRTC DataChannel error."));
+      eventChannel.addEventListener("error", onError);
+      return () => eventChannel.removeEventListener("error", onError);
+    },
+    onBufferedAmountLow: (listener) => {
+      eventChannel.addEventListener("bufferedamountlow", listener);
+      return () => eventChannel.removeEventListener("bufferedamountlow", listener);
+    },
+  };
+}
+
+function mobileSessionDescription(description: RTCSessionDescription): WebRtcSessionDescription {
+  if (description.type !== "offer" && description.type !== "answer") {
+    throw new Error("Mobile WebRTC returned an invalid session description.");
+  }
+  return { type: description.type, sdp: description.sdp };
+}
+
+function createMobilePeerConnection(stunUrls: ReadonlyArray<string>): PlatformWebRtcPeerConnection {
+  const peer = new RTCPeerConnection({
+    iceServers: stunUrls.map((urls) => ({ urls })),
+  });
+  return {
+    createDataChannel: (label) =>
+      mobileDataChannelPort(peer.createDataChannel(label, { ordered: true })),
+    createOffer: () =>
+      peer
+        .createOffer()
+        .then((description) => mobileSessionDescription(new RTCSessionDescription(description))),
+    setLocalDescription: (description) =>
+      peer.setLocalDescription(new RTCSessionDescription(description)),
+    localDescription: () =>
+      peer.localDescription === null ? null : mobileSessionDescription(peer.localDescription),
+    setRemoteDescription: (description) =>
+      peer.setRemoteDescription(new RTCSessionDescription(description)),
+    iceGatheringState: () => peer.iceGatheringState,
+    onIceGatheringStateChange: (listener) => {
+      peer.onicegatheringstatechange = listener;
+      return () => {
+        peer.onicegatheringstatechange = null;
+      };
+    },
+    onConnectionStateChange: (listener) => {
+      const onStateChange = () => listener(peer.connectionState);
+      peer.onconnectionstatechange = onStateChange;
+      return () => {
+        peer.onconnectionstatechange = null;
+      };
+    },
+    selectedIcePairType: () => peer.getStats().then(selectedIcePairTypeFromStats),
+    close: () => peer.close(),
+  };
+}
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
   if (state.isConnected === false) {
@@ -191,6 +317,7 @@ const capabilitiesLayer = Layer.effectContext(
           disconnect: () => Effect.void,
         }),
       ),
+      Context.add(WebRtcPeerFactory, makeWebRtcPeerFactory(createMobilePeerConnection)),
     );
   }),
 );

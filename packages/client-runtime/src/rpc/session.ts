@@ -1,15 +1,26 @@
-import { type ServerConfig, WS_METHODS } from "@t3tools/contracts";
+import {
+  type ServerConfig,
+  type WebRtcRpcFastPathCapability,
+  WS_METHODS,
+} from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
+import { WebRtcPeerFactory, type WebRtcPeerFactoryService } from "../platform/capabilities.ts";
+import {
+  negotiateWebRtcFastPath,
+  type NegotiatedWebRtcFastPath,
+} from "./webrtc/FastPathNegotiator.ts";
+import { WebRtcFastPathCooldown } from "./webrtc/cooldown.ts";
 import type {
   ConnectionAttemptError,
   ConnectionTransientError,
@@ -28,6 +39,7 @@ export interface RpcSession {
   readonly ready: Effect.Effect<void, ConnectionAttemptError>;
   readonly probe: Effect.Effect<void, ConnectionAttemptError>;
   readonly closed: Effect.Effect<never, ConnectionTransientError>;
+  readonly transport?: "websocket" | "webrtc";
 }
 
 export class RpcSessionFactory extends Context.Service<
@@ -67,8 +79,11 @@ function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionA
 
 export const make = Effect.gen(function* () {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
+  const webRtcPeerFactory = yield* WebRtcPeerFactory;
+  const webRtcCooldown = new WebRtcFastPathCooldown();
 
   const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {
+    const scope = yield* Scope.Scope;
     yield* Effect.annotateCurrentSpan({
       "connection.environment.id": connection.environmentId,
     });
@@ -113,34 +128,152 @@ export const make = Effect.gen(function* () {
     const protocolContext = yield* Layer.build(protocolLayer).pipe(
       Effect.withSpan("environment.websocket.connect"),
     );
-    const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
-    const initialConfig = yield* Effect.cached(
-      client[WS_METHODS.serverGetConfig]({}).pipe(
+    const controlClient = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
+    const controlInitialConfig = yield* Effect.cached(
+      controlClient[WS_METHODS.serverGetConfig]({}).pipe(
         Effect.mapError(mapSessionRpcError),
         Effect.withSpan("environment.initialSync"),
       ),
     );
-    const probe = initialConfig.pipe(
-      Effect.flatMap((config) =>
-        (config.environment.capabilities.connectionProbe === true
-          ? client[WS_METHODS.serverProbe]({})
-          : client[WS_METHODS.serverGetConfig]({})
-        ).pipe(Effect.mapError(mapSessionRpcError)),
+
+    interface SelectedTransport {
+      readonly kind: "websocket" | "webrtc";
+      readonly client: WsRpcProtocolClient;
+      readonly initialConfig: Effect.Effect<ServerConfig, ConnectionAttemptError>;
+      readonly closed: Effect.Effect<never, ConnectionTransientError>;
+      readonly close: Effect.Effect<void>;
+    }
+
+    const selectionComplete = yield* Deferred.make<void>();
+    let selected: SelectedTransport = {
+      kind: "websocket",
+      client: controlClient,
+      initialConfig: controlInitialConfig,
+      closed: Deferred.await(disconnected),
+      close: Effect.void,
+    };
+
+    const selectWebRtc = Effect.fn("RpcSession.selectWebRtc")(function* (
+      config: ServerConfig,
+      peerFactory: WebRtcPeerFactoryService,
+      capability: WebRtcRpcFastPathCapability,
+    ) {
+      const fastPath = yield* negotiateWebRtcFastPath({
+        environmentId: connection.environmentId,
+        capability,
+        controlClient,
+        peerFactory,
+      }).pipe(
+        Scope.provide(scope),
+        Effect.matchEffect({
+          onFailure: (error) =>
+            Effect.logDebug("WebRTC RPC fast path fell back to WebSocket.").pipe(
+              Effect.annotateLogs({
+                "rpc.transport": "websocket",
+                "webrtc.attempt.result": "fallback",
+                "webrtc.fallback.reason": error.reason,
+              }),
+              Effect.as<NegotiatedWebRtcFastPath | null>(null),
+            ),
+          onSuccess: (fastPath) => Effect.succeed(fastPath),
+        }),
+      );
+      if (fastPath === null) {
+        return;
+      }
+      const rtcClosed = fastPath.closed.pipe(
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            const nowMs = yield* Clock.currentTimeMillis;
+            webRtcCooldown.start(connection.environmentId, nowMs);
+            yield* fastPath.close;
+          }),
+        ),
+        Effect.mapError(
+          () =>
+            new ConnectionTransientErrorClass({
+              reason: "transport",
+              detail: `${connection.label} WebRTC transport disconnected.`,
+            }),
+        ),
+      );
+      selected = {
+        kind: "webrtc",
+        client: fastPath.client,
+        initialConfig: Effect.succeed(fastPath.initialConfig),
+        closed: rtcClosed,
+        close: fastPath.close,
+      };
+    });
+
+    const selectTransport = Effect.gen(function* () {
+      const config = yield* controlInitialConfig;
+      const capability = config.environment.capabilities.webRtcRpcFastPath;
+      let fallbackReason: "capability-absent" | "platform-absent" | "cooldown" | null = null;
+      if (capability === undefined) {
+        fallbackReason = "capability-absent";
+      } else if (webRtcPeerFactory === null) {
+        fallbackReason = "platform-absent";
+      } else {
+        const nowMs = yield* Clock.currentTimeMillis;
+        if (webRtcCooldown.isActive(connection.environmentId, nowMs)) {
+          fallbackReason = "cooldown";
+        } else {
+          yield* selectWebRtc(config, webRtcPeerFactory, capability);
+        }
+      }
+      if (fallbackReason !== null) {
+        yield* Effect.logDebug("Using WebSocket RPC transport.").pipe(
+          Effect.annotateLogs({
+            "rpc.transport": "websocket",
+            "webrtc.fallback.reason": fallbackReason,
+          }),
+        );
+      }
+      yield* Deferred.succeed(selectionComplete, undefined);
+    });
+    const ready = yield* Effect.cached(
+      Deferred.await(connected).pipe(
+        Effect.andThen(selectTransport),
+        Effect.raceFirst(Deferred.await(disconnected)),
       ),
-      Effect.asVoid,
-      Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
+    );
+    const probe = Effect.suspend(() =>
+      selected.initialConfig.pipe(
+        Effect.flatMap((config) =>
+          (config.environment.capabilities.connectionProbe === true
+            ? selected.client[WS_METHODS.serverProbe]({})
+            : selected.client[WS_METHODS.serverGetConfig]({})
+          ).pipe(Effect.mapError(mapSessionRpcError)),
+        ),
+        Effect.asVoid,
+        Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
+      ),
+    );
+    const closed = Effect.raceFirst(
+      Deferred.await(disconnected).pipe(
+        Effect.tapError(() => Effect.suspend(() => selected.close)),
+      ),
+      Deferred.await(selectionComplete).pipe(
+        Effect.andThen(
+          Effect.suspend(() => (selected.kind === "webrtc" ? selected.closed : Effect.never)),
+        ),
+      ),
     );
 
     return {
-      client,
-      initialConfig,
-      ready: Deferred.await(connected).pipe(
-        Effect.andThen(initialConfig),
-        Effect.asVoid,
-        Effect.raceFirst(Deferred.await(disconnected)),
-      ),
+      get client() {
+        return selected.client;
+      },
+      get initialConfig() {
+        return selected.initialConfig;
+      },
+      ready,
       probe,
-      closed: Deferred.await(disconnected),
+      closed,
+      get transport() {
+        return selected.kind;
+      },
     } satisfies RpcSession;
   });
 

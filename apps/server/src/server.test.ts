@@ -2,6 +2,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
+import { RTCPeerConnection } from "werift";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
@@ -20,6 +21,7 @@ import {
   type OrchestrationThreadStreamItem,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
+  WebRtcBindingFrame,
   type OrchestrationCommand,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
@@ -34,6 +36,7 @@ import {
   EditorId,
 } from "@t3tools/contracts";
 import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
+import { makeWebRtcDataChannelConnection } from "@t3tools/shared/webrtcDataChannel";
 import {
   computeDpopAccessTokenHash,
   computeDpopJwkThumbprint,
@@ -79,6 +82,7 @@ const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationThreadDetailSnapshot),
 );
+const encodeWebRtcBindingFrame = Schema.encodeSync(Schema.fromJsonString(WebRtcBindingFrame));
 
 const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function* <A>(
   queue: Queue.Queue<A>,
@@ -151,6 +155,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import { ServerWebRtcPeerError, weriftDataChannelPort } from "./webrtc/WebRtcPeer.ts";
 import * as Data from "effect/Data";
 
 import { makeOrchestrationIntegrationHarness } from "../integration/OrchestrationEngineHarness.integration.ts";
@@ -4367,6 +4372,113 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(record.resourceAttributes["service.name"], "t3-web");
         assert.equal(record.status?.code, String(span.status.code));
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("upgrades an authenticated WebSocket RPC session to WebRTC", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        config: {
+          webRtcFastPathEnabled: true,
+          webRtcStunUrls: [],
+        },
+      });
+
+      const clientPeer = new RTCPeerConnection({
+        iceServers: [],
+        maxMessageSize: 16 * 1024,
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.tryPromise({
+          try: () => clientPeer.close(),
+          catch: () => new ServerWebRtcPeerError("connection"),
+        }).pipe(Effect.ignore),
+      );
+      const rtcClosed = yield* Deferred.make<void>();
+      clientPeer.connectionStateChange.subscribe((state) => {
+        if (state === "closed" || state === "disconnected" || state === "failed") {
+          Deferred.doneUnsafe(rtcClosed, Effect.void);
+        }
+      });
+      const dataChannel = clientPeer.createDataChannel("t3-rpc-v1");
+      const rtcConnection = yield* makeWebRtcDataChannelConnection(
+        weriftDataChannelPort(dataChannel),
+      );
+      const wsUrl = yield* getWsServerUrl("/ws");
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (controlClient) =>
+          Effect.gen(function* () {
+            const controlConfig = yield* controlClient[WS_METHODS.serverGetConfig]({});
+            assert.deepEqual(controlConfig.environment.capabilities.webRtcRpcFastPath, {
+              version: 1,
+              signaling: "same-websocket-rpc",
+              turn: false,
+              stunUrls: [],
+            });
+
+            const offer = yield* Effect.tryPromise({
+              try: async () => {
+                const pendingOffer = await clientPeer.createOffer();
+                await clientPeer.setLocalDescription(pendingOffer);
+                return clientPeer.localDescription;
+              },
+              catch: () => new ServerWebRtcPeerError("offer"),
+            });
+            if (offer === null || offer.type !== "offer") {
+              return yield* Effect.die(new Error("WebRTC client did not produce an offer."));
+            }
+            const answer = yield* controlClient[WS_METHODS.transportWebRtcNegotiate]({
+              version: 1,
+              attemptId: "authenticated-attempt",
+              offerSdp: offer.sdp,
+            });
+            yield* Effect.tryPromise({
+              try: () => clientPeer.setRemoteDescription({ type: "answer", sdp: answer.answerSdp }),
+              catch: () => new ServerWebRtcPeerError("offer"),
+            });
+            yield* rtcConnection.awaitOpen.pipe(Effect.timeout("10 seconds"));
+            yield* rtcConnection.sendBinding(
+              new TextEncoder().encode(
+                encodeWebRtcBindingFrame({
+                  version: 1,
+                  attemptId: answer.attemptId,
+                  bindingToken: answer.bindingToken,
+                }),
+              ),
+            );
+            yield* rtcConnection.awaitBindingAck.pipe(Effect.timeout("10 seconds"));
+
+            const rtcProtocolContext = yield* Layer.build(
+              Layer.effect(
+                RpcClient.Protocol,
+                RpcClient.makeProtocolSocket({ retryTransientErrors: false }),
+              ).pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    Layer.succeed(Socket.Socket, rtcConnection.socket),
+                    RpcSerialization.layerJson,
+                  ),
+                ),
+              ),
+            );
+            const rtcClient = yield* makeWsRpcClient.pipe(Effect.provide(rtcProtocolContext));
+            assert.deepEqual(yield* rtcClient[WS_METHODS.serverProbe]({}), {});
+            const rtcConfig = yield* rtcClient[WS_METHODS.serverGetConfig]({});
+            assert.equal(
+              rtcConfig.environment.environmentId,
+              controlConfig.environment.environmentId,
+            );
+            const shellItem = yield* rtcClient[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+              Stream.runHead,
+              Effect.map(Option.getOrThrow),
+            );
+            assert.equal(shellItem.kind, "snapshot");
+          }),
+        ),
+      );
+
+      yield* Deferred.await(rtcClosed).pipe(Effect.timeout("10 seconds"));
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("routes websocket rpc server.upsertKeybinding", () =>

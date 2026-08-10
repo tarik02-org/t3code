@@ -203,7 +203,10 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         const hasAuthoritativeSnapshot = (yield* Ref.get(lastAuthoritativeSession)) === session;
         let canResume = hasAuthoritativeSnapshot;
         let current = yield* SubscriptionRef.get(state);
-        if (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot)) {
+        if (
+          session.transport !== "webrtc" &&
+          (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot))
+        ) {
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({

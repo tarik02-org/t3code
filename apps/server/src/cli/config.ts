@@ -14,9 +14,11 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Argument, Flag } from "effect/unstable/cli";
 
 import { normalizeBasePath } from "@t3tools/shared/basePath";
+import { DEFAULT_WEBRTC_STUN_URLS, validateStunUrls } from "@t3tools/shared/webrtcCandidatePolicy";
 import { readBootstrapEnvelope } from "../bootstrap.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
+import { DEFAULT_WEBRTC_UDP_PORT_RANGE, parseWebRtcUdpPortRange } from "../webrtc/config.ts";
 
 export const modeFlag = Flag.choice("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -147,6 +149,46 @@ const EnvServerConfig = Config.all({
   tailscaleServePort: Config.port("T3CODE_TAILSCALE_SERVE_PORT").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
+  ),
+  webRtcFastPathEnabled: Config.boolean("T3CODE_WEBRTC_FAST_PATH").pipe(Config.withDefault(true)),
+  webRtcStunUrls: Config.string("T3CODE_WEBRTC_STUN_URLS").pipe(
+    Config.withDefault(DEFAULT_WEBRTC_STUN_URLS.join(",")),
+    Config.map((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    ),
+    Config.mapOrFail((urls) =>
+      Effect.try({
+        try: () => validateStunUrls(urls),
+        catch: () =>
+          new Config.ConfigError(
+            new Schema.SchemaError(
+              new SchemaIssue.InvalidValue({
+                message: "T3CODE_WEBRTC_STUN_URLS accepts only comma-separated stun: URLs.",
+              }),
+            ),
+          ),
+      }),
+    ),
+  ),
+  webRtcUdpPortRange: Config.string("T3CODE_WEBRTC_UDP_PORT_RANGE").pipe(
+    Config.withDefault(DEFAULT_WEBRTC_UDP_PORT_RANGE.join("-")),
+    Config.mapOrFail((value) =>
+      Effect.try({
+        try: () => parseWebRtcUdpPortRange(value),
+        catch: () =>
+          new Config.ConfigError(
+            new Schema.SchemaError(
+              new SchemaIssue.InvalidValue({
+                message:
+                  "T3CODE_WEBRTC_UDP_PORT_RANGE must be two ports from 1024 to 65535 in min-max order.",
+              }),
+            ),
+          ),
+      }),
+    ),
   ),
 });
 
@@ -404,6 +446,9 @@ export const resolveServerConfig = (
       logWebSocketEvents,
       tailscaleServeEnabled,
       tailscaleServePort,
+      webRtcFastPathEnabled: env.webRtcFastPathEnabled,
+      webRtcStunUrls: env.webRtcStunUrls,
+      webRtcUdpPortRange: env.webRtcUdpPortRange,
     };
 
     return config;

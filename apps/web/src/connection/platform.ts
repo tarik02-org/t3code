@@ -6,6 +6,7 @@ import {
   PrimaryEnvironmentAuth,
   RelayDeviceIdentity,
   SshEnvironmentGateway,
+  WebRtcPeerFactory,
 } from "@t3tools/client-runtime/platform";
 import {
   BearerConnectionCredential,
@@ -24,7 +25,14 @@ import {
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
-import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
+import {
+  EnvironmentRpcRequestObserver,
+  makeWebRtcPeerFactory,
+  selectedIcePairTypeFromStats,
+  type PlatformWebRtcPeerConnection,
+  type WebRtcSessionDescription,
+} from "@t3tools/client-runtime/rpc";
+import type { WebRtcDataChannelPort } from "@t3tools/shared/webrtcDataChannel";
 import {
   AuthStandardClientScopes,
   type DesktopBridge,
@@ -60,6 +68,84 @@ import {
 import { connectionStorageLayer } from "./storage";
 
 let nextObservedRpcRequestId = 0;
+
+function webDataChannelPort(channel: RTCDataChannel): WebRtcDataChannelPort {
+  channel.binaryType = "arraybuffer";
+  return {
+    label: channel.label,
+    ordered: channel.ordered,
+    isOpen: () => channel.readyState === "open",
+    bufferedAmount: () => channel.bufferedAmount,
+    setBufferedAmountLowThreshold: (bytes) => {
+      channel.bufferedAmountLowThreshold = bytes;
+    },
+    send: (data) => channel.send(Uint8Array.from(data)),
+    close: () => channel.close(),
+    onOpen: (listener) => {
+      channel.addEventListener("open", listener);
+      return () => channel.removeEventListener("open", listener);
+    },
+    onMessage: (listener) => {
+      const onMessage = (event: MessageEvent<ArrayBuffer>) => {
+        listener(new Uint8Array(event.data));
+      };
+      channel.addEventListener("message", onMessage);
+      return () => channel.removeEventListener("message", onMessage);
+    },
+    onClose: (listener) => {
+      channel.addEventListener("close", listener);
+      return () => channel.removeEventListener("close", listener);
+    },
+    onError: (listener) => {
+      const onError = () => listener(new Error("Browser WebRTC DataChannel error."));
+      channel.addEventListener("error", onError);
+      return () => channel.removeEventListener("error", onError);
+    },
+    onBufferedAmountLow: (listener) => {
+      channel.addEventListener("bufferedamountlow", listener);
+      return () => channel.removeEventListener("bufferedamountlow", listener);
+    },
+  };
+}
+
+function webSessionDescription(
+  description: RTCSessionDescription | RTCSessionDescriptionInit,
+): WebRtcSessionDescription {
+  if (
+    (description.type !== "offer" && description.type !== "answer") ||
+    description.sdp === undefined
+  ) {
+    throw new Error("Browser WebRTC returned an invalid session description.");
+  }
+  return { type: description.type, sdp: description.sdp };
+}
+
+function createWebPeerConnection(stunUrls: ReadonlyArray<string>): PlatformWebRtcPeerConnection {
+  const peer = new RTCPeerConnection({
+    iceServers: stunUrls.map((urls) => ({ urls })),
+  });
+  return {
+    createDataChannel: (label) =>
+      webDataChannelPort(peer.createDataChannel(label, { ordered: true })),
+    createOffer: () => peer.createOffer().then(webSessionDescription),
+    setLocalDescription: (description) => peer.setLocalDescription(description),
+    localDescription: () =>
+      peer.localDescription === null ? null : webSessionDescription(peer.localDescription),
+    setRemoteDescription: (description) => peer.setRemoteDescription(description),
+    iceGatheringState: () => peer.iceGatheringState,
+    onIceGatheringStateChange: (listener) => {
+      peer.addEventListener("icegatheringstatechange", listener);
+      return () => peer.removeEventListener("icegatheringstatechange", listener);
+    },
+    onConnectionStateChange: (listener) => {
+      const onStateChange = () => listener(peer.connectionState);
+      peer.addEventListener("connectionstatechange", onStateChange);
+      return () => peer.removeEventListener("connectionstatechange", onStateChange);
+    },
+    selectedIcePairType: () => peer.getStats().then(selectedIcePairTypeFromStats),
+    close: () => peer.close(),
+  };
+}
 
 function currentNetworkStatus(): "unknown" | "offline" | "online" {
   if (typeof navigator === "undefined") {
@@ -279,6 +365,7 @@ const capabilitiesLayer = Layer.effectContext(
       Context.add(RelayDeviceIdentity, identity),
       Context.add(ClientPresentation, presentation),
       Context.add(SshEnvironmentGateway, ssh),
+      Context.add(WebRtcPeerFactory, makeWebRtcPeerFactory(createWebPeerConnection)),
     );
   }),
 );

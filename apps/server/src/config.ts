@@ -15,6 +15,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { ROOT_BASE_PATH, type NormalizedBasePath } from "@t3tools/shared/basePath";
+import type { WebRtcUdpPortRange } from "./webrtc/config.ts";
 
 export const DEFAULT_PORT = 3773;
 
@@ -87,6 +88,9 @@ export class ServerConfig extends Context.Service<
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
+    readonly webRtcFastPathEnabled?: boolean;
+    readonly webRtcStunUrls?: ReadonlyArray<string>;
+    readonly webRtcUdpPortRange?: WebRtcUdpPortRange;
   }
 >()("t3/config/ServerConfig") {
   /** @deprecated Import and use `layerTest` from this module. */

@@ -8,6 +8,10 @@ import {
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
+
+import type { WebRtcDataChannelPort } from "@t3tools/shared/webrtcDataChannel";
 
 import type { ConnectionAttemptError } from "../connection/model.ts";
 
@@ -66,3 +70,34 @@ export class SshEnvironmentGateway extends Context.Service<
     ) => Effect.Effect<void, ConnectionAttemptError>;
   }
 >()("@t3tools/client-runtime/platform/capabilities/SshEnvironmentGateway") {}
+
+export class WebRtcPeerError extends Schema.TaggedErrorClass<WebRtcPeerError>()("WebRtcPeerError", {
+  stage: Schema.Literals(["create", "offer", "answer", "ice-gathering", "connection", "stats"]),
+  cause: Schema.Defect(),
+}) {
+  override get message(): string {
+    return `WebRTC peer failed during ${this.stage}.`;
+  }
+}
+
+export interface WebRtcPeer {
+  readonly dataChannel: WebRtcDataChannelPort;
+  readonly createOffer: Effect.Effect<string, WebRtcPeerError>;
+  readonly acceptAnswer: (answerSdp: string) => Effect.Effect<void, WebRtcPeerError>;
+  readonly closed: Effect.Effect<never, WebRtcPeerError>;
+  readonly selectedIcePairType: Effect.Effect<string | null, WebRtcPeerError>;
+  readonly close: Effect.Effect<void>;
+}
+
+export interface WebRtcPeerFactoryService {
+  readonly create: (
+    stunUrls: ReadonlyArray<string>,
+  ) => Effect.Effect<WebRtcPeer, WebRtcPeerError, Scope.Scope>;
+}
+
+export class WebRtcPeerFactory extends Context.Reference<WebRtcPeerFactoryService | null>(
+  "@t3tools/client-runtime/platform/capabilities/WebRtcPeerFactory",
+  {
+    defaultValue: () => null,
+  },
+) {}

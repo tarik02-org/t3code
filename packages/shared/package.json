@@ -230,6 +230,22 @@
     "./usageFormat": {
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"
+    },
+    "./webrtcCandidatePolicy": {
+      "types": "./src/webrtcCandidatePolicy.ts",
+      "import": "./src/webrtcCandidatePolicy.ts"
+    },
+    "./webrtcDataChannel": {
+      "types": "./src/webrtcDataChannel.ts",
+      "import": "./src/webrtcDataChannel.ts"
+    },
+    "./webrtcFraming": {
+      "types": "./src/webrtcFraming.ts",
+      "import": "./src/webrtcFraming.ts"
+    },
+    "./webrtcPeerState": {
+      "types": "./src/webrtcPeerState.ts",
+      "import": "./src/webrtcPeerState.ts"
     }
   },
   "scripts": {

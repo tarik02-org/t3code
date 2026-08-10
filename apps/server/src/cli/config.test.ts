@@ -19,12 +19,19 @@ import * as NetService from "@t3tools/shared/Net";
 import { ROOT_BASE_PATH } from "@t3tools/shared/basePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { deriveServerPaths } from "../config.ts";
+import { parseWebRtcUdpPortRange } from "../webrtc/config.ts";
 import { resolveServerConfig } from "./config.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
+
+it("parses and bounds the WebRTC UDP port range", () => {
+  expect(parseWebRtcUdpPortRange("60000-61000")).toEqual([60_000, 61_000]);
+  expect(() => parseWebRtcUdpPortRange("61000-60000")).toThrow();
+  expect(() => parseWebRtcUdpPortRange("80-81")).toThrow();
+});
 
 const makeDesktopBootstrap = (
   overrides: Partial<DesktopBackendBootstrapValue> = {},
@@ -52,6 +59,14 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpExportIntervalMs: 10_000,
     otlpServiceName: "t3-server",
     devAllowedOrigins: [],
+  } as const;
+  const defaultOptionalRuntimeConfig = {
+    desktopTelemetryFd: undefined,
+    desktopTelemetryControlFd: undefined,
+    resourceMonitorPath: undefined,
+    webRtcFastPathEnabled: true,
+    webRtcStunUrls: ["stun:stun.cloudflare.com:3478"],
+    webRtcUdpPortRange: [60_000, 61_000],
   } as const;
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
     const fs = yield* FileSystem.FileSystem;
@@ -106,6 +121,10 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
                   T3CODE_NO_BROWSER: "true",
                   T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
                   T3CODE_LOG_WS_EVENTS: "true",
+                  T3CODE_WEBRTC_FAST_PATH: "0",
+                  T3CODE_WEBRTC_STUN_URLS:
+                    "stun:stun1.example.test:3478, stuns:stun2.example.test:5349",
+                  T3CODE_WEBRTC_UDP_PORT_RANGE: "62000-62100",
                 },
               }),
             ),
@@ -117,6 +136,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Warn",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         mode: "desktop",
         port: 4001,
         cwd: process.cwd(),
@@ -134,6 +154,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         basePath: ROOT_BASE_PATH,
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
+        webRtcFastPathEnabled: false,
+        webRtcStunUrls: ["stun:stun1.example.test:3478", "stuns:stun2.example.test:5349"],
+        webRtcUdpPortRange: [62_000, 62_100],
       });
       assert.equal(resolved.stateDir, join(baseDir, "userdata"));
     }),
@@ -190,6 +213,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Debug",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -265,6 +289,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -341,6 +366,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         otlpTracesUrl: "http://localhost:4318/v1/traces",
         otlpMetricsUrl: "http://localhost:4318/v1/metrics",
         mode: "desktop",
@@ -479,6 +505,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Debug",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -548,6 +575,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         otlpTracesUrl: "http://localhost:4318/v1/traces",
         otlpMetricsUrl: "http://localhost:4318/v1/metrics",
         mode: "desktop",
@@ -615,6 +643,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
+        ...defaultOptionalRuntimeConfig,
         mode: "web",
         port: 3773,
         cwd: process.cwd(),
