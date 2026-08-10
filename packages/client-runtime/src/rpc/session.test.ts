@@ -523,6 +523,7 @@ describe("RpcSessionFactory", () => {
       rtc.clientPort.close();
       const closeError = yield* Fiber.join(firstClosed);
       expect(closeError).toMatchObject({ reason: "transport" });
+      expect(closeError.cause).toMatchObject({ _tag: "WebRtcFastPathTransportClosedError" });
 
       const secondSession = yield* factory.connect(PREPARED);
       const secondReady = yield* Effect.forkChild(secondSession.ready);

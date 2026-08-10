@@ -192,10 +192,11 @@ export const make = Effect.gen(function* () {
           }),
         ),
         Effect.mapError(
-          () =>
+          (cause) =>
             new ConnectionTransientErrorClass({
               reason: "transport",
               detail: `${connection.label} WebRTC transport disconnected.`,
+              cause,
             }),
         ),
       );
