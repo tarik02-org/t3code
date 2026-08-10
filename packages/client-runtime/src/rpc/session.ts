@@ -263,10 +263,27 @@ export const make = Effect.gen(function* () {
         Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
       );
     });
-    const closed = Effect.raceFirst(
-      Deferred.await(disconnected).pipe(
-        Effect.tapError(() => Effect.suspend(() => SubscriptionRef.getUnsafe(selected).close)),
+    const selectedTransportAfterControlClose = Deferred.await(disconnected).pipe(
+      Effect.catchTag("ConnectionTransientError", (error) =>
+        Effect.suspend(() => {
+          const transport = SubscriptionRef.getUnsafe(selected);
+          if (transport.kind === "websocket") {
+            return Effect.fail(error);
+          }
+          return Effect.logDebug(
+            "Control WebSocket closed; keeping the selected WebRTC RPC transport alive.",
+          ).pipe(
+            Effect.annotateLogs({
+              "rpc.transport": "webrtc",
+              "webrtc.control_websocket": "closed",
+            }),
+            Effect.andThen(Effect.never),
+          );
+        }),
       ),
+    );
+    const closed = Effect.raceFirst(
+      selectedTransportAfterControlClose,
       Deferred.await(upgradeComplete).pipe(
         Effect.andThen(
           Effect.suspend(() => {

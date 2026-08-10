@@ -247,6 +247,43 @@ describe("WebRtcFastPathController", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("keeps a bound DataChannel alive after the control WebSocket closes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const answer = yield* harness.controller.negotiate({
+        version: 1,
+        attemptId: "attempt-1",
+        offerSdp: "v=0\r\n",
+      });
+      yield* Deferred.succeed(harness.channels, harness.serverPort);
+      const client = yield* makeWebRtcDataChannelConnection(harness.clientPort);
+      yield* client.sendBinding(
+        new TextEncoder().encode(
+          encodeBinding({
+            version: 1,
+            attemptId: answer.attemptId,
+            bindingToken: answer.bindingToken,
+          }),
+        ),
+      );
+      yield* client.awaitBindingAck;
+      yield* Queue.take(harness.accepted);
+
+      const sessionEnd = yield* harness.controller.awaitSessionEndAfterControlClose.pipe(
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      expect(sessionEnd.pollUnsafe()).toBeUndefined();
+      expect(harness.serverPort.isOpen()).toBe(true);
+      expect(yield* Ref.get(harness.closeCount)).toBe(0);
+
+      harness.serverPort.close();
+      yield* Fiber.join(sessionEnd);
+      expect(yield* Ref.get(harness.closeCount)).toBe(1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("closes a peer whose binding token does not match", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

@@ -452,7 +452,7 @@ describe("RpcSessionFactory", () => {
     }),
   );
 
-  it.effect("reaches WebSocket readiness before selecting WebRTC", () =>
+  it.effect("reaches WebSocket readiness and keeps selected WebRTC after control closes", () =>
     Effect.gen(function* () {
       const rtc = yield* makeRtcHarness();
       const { factory, sockets } = yield* makeFactory(rtc.peerFactory);
@@ -487,8 +487,17 @@ describe("RpcSessionFactory", () => {
 
       const closedFiber = yield* Effect.flip(session.closed).pipe(Effect.forkChild);
       socket.close(1012, "service restart");
-      yield* Fiber.join(closedFiber);
-      expect(rtc.clientPort.isOpen()).toBe(false);
+      yield* Effect.yieldNow;
+
+      expect(closedFiber.pollUnsafe()).toBeUndefined();
+      expect(rtc.clientPort.isOpen()).toBe(true);
+      const probe = yield* session.probe.pipe(Effect.forkChild);
+      expect(yield* Queue.take(rtc.rtcRequests)).toBe(WS_METHODS.serverProbe);
+      yield* Fiber.join(probe);
+
+      rtc.clientPort.close();
+      const closeError = yield* Fiber.join(closedFiber);
+      expect(closeError).toMatchObject({ reason: "transport" });
     }),
   );
 

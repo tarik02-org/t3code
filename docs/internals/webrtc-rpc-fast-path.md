@@ -12,11 +12,13 @@ DataChannel to the authenticated WebSocket with a short-lived attempt ID and a
 one-time random token. The client selects WebRTC only after `server.probe` and a
 matching `server.getConfig` succeed over the DataChannel.
 
-The control WebSocket remains open and authoritative for authentication,
-signaling, presence, and lifetime. Signaling calls made over WebRTC are rejected.
-If the control WebSocket closes, the server and client close its DataChannel. If
-a selected DataChannel closes, the normal environment supervisor replaces the
-whole session. It does not replay requests or move in-flight streams between
+The control WebSocket remains the authentication and signaling channel while it
+is connected. Signaling calls made over WebRTC are rejected. Once the binding
+frame and RTC probe succeed, the authenticated server session can continue over
+the DataChannel if the control WebSocket later disconnects. Negotiation that has
+not reached that point still ends with the WebSocket. If the selected
+DataChannel closes, the normal environment supervisor replaces the whole
+session. It does not replay requests or move in-flight streams between
 transports.
 
 ## ICE configuration and support

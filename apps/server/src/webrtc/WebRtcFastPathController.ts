@@ -17,6 +17,7 @@ import { makeWebRtcDataChannelConnection } from "@t3tools/shared/webrtcDataChann
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -41,6 +42,7 @@ interface ActiveAttempt {
   readonly bindingToken: string;
   readonly expiresAtMs: number;
   readonly peer: ServerWebRtcPeer;
+  readonly closed: Deferred.Deferred<void>;
   readonly bound: boolean;
 }
 
@@ -50,6 +52,7 @@ export interface WebRtcFastPathController {
     input: WebRtcNegotiateInput,
   ) => Effect.Effect<WebRtcNegotiateResult, WebRtcSignalingError>;
   readonly abort: (attemptId: string) => Effect.Effect<{}, WebRtcSignalingError>;
+  readonly awaitSessionEndAfterControlClose: Effect.Effect<void>;
   readonly close: Effect.Effect<void>;
 }
 
@@ -91,7 +94,11 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
       : null;
 
   const closeAttempt = (attempt: ActiveAttempt | null) =>
-    attempt === null ? Effect.void : attempt.peer.close;
+    attempt === null
+      ? Effect.void
+      : attempt.peer.close.pipe(
+          Effect.ensuring(Deferred.succeed(attempt.closed, undefined).pipe(Effect.asVoid)),
+        );
   const clearAttempt = Effect.fn("WebRtcFastPathController.clearAttempt")(function* (
     attemptId: string,
   ) {
@@ -164,7 +171,9 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
       ),
     );
     return yield* Effect.raceFirst(attempt.peer.closed, connection.closed).pipe(
-      Effect.ensuring(logStats),
+      Effect.ensuring(
+        Deferred.succeed(attempt.closed, undefined).pipe(Effect.asVoid, Effect.andThen(logStats)),
+      ),
     );
   });
 
@@ -246,11 +255,13 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
       );
       const bindingStartedAtMs = yield* Clock.currentTimeMillis;
       const expiresAtMs = bindingStartedAtMs + attemptTtlMs;
+      const closed = yield* Deferred.make<void>();
       const attempt: ActiveAttempt = {
         attemptId: input.attemptId,
         bindingToken,
         expiresAtMs,
         peer,
+        closed,
         bound: false,
       };
       yield* Ref.set(active, attempt);
@@ -317,12 +328,29 @@ export const makeWebRtcFastPathController = Effect.fn("WebRtcFastPathController.
   });
 
   const close = Ref.getAndSet(active, null).pipe(Effect.flatMap(closeAttempt));
+  const awaitSessionEndAfterControlClose = Effect.gen(function* () {
+    const current = yield* Ref.get(active);
+    if (current === null || current.bound === false) {
+      yield* close;
+      return;
+    }
+    yield* Effect.logDebug(
+      "Control WebSocket closed; keeping the selected WebRTC RPC transport alive.",
+    ).pipe(
+      Effect.annotateLogs({
+        "rpc.transport": "webrtc",
+        "webrtc.control_websocket": "closed",
+      }),
+    );
+    yield* Deferred.await(current.closed);
+  });
   yield* Effect.addFinalizer(() => close);
 
   return {
     capability,
     negotiate,
     abort,
+    awaitSessionEndAfterControlClose,
     close,
   } satisfies WebRtcFastPathController;
 });
