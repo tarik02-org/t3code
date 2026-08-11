@@ -1,8 +1,11 @@
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as NodeTimersPromises from "node:timers/promises";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -195,11 +198,12 @@ async function proxyRequest(
   return withContentSecurityPolicy(response, contentSecurityPolicy);
 }
 
-function resolveRendererFilePath(
+async function resolveRendererFilePath(
+  fileSystem: FileSystem.FileSystem,
   path: Path.Path,
   rootPath: string,
   pathname: string,
-): string | null {
+): Promise<string | null> {
   let decodedPath: string;
   try {
     decodedPath = decodeURIComponent(pathname).replaceAll("\\", "/");
@@ -208,11 +212,7 @@ function resolveRendererFilePath(
   }
 
   const requestedPath = decodedPath.replace(/^\/+/, "");
-  const relativePath =
-    requestedPath.length === 0 || path.extname(requestedPath).length === 0
-      ? "index.html"
-      : requestedPath;
-  const filePath = path.resolve(rootPath, relativePath);
+  const filePath = path.resolve(rootPath, requestedPath);
   const relativeToRoot = path.relative(rootPath, filePath);
   if (
     relativeToRoot === ".." ||
@@ -221,11 +221,20 @@ function resolveRendererFilePath(
   ) {
     return null;
   }
-  return filePath;
+
+  if (requestedPath.length > 0) {
+    const fileInfo = await Effect.runPromise(fileSystem.stat(filePath).pipe(Effect.option));
+    if (Option.isSome(fileInfo) && fileInfo.value.type === "File") {
+      return filePath;
+    }
+  }
+
+  return path.join(rootPath, "index.html");
 }
 
 async function serveRendererFile(
   request: Request,
+  fileSystem: FileSystem.FileSystem,
   path: Path.Path,
   rendererRootPath: string,
   contentSecurityPolicy: string,
@@ -238,7 +247,12 @@ async function serveRendererFile(
     return new Response(null, { status: 405 });
   }
 
-  const filePath = resolveRendererFilePath(path, rendererRootPath, requestUrl.pathname);
+  const filePath = await resolveRendererFilePath(
+    fileSystem,
+    path,
+    rendererRootPath,
+    requestUrl.pathname,
+  );
   if (filePath === null) {
     return new Response(null, { status: 404 });
   }
@@ -270,6 +284,7 @@ async function fetchWithTransientRetry(url: string, init: RequestInit): Promise<
 }
 
 export const make = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const registered = yield* Ref.make(false);
 
@@ -313,7 +328,7 @@ export const make = Effect.gen(function* () {
       Effect.try({
         try: () => {
           Electron.protocol.handle(input.scheme, (request) =>
-            serveRendererFile(request, path, rendererRootPath, contentSecurityPolicy),
+            serveRendererFile(request, fileSystem, path, rendererRootPath, contentSecurityPolicy),
           );
         },
         catch: (cause) => new ElectronProtocolRegistrationError({ scheme: input.scheme, cause }),
@@ -331,6 +346,6 @@ export const make = Effect.gen(function* () {
   });
 
   return ElectronProtocol.of({ registerDesktopProtocol, registerDesktopFileProtocol });
-}).pipe(Effect.provide(NodePath.layer));
+}).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)));
 
 export const layer = Layer.effect(ElectronProtocol, make);
