@@ -1,4 +1,5 @@
 import { DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
+import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "./pairingUrl";
 
@@ -26,6 +27,15 @@ export function configuredHostedAppUrl(): string {
   );
 }
 
+export function isDesktopBackendless(): boolean {
+  if (typeof window === "undefined" || window.desktopBridge === undefined) {
+    return false;
+  }
+  return !window.desktopBridge
+    .getLocalEnvironmentBootstraps()
+    .some((entry) => entry.id === PRIMARY_LOCAL_ENVIRONMENT_ID);
+}
+
 function configuredBackendUrl(): string {
   return import.meta.env.VITE_HTTP_URL?.trim() || import.meta.env.VITE_WS_URL?.trim() || "";
 }
@@ -47,6 +57,9 @@ function originFromUrl(value: string): string | null {
 }
 
 export function isHostedStaticApp(url: URL = new URL(window.location.href)): boolean {
+  if (isDesktopBackendless()) {
+    return true;
+  }
   if (configuredBackendUrl()) {
     return false;
   }

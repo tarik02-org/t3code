@@ -71,21 +71,18 @@ export class DesktopWindow extends Context.Service<
     readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly activate: Effect.Effect<void, DesktopWindowError>;
     readonly createMainIfBackendReady: Effect.Effect<void, DesktopWindowError>;
-    // Show a lightweight "Connecting to WSL" splash window immediately (wsl-only
-    // mode), before the WSL backend that serves the renderer is ready. It is
-    // dismissed automatically once the real main window reveals.
+    // Show a lightweight "Connecting to WSL" splash window while wsl-only mode
+    // resolves its primary backend config. The main window dismisses it when it
+    // reveals.
     readonly showConnectingSplash: Effect.Effect<void>;
-    // Marks the primary backend as ready so `createMainIfBackendReady` and the
-    // macOS "activate without windows" path may open the real main window. The
-    // renderer now always loads the local client URL (getDesktopUrl) and connects
-    // to the backend through the connection layer, so the reported httpBaseUrl is
-    // no longer used to point the window at the backend — it is kept only for the
-    // readiness log and to preserve the callback contract the backend pool drives.
+    // Marks the primary backend as ready. Initial startup no longer waits on this
+    // callback, but it can recreate a window closed while the backend was starting.
+    // The reported httpBaseUrl is kept for the readiness log and the callback
+    // contract the backend pool drives.
     readonly handleBackendReady: (httpBaseUrl: URL) => Effect.Effect<void, DesktopWindowError>;
     // Called when the backend transitions back to "not ready" (clean stop,
-    // restart, crash). Clears the latch that lets `activate` auto-create a
-    // window so a "macOS dock click" while the backend is down doesn't
-    // produce a stranded window pointing at nothing.
+    // restart, crash). Clears the latch that lets `activate` recreate a window
+    // after the user closed it.
     readonly handleBackendNotReady: Effect.Effect<void>;
     readonly flushMainWindowBounds: Effect.Effect<void>;
     readonly dispatchMenuAction: (action: string) => Effect.Effect<void, DesktopWindowError>;
@@ -261,11 +258,9 @@ export const make = Effect.gen(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const previewManager = yield* PreviewManager.PreviewManager;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
-  // Window-side latch for the primary backend's readiness. Set by
-  // handleBackendReady (driven by the pool's onReady callback), cleared
-  // by handleBackendNotReady (driven by onShutdown). Only consumed by
-  // createMainIfBackendReady, which gates the post-readiness window
-  // open in development and the macOS "activate without windows" path.
+  // Window-side latch for the primary backend's readiness. Initial startup
+  // creates the window as soon as it has a usable backend config. This latch
+  // only gates later recreation after the window was closed.
   const backendReadyRef = yield* Ref.make(false);
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
@@ -795,6 +790,11 @@ export const make = Effect.gen(function* () {
         yield* electronWindow.reveal(existingWindow.value);
         return;
       }
+      const settings = yield* desktopSettings.get;
+      if (!settings.localBackendEnabled) {
+        yield* createMain;
+        return;
+      }
       // No real main window yet. While the backend is still cold-booting,
       // re-reveal the connecting splash so taskbar/dock activation brings it
       // back instead of doing nothing. Once the backend is ready we fall
@@ -826,8 +826,12 @@ export const make = Effect.gen(function* () {
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action) {
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* focusedMainWindow;
-      if (Option.isNone(existingWindow) && !(yield* Ref.get(backendReadyRef))) {
-        return;
+      if (Option.isNone(existingWindow)) {
+        const backendReady = yield* Ref.get(backendReadyRef);
+        const settings = yield* desktopSettings.get;
+        if (!backendReady && settings.localBackendEnabled) {
+          return;
+        }
       }
       const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* ensureMain;
 
