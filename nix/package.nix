@@ -8,6 +8,7 @@
   pnpm_11,
   pnpmConfigHook,
   python3,
+  rustPlatform,
   src,
   stdenv,
   version ? null,
@@ -18,6 +19,13 @@ let
   nodejs = nodejs_24;
   pnpm = pnpm_11;
   sourceVersion = (builtins.fromJSON (builtins.readFile "${src}/apps/server/package.json")).version;
+  resourceMonitor = rustPlatform.buildRustPackage {
+    pname = "t3-resource-monitor";
+    version =
+      (builtins.fromTOML (builtins.readFile "${src}/native/resource-monitor/Cargo.toml")).package.version;
+    src = "${src}/native/resource-monitor";
+    cargoLock.lockFile = "${src}/native/resource-monitor/Cargo.lock";
+  };
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "t3code";
@@ -41,7 +49,7 @@ stdenv.mkDerivation (finalAttrs: {
       ;
     inherit pnpm;
     fetcherVersion = 4;
-    hash = "sha256-0+WS3ppTm67wGHqMSXcHs5QNcL5AfoQ2o1wz7yN6few=";
+    hash = "sha256-xtLuCCPoFHbDbCa7VkRC3nc9AkOF0nY4Yff8EclinaY=";
   };
 
   postPatch = lib.optionalString (finalAttrs.version != sourceVersion) ''
@@ -91,6 +99,8 @@ stdenv.mkDerivation (finalAttrs: {
     cp --recursive --no-preserve=mode packages "$out"/libexec/t3code
     cp --recursive --no-preserve=mode apps/server/{node_modules,dist} "$out"/libexec/t3code/apps/server
     cp --recursive --no-preserve=mode apps/web/dist "$out"/libexec/t3code/apps/server/dist/client
+    install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
+      "$out"/libexec/t3code/apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor
 
     find "$out"/libexec/t3code -xtype l -delete
 
@@ -102,7 +112,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description = "Remote control for coding agents";
-    homepage = "https://github.com/tarik02/t3code";
+    homepage = "https://github.com/tarik02-org/t3code";
     license = lib.licenses.mit;
     mainProgram = "t3";
     platforms = [ "x86_64-linux" ];

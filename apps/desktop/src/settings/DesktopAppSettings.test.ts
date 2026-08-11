@@ -11,6 +11,9 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "./DesktopAppSettings.ts";
 
 const DesktopSettingsPatch = Schema.Struct({
+  linuxPasswordStore: Schema.optionalKey(
+    Schema.Literals(["auto", "gnome-libsecret", "kwallet", "kwallet5", "kwallet6"]),
+  ),
   mainWindowBounds: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -25,7 +28,7 @@ const DesktopSettingsPatch = Schema.Struct({
   serverExposureMode: Schema.optionalKey(Schema.Literals(["local-only", "network-accessible"])),
   tailscaleServeEnabled: Schema.optionalKey(Schema.Boolean),
   tailscaleServePort: Schema.optionalKey(Schema.Number),
-  updateChannel: Schema.optionalKey(Schema.Literals(["latest", "nightly"])),
+  updateChannel: Schema.optionalKey(Schema.Literals(["latest", "nightly", "canary"])),
   updateChannelConfiguredByUser: Schema.optionalKey(Schema.Boolean),
   wslBackendEnabled: Schema.optionalKey(Schema.Boolean),
   wslMode: Schema.optionalKey(Schema.Literals(["local", "wsl"])),
@@ -102,6 +105,8 @@ describe("DesktopSettings", () => {
     assert.deepEqual(
       DesktopAppSettings.resolveDefaultDesktopSettings("0.0.17-nightly.20260415.1"),
       {
+        localBackendEnabled: true,
+        linuxPasswordStore: "auto",
         mainWindowBounds: null,
         mainWindowMaximized: false,
         serverExposureMode: "local-only",
@@ -121,6 +126,7 @@ describe("DesktopSettings", () => {
       Effect.gen(function* () {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
         yield* writeSettingsPatch({
+          linuxPasswordStore: "gnome-libsecret",
           serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
           tailscaleServePort: 8443,
@@ -129,6 +135,8 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          localBackendEnabled: true,
+          linuxPasswordStore: "gnome-libsecret",
           mainWindowBounds: null,
           mainWindowMaximized: false,
           serverExposureMode: "network-accessible",
@@ -235,6 +243,8 @@ describe("DesktopSettings", () => {
         );
 
         assert.deepEqual(yield* settings.load, {
+          localBackendEnabled: true,
+          linuxPasswordStore: "auto",
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
           mainWindowMaximized: false,
           serverExposureMode: "network-accessible",
@@ -266,6 +276,45 @@ describe("DesktopSettings", () => {
         assert.equal(loaded.serverExposureMode, "network-accessible");
       }),
     ),
+  );
+
+  it.effect(
+    "normalizes unsupported linux password-store values without dropping other settings",
+    () =>
+      withSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const settings = yield* DesktopAppSettings.DesktopAppSettings;
+          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+          yield* fileSystem.writeFileString(
+            environment.desktopSettingsPath,
+            `{
+            "linuxPasswordStore": "unsupported-store",
+            "serverExposureMode": "network-accessible",
+            "tailscaleServeEnabled": true,
+            "tailscaleServePort": 8443,
+            "updateChannel": "nightly",
+            "updateChannelConfiguredByUser": true
+          }\n`,
+          );
+
+          assert.deepEqual(yield* settings.load, {
+            localBackendEnabled: true,
+            linuxPasswordStore: "auto",
+            mainWindowBounds: null,
+            mainWindowMaximized: false,
+            serverExposureMode: "network-accessible",
+            tailscaleServeEnabled: true,
+            tailscaleServePort: 8443,
+            updateChannel: "nightly",
+            updateChannelConfiguredByUser: true,
+            wslBackendEnabled: false,
+            wslOnly: false,
+            wslDistro: null,
+          } satisfies DesktopAppSettings.DesktopSettings);
+        }),
+      ),
   );
 
   it.effect("persists sparse desktop settings documents", () =>
@@ -300,6 +349,8 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          localBackendEnabled: true,
+          linuxPasswordStore: "auto",
           mainWindowBounds: null,
           mainWindowMaximized: false,
           serverExposureMode: "local-only",
@@ -327,6 +378,8 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          localBackendEnabled: true,
+          linuxPasswordStore: "auto",
           mainWindowBounds: null,
           mainWindowMaximized: false,
           serverExposureMode: "local-only",
@@ -353,6 +406,8 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          localBackendEnabled: true,
+          linuxPasswordStore: "auto",
           mainWindowBounds: null,
           mainWindowMaximized: false,
           serverExposureMode: "local-only",

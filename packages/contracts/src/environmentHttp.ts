@@ -24,7 +24,13 @@ import {
   AuthWebSocketTicketResult,
   ServerAuthSessionMethod,
 } from "./auth.ts";
-import { AuthSessionId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  AuthSessionId,
+  IsoDateTime,
+  MessageId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
@@ -32,6 +38,9 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryOutline,
+  OrchestrationThreadHistoryPage,
+  ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT,
 } from "./orchestration.ts";
 import {
   RelayCloudEnvironmentHealthRequest,
@@ -457,6 +466,60 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
 
+// Query-string windows for paginated thread reads. GET payloads encode to
+// strings, while callers and handlers keep numeric turn limits.
+const EnvironmentOrchestrationThreadSnapshotQuery = {
+  turnLimit: Schema.optional(
+    Schema.FiniteFromString.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(1),
+      Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+    ),
+  ),
+  beforeCursor: Schema.optional(TrimmedNonEmptyString),
+};
+
+const EnvironmentOrchestrationThreadMessageSnapshotQuery = {
+  turnLimit: Schema.FiniteFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+};
+
+const EnvironmentOrchestrationThreadMessagesQuery = {
+  beforeCreatedAt: IsoDateTime,
+  beforeMessageId: MessageId,
+  turnLimit: Schema.FiniteFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+};
+
+const EnvironmentOrchestrationThreadMessagesAfterQuery = {
+  afterCreatedAt: IsoDateTime,
+  afterMessageId: MessageId,
+  turnLimit: Schema.FiniteFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+};
+
+const EnvironmentOrchestrationThreadMessageAroundParams = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+
+const EnvironmentOrchestrationThreadMessageAroundQuery = {
+  turnLimit: Schema.FiniteFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT),
+  ),
+};
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
@@ -476,9 +539,70 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
     HttpApiEndpoint.get("threadSnapshot", "/api/orchestration/threads/:threadId", {
       headers: OptionalBearerHeaders,
       params: EnvironmentOrchestrationThreadSnapshotParams,
+      payload: EnvironmentOrchestrationThreadSnapshotQuery,
       success: OrchestrationThreadDetailSnapshot,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "threadMessageSnapshot",
+      "/api/orchestration/threads/:threadId/with-message-history",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        payload: EnvironmentOrchestrationThreadMessageSnapshotQuery,
+        success: OrchestrationThreadDetailSnapshot,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("threadMessages", "/api/orchestration/threads/:threadId/messages", {
+      headers: OptionalBearerHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      payload: EnvironmentOrchestrationThreadMessagesQuery,
+      success: OrchestrationThreadHistoryPage,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "threadMessagesAfter",
+      "/api/orchestration/threads/:threadId/messages/after",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        payload: EnvironmentOrchestrationThreadMessagesAfterQuery,
+        success: OrchestrationThreadHistoryPage,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "threadMessagesAround",
+      "/api/orchestration/threads/:threadId/messages/:messageId/around",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadMessageAroundParams,
+        payload: EnvironmentOrchestrationThreadMessageAroundQuery,
+        success: OrchestrationThreadHistoryPage,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "threadHistoryOutline",
+      "/api/orchestration/threads/:threadId/history/outline",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        success: OrchestrationThreadHistoryOutline,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {

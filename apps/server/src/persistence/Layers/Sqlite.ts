@@ -9,29 +9,11 @@ import { ServerConfig } from "../../config.ts";
 import { ProjectionThreadGoalRepositoryLive } from "../Services/ProjectionThreadGoals.ts";
 import { makeRuntimeSqliteLayer } from "../RuntimeSqliteLayer.ts";
 
-const repairMainMigrationLedger = Effect.fn("repairMainMigrationLedger")(function* () {
-  const sql = yield* SqlClient.SqlClient;
-
-  const migrationLedgerColumns = yield* sql<{ readonly name: string }>`
-    PRAGMA table_info(effect_sql_migrations)
-  `;
-  if (migrationLedgerColumns.length === 0) {
-    return;
-  }
-
-  yield* sql`
-    DELETE FROM effect_sql_migrations
-    WHERE migration_id = 31
-      AND name = 'ProjectionThreadGoals'
-  `;
-});
-
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
-    yield* repairMainMigrationLedger();
+    yield* sql`PRAGMA journal_mode = WAL;`;
     yield* runMigrations();
   }),
 );
@@ -64,5 +46,8 @@ export const SqlitePersistenceMemory = Layer.provideMerge(
 );
 
 export const layerConfig = Layer.unwrap(
-  Effect.map(Effect.service(ServerConfig), ({ dbPath }) => makeSqlitePersistenceLive(dbPath)),
+  Effect.gen(function* () {
+    const { dbPath } = yield* ServerConfig;
+    return makeSqlitePersistenceLive(dbPath);
+  }),
 );

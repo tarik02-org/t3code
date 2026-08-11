@@ -14,7 +14,8 @@ import * as Path from "effect/Path";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
-import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
+import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
+import { isCanaryDesktopVersion, isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 
 export interface MakeDesktopEnvironmentInput {
   readonly dirname: string;
@@ -54,6 +55,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly appRoot: string;
     readonly backendEntryPath: string;
     readonly backendCwd: string;
+    readonly rendererRootPath: string;
     readonly preloadPath: string;
     readonly appUpdateYmlPath: string;
     readonly devServerUrl: Option.Option<URL>;
@@ -67,6 +69,8 @@ export class DesktopEnvironment extends Context.Service<
     readonly appUserModelId: string;
     readonly linuxDesktopEntryName: string;
     readonly linuxWmClass: string;
+    readonly linuxApplicationsDir: string;
+    readonly appImagePath: Option.Option<string>;
     readonly userDataDirName: string;
     readonly legacyUserDataDirName: string;
     readonly defaultDesktopSettings: DesktopAppSettings.DesktopSettings;
@@ -87,6 +91,9 @@ function resolveDesktopAppStageLabel(input: {
     return "Dev";
   }
 
+  if (isCanaryDesktopVersion(input.appVersion)) {
+    return "Canary";
+  }
   return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : "Alpha";
 }
 
@@ -140,6 +147,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
+  const isCanary = !isDevelopment && isCanaryDesktopVersion(input.appVersion);
   const appDataDirectory =
     input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
@@ -148,8 +156,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const configuredBaseDir = config.t3Home;
-  const baseDir = Option.getOrElse(configuredBaseDir, () => path.join(homeDirectory, ".t3"));
+  const baseDir = resolveDesktopBaseDir({
+    homeDirectory,
+    joinPath: path.join,
+    t3Home: config.t3Home,
+  });
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const branding = resolveDesktopAppBranding({
@@ -157,12 +168,26 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appVersion: input.appVersion,
   });
   const displayName = branding.displayName;
-  const stateDir = path.join(
+  const desktopSettingsDir = resolveDesktopStateDir({
     baseDir,
-    isDevelopment && Option.isNone(configuredBaseDir) ? "dev" : "userdata",
+    isDevelopment,
+    joinPath: path.join,
+    t3Home: config.t3Home,
+  });
+  const stateDir = isCanary ? path.join(baseDir, "canary") : desktopSettingsDir;
+  const appIdentitySuffix = isDevelopment ? "dev" : isCanary ? "canary" : null;
+  const userDataDirName = appIdentitySuffix !== null ? `t3code-${appIdentitySuffix}` : "t3code";
+  const legacyUserDataDirName = isDevelopment
+    ? "T3 Code (Dev)"
+    : isCanary
+      ? "T3 Code (Canary)"
+      : "T3 Code (Alpha)";
+  const appUserModelId =
+    appIdentitySuffix !== null ? `com.t3tools.t3code.${appIdentitySuffix}` : "com.t3tools.t3code";
+  const linuxApplicationsDir = path.join(
+    Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
+    "applications",
   );
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -179,7 +204,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appDataDirectory,
     baseDir,
     stateDir,
-    desktopSettingsPath: path.join(stateDir, "desktop-settings.json"),
+    desktopSettingsPath: path.join(desktopSettingsDir, "desktop-settings.json"),
     clientSettingsPath: path.join(stateDir, "client-settings.json"),
     savedEnvironmentRegistryPath: path.join(stateDir, "saved-environments.json"),
     serverSettingsPath: path.join(stateDir, "settings.json"),
@@ -189,6 +214,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appRoot,
     backendEntryPath: path.join(appRoot, "apps/server/dist/bin.mjs"),
     backendCwd: input.isPackaged ? homeDirectory : appRoot,
+    rendererRootPath: path.join(appRoot, "apps/server/dist/client"),
     preloadPath: path.join(input.dirname, "preload.cjs"),
     appUpdateYmlPath: input.isPackaged
       ? path.join(resourcesPath, "app-update.yml")
@@ -201,11 +227,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
     otlpExportIntervalMs: config.otlpExportIntervalMs,
     branding,
     displayName,
-    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
-    ),
-    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "t3code.desktop",
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () => appUserModelId),
+    linuxDesktopEntryName: `${userDataDirName}.desktop`,
+    linuxWmClass: userDataDirName,
+    linuxApplicationsDir,
+    appImagePath: config.appImagePath,
     userDataDirName,
     legacyUserDataDirName,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

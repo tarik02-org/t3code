@@ -6,6 +6,7 @@ import {
   PrimaryEnvironmentAuth,
   RelayDeviceIdentity,
   SshEnvironmentGateway,
+  ThreadHistoryCacheStore,
 } from "@t3tools/client-runtime/platform";
 import {
   ConnectionBlockedError,
@@ -30,6 +31,7 @@ import * as MobileStorage from "../persistence/mobile-storage";
 import { appAtomRegistry } from "../state/atom-registry";
 import { clearThreadOutboxEnvironment } from "../state/thread-outbox";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
+import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import { connectionStorageLayer } from "./storage";
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
@@ -54,27 +56,53 @@ const connectivityLayer = Connectivity.layer({
   ),
   changes: Stream.callback((queue) =>
     Effect.acquireRelease(
-      Effect.sync(() =>
-        Network.addNetworkStateListener((state) => {
+      Effect.sync(() => {
+        let active = true;
+        const networkSubscription = Network.addNetworkStateListener((state) => {
           Queue.offerUnsafe(queue, networkStatus(state));
-        }),
-      ),
-      (subscription) => Effect.sync(() => subscription.remove()),
+        });
+        const appStateSubscription = AppState.addEventListener("change", (state) => {
+          if (state !== "active") {
+            return;
+          }
+          void Network.getNetworkStateAsync()
+            .then((current) => {
+              if (active) {
+                Queue.offerUnsafe(queue, networkStatus(current));
+              }
+            })
+            .catch(() => undefined);
+        });
+        return {
+          close: () => {
+            active = false;
+            networkSubscription.remove();
+            appStateSubscription.remove();
+          },
+        };
+      }),
+      ({ close }) => Effect.sync(close),
     ).pipe(Effect.asVoid),
   ),
 });
 
 const wakeupsLayer = Wakeups.layer({
   changes: Stream.merge(
-    Stream.callback<"application-active">((queue) =>
+    Stream.callback<"application-active-probe" | "application-active-reconnect">((queue) =>
       Effect.acquireRelease(
-        Effect.sync(() =>
-          AppState.addEventListener("change", (state) => {
-            if (state === "active") {
-              Queue.offerUnsafe(queue, "application-active");
+        Effect.sync(() => {
+          let backgroundedAtMs = AppState.currentState === "background" ? Date.now() : null;
+          return AppState.addEventListener("change", (state) => {
+            if (state === "background") {
+              backgroundedAtMs = Date.now();
+              return;
             }
-          }),
-        ),
+            if (state === "active") {
+              Queue.offerUnsafe(queue, mobileApplicationActiveWakeup(backgroundedAtMs, Date.now()));
+              backgroundedAtMs = null;
+            }
+          });
+        }),
         (subscription) => Effect.sync(() => subscription.remove()),
       ).pipe(Effect.asVoid),
     ),
@@ -181,25 +209,32 @@ const providedCapabilitiesLayer = capabilitiesLayer.pipe(
   Layer.provide(Runtime.runtimeContextLayer),
 );
 
-const environmentOwnedDataCleanupLayer = Layer.succeed(
+const environmentOwnedDataCleanupLayer = Layer.effect(
   EnvironmentOwnedDataCleanup,
-  EnvironmentOwnedDataCleanup.of({
-    clear: (environmentId) =>
-      Effect.all(
-        [
-          Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
-          Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
-        ],
-        { concurrency: "unbounded", discard: true },
-      ).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not clear mobile environment-owned data.", {
-            environmentId,
-            cause,
-          }),
+  Effect.gen(function* () {
+    const historyCache = yield* ThreadHistoryCacheStore;
+    return EnvironmentOwnedDataCleanup.of({
+      clear: (environmentId) =>
+        Effect.all(
+          [
+            Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
+            Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
+            historyCache.clear(environmentId),
+          ],
+          { concurrency: "unbounded", discard: true },
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not clear mobile environment-owned data.", {
+              environmentId,
+              cause,
+            }),
+          ),
         ),
-      ),
+    });
   }),
+);
+const providedEnvironmentOwnedDataCleanupLayer = environmentOwnedDataCleanupLayer.pipe(
+  Layer.provide(Runtime.runtimeContextLayer),
 );
 
 type ConnectionPlatformLayerSource =
@@ -209,7 +244,7 @@ type ConnectionPlatformLayerSource =
   | typeof wakeupsLayer
   | typeof providedCapabilitiesLayer
   | typeof platformConnectionSourceLayer
-  | typeof environmentOwnedDataCleanupLayer;
+  | typeof providedEnvironmentOwnedDataCleanupLayer;
 
 export const connectionPlatformLayer: Layer.Layer<
   Layer.Success<ConnectionPlatformLayerSource>,
@@ -222,5 +257,5 @@ export const connectionPlatformLayer: Layer.Layer<
   wakeupsLayer,
   providedCapabilitiesLayer,
   platformConnectionSourceLayer,
-  environmentOwnedDataCleanupLayer,
+  providedEnvironmentOwnedDataCleanupLayer,
 );

@@ -211,6 +211,7 @@ function makeTestLayer(input: {
         }
         return { settings: desktopSettings, changed };
       }),
+    setLocalBackendEnabled: () => Effect.die("unexpected local backend toggle"),
     setServerExposureMode: () => Effect.die("unexpected server exposure update"),
     setTailscaleServe: () => Effect.die("unexpected Tailscale Serve update"),
     setUpdateChannel: () => Effect.die("unexpected update channel change"),
@@ -434,6 +435,51 @@ describe("DesktopWindow", () => {
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code-dev://app/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("blocks only repeated Cmd+W input before it reaches the native window menu", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+
+        const beforeInput = fakeWindow.webContentsListeners.get("before-input-event");
+        if (!beforeInput) {
+          return yield* Effect.die("before-input-event listener was not registered");
+        }
+
+        let prevented = false;
+        const event = { preventDefault: () => (prevented = true) };
+        const input = {
+          type: "keyDown",
+          isAutoRepeat: true,
+          key: "W",
+          meta: true,
+          control: false,
+          alt: false,
+          shift: false,
+        };
+        beforeInput(event, input);
+        assert.isTrue(prevented);
+
+        prevented = false;
+        beforeInput(event, { ...input, isAutoRepeat: false });
+        assert.isFalse(prevented);
+
+        prevented = false;
+        beforeInput(event, { ...input, meta: false });
+        assert.isFalse(prevented);
       }).pipe(Effect.provide(layer));
     }),
   );

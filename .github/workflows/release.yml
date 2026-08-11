@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - canary
   workflow_dispatch:
     inputs:
       channel:
@@ -14,6 +15,7 @@ on:
         options:
           - stable
           - nightly
+          - canary
       version:
         description: "Release version (for example 1.2.3 or v1.2.3)"
         required: false
@@ -22,6 +24,10 @@ on:
 permissions:
   contents: read
   id-token: none
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/canary' }}
 
 jobs:
   preflight:
@@ -44,6 +50,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -136,16 +146,22 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
             echo "make_latest=true" >> "$GITHUB_OUTPUT"
           else
-            nightly_date="$(date -u -d "$NIGHTLY_DATE" +%Y%m%d)"
+            prerelease_channel="nightly"
+            if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/canary" ]] ||
+              [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${DISPATCH_CHANNEL:-stable}" == "canary" ]]; then
+              prerelease_channel="canary"
+            fi
+            prerelease_date="$(date -u -d "$NIGHTLY_DATE" +%Y%m%d)"
 
             node scripts/resolve-nightly-release.ts \
-              --date "$nightly_date" \
+              --channel "$prerelease_channel" \
+              --date "$prerelease_date" \
               --run-number "$NIGHTLY_RUN_NUMBER" \
               --sha "$NIGHTLY_SHA" \
               --github-output
 
-            echo "release_channel=nightly" >> "$GITHUB_OUTPUT"
-            echo "cli_dist_tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "release_channel=$prerelease_channel" >> "$GITHUB_OUTPUT"
+            echo "cli_dist_tag=$prerelease_channel" >> "$GITHUB_OUTPUT"
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
             echo "make_latest=false" >> "$GITHUB_OUTPUT"
           fi
@@ -193,6 +209,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -270,14 +290,19 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
           cache: true
-          run-install: true
+          run-install: |
+            args:
+              - --filter=t3...
 
       - name: Build node-pty linux-x64 prebuild
         shell: bash
@@ -324,21 +349,29 @@ jobs:
             platform: mac
             target: dmg
             arch: arm64
+            rust_target: aarch64-apple-darwin
+            resource_key: darwin-arm64
           - label: macOS x64
             runner: macos-15-intel
             platform: mac
             target: dmg
             arch: x64
+            rust_target: x86_64-apple-darwin
+            resource_key: darwin-x64
           - label: Linux x64
             runner: ubuntu-latest
             platform: linux
             target: AppImage
             arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+            resource_key: linux-x64
           - label: Windows x64
             runner: windows-2025
             platform: win
             target: nsis
             arch: x64
+            rust_target: x86_64-pc-windows-msvc
+            resource_key: win32-x64
           # - label: Windows arm64
           #   runner: windows-11-arm
           #   platform: win
@@ -349,14 +382,26 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
           cache: true
-          run-install: true
+          run-install: |
+            args:
+              - --filter=@t3tools/desktop...
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
@@ -632,7 +677,7 @@ jobs:
 
           # Enable if Windows arm64 builds are enabled.
           # Windows updater metadata is channel-specific (for example
-          # "latest.yml" or "nightly.yml"). Suffix each per-arch copy so the
+          # "latest.yml", "nightly.yml", or "canary.yml"). Suffix each per-arch copy so the
           # release job can merge matching arm64/x64 manifests back into one
           # canonical manifest per channel.
           # if [[ "${{ matrix.platform }}" == "win" ]]; then
@@ -642,11 +687,31 @@ jobs:
           #   done
           # fi
 
+      - name: Collect resource monitor
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor"
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+            binary_name="${binary_name}.exe"
+          fi
+          source_path="native/resource-monitor/target/${{ matrix.rust_target }}/release/${binary_name}"
+          target_dir="resource-monitor-publish/${{ matrix.resource_key }}"
+          mkdir -p "$target_dir"
+          cp "$source_path" "$target_dir/$binary_name"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-publish/*
+          if-no-files-found: error
+
+      - name: Upload resource monitor
+        uses: actions/upload-artifact@v7
+        with:
+          name: resource-monitor-${{ matrix.resource_key }}
+          path: resource-monitor-publish/${{ matrix.resource_key }}/*
           if-no-files-found: error
 
   build_web_dist:
@@ -660,7 +725,7 @@ jobs:
       T3CODE_CLERK_JWT_TEMPLATE: ""
       T3CODE_RELAY_URL: ""
       VITE_HOSTED_STATIC_APP: "true"
-      VITE_HOSTED_APP_CHANNEL: ${{ needs.preflight.outputs.release_channel == 'stable' && 'latest' || 'nightly' }}
+      VITE_HOSTED_APP_CHANNEL: ${{ needs.preflight.outputs.release_channel == 'stable' && 'latest' || needs.preflight.outputs.release_channel }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -730,6 +795,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -751,6 +820,24 @@ jobs:
       - name: Build CLI package
         run: vp run --filter t3 build
 
+      - name: Download resource monitors
+        uses: actions/download-artifact@v8
+        with:
+          pattern: resource-monitor-*
+          path: ${{ runner.temp }}/resource-monitors
+
+      - name: Bundle resource monitors into CLI package
+        shell: bash
+        run: |
+          set -euo pipefail
+          for artifact_dir in "$RUNNER_TEMP"/resource-monitors/resource-monitor-*; do
+            resource_key="${artifact_dir##*/resource-monitor-}"
+            target_dir="apps/server/dist/resource-monitor/${resource_key}"
+            mkdir -p "$target_dir"
+            cp "$artifact_dir"/t3-resource-monitor* "$target_dir/"
+            chmod +x "$target_dir"/t3-resource-monitor 2>/dev/null || true
+          done
+
       - name: Publish CLI package
         run: node apps/server/scripts/cli.ts publish --tag "${{ needs.preflight.outputs.cli_dist_tag }}" --app-version "${{ needs.preflight.outputs.version }}" --verbose
 
@@ -760,19 +847,17 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.build_web_dist.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - id: app_token
-        name: Mint release app token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -838,7 +923,7 @@ jobs:
 
       - name: Publish release
         if: needs.preflight.outputs.previous_tag != ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
           target_commitish: ${{ needs.preflight.outputs.ref }}
@@ -855,11 +940,11 @@ jobs:
             release-assets/*.blockmap
             release-assets/*.yml
           fail_on_unmatched_files: true
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ github.token }}
 
       - name: Publish first release
         if: needs.preflight.outputs.previous_tag == ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
           target_commitish: ${{ needs.preflight.outputs.ref }}
@@ -875,7 +960,7 @@ jobs:
             release-assets/*.blockmap
             release-assets/*.yml
           fail_on_unmatched_files: true
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ github.token }}
 
   deploy_web:
     name: Deploy hosted web app
@@ -894,12 +979,17 @@ jobs:
       T3CODE_WEB_ROUTER_URL: ${{ vars.T3CODE_WEB_ROUTER_URL }}
       T3CODE_WEB_LATEST_DOMAIN: ${{ vars.T3CODE_WEB_LATEST_DOMAIN }}
       T3CODE_WEB_NIGHTLY_DOMAIN: ${{ vars.T3CODE_WEB_NIGHTLY_DOMAIN }}
+      T3CODE_WEB_CANARY_DOMAIN: ${{ vars.T3CODE_WEB_CANARY_DOMAIN }}
       VERCEL_TEAM_SLUG: ${{ vars.VERCEL_TEAM_SLUG }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -930,6 +1020,7 @@ jobs:
           router_url="${T3CODE_WEB_ROUTER_URL:-https://app.t3.codes}"
           latest_domain="${T3CODE_WEB_LATEST_DOMAIN:-latest.app.t3.codes}"
           nightly_domain="${T3CODE_WEB_NIGHTLY_DOMAIN:-nightly.app.t3.codes}"
+          canary_domain="${T3CODE_WEB_CANARY_DOMAIN:-canary.app.t3.codes}"
           router_domain="${router_url#http://}"
           router_domain="${router_domain#https://}"
           router_domain="${router_domain%%/*}"
@@ -937,9 +1028,12 @@ jobs:
           if [[ "${{ needs.preflight.outputs.release_channel }}" == "stable" ]]; then
             channel_domain="$latest_domain"
             channel_name="latest"
-          else
+          elif [[ "${{ needs.preflight.outputs.release_channel }}" == "nightly" ]]; then
             channel_domain="$nightly_domain"
             channel_name="nightly"
+          else
+            channel_domain="$canary_domain"
+            channel_name="canary"
           fi
 
           vercel_scope="${VERCEL_TEAM_SLUG:-$VERCEL_ORG_ID}"
@@ -1000,6 +1094,10 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app_token.outputs.token }}
           persist-credentials: true
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - id: app_bot
         name: Resolve GitHub App bot identity
@@ -1064,6 +1162,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1

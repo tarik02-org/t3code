@@ -16,10 +16,17 @@ import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import {
+  DEFAULT_LINUX_PASSWORD_STORE,
+  normalizeLinuxPasswordStorePreference,
+  type LinuxPasswordStorePreference,
+} from "../linuxSecretStorage.ts";
 import { resolveDefaultDesktopUpdateChannel } from "../updates/updateChannels.ts";
 import { isValidDistroName } from "../wsl/wslPathParsing.ts";
 
 export interface DesktopSettings {
+  readonly localBackendEnabled: boolean;
+  readonly linuxPasswordStore: LinuxPasswordStorePreference;
   readonly mainWindowBounds: DesktopWindowBounds | null;
   readonly mainWindowMaximized: boolean;
   readonly serverExposureMode: DesktopServerExposureMode;
@@ -67,6 +74,8 @@ export const DEFAULT_MAIN_WINDOW_SIZE = {
 } as const;
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
+  localBackendEnabled: true,
+  linuxPasswordStore: DEFAULT_LINUX_PASSWORD_STORE,
   mainWindowBounds: null,
   mainWindowMaximized: false,
   serverExposureMode: "local-only",
@@ -87,6 +96,8 @@ const DesktopWindowBoundsDocument = Schema.Struct({
 });
 
 const DesktopSettingsDocument = Schema.Struct({
+  localBackendEnabled: Schema.optionalKey(Schema.Boolean),
+  linuxPasswordStore: Schema.optionalKey(Schema.Unknown),
   mainWindowBounds: Schema.optionalKey(Schema.NullOr(DesktopWindowBoundsDocument)),
   mainWindowMaximized: Schema.optionalKey(Schema.Boolean),
   serverExposureMode: Schema.optionalKey(DesktopServerExposureModeSchema),
@@ -147,6 +158,9 @@ export class DesktopAppSettings extends Context.Service<
     readonly setMainWindowBounds: (
       bounds: DesktopWindowBounds,
       isMaximized: boolean,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
+    readonly setLocalBackendEnabled: (
+      enabled: boolean,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
     readonly setServerExposureMode: (
       mode: DesktopServerExposureMode,
@@ -216,6 +230,8 @@ function normalizeDesktopSettingsDocument(
     (parsed.wslBackendEnabled === undefined && parsed.wslMode === "wsl");
 
   return {
+    localBackendEnabled: parsed.localBackendEnabled !== false,
+    linuxPasswordStore: normalizeLinuxPasswordStorePreference(parsed.linuxPasswordStore),
     mainWindowBounds,
     mainWindowMaximized: mainWindowBounds !== null && parsed.mainWindowMaximized === true,
     serverExposureMode:
@@ -238,6 +254,12 @@ function toDesktopSettingsDocument(
 ): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
 
+  if (settings.localBackendEnabled !== defaults.localBackendEnabled) {
+    document.localBackendEnabled = settings.localBackendEnabled;
+  }
+  if (settings.linuxPasswordStore !== defaults.linuxPasswordStore) {
+    document.linuxPasswordStore = settings.linuxPasswordStore;
+  }
   if (settings.mainWindowBounds !== null) {
     document.mainWindowBounds = settings.mainWindowBounds;
   }
@@ -281,6 +303,15 @@ function setServerExposureMode(
     : {
         ...settings,
         serverExposureMode: requestedMode,
+      };
+}
+
+function setLocalBackendEnabled(settings: DesktopSettings, enabled: boolean): DesktopSettings {
+  return settings.localBackendEnabled === enabled
+    ? settings
+    : {
+        ...settings,
+        localBackendEnabled: enabled,
       };
 }
 
@@ -506,6 +537,12 @@ export const make = Effect.gen(function* () {
           },
         }),
       ),
+    setLocalBackendEnabled: (enabled) =>
+      persist((settings) => setLocalBackendEnabled(settings, enabled)).pipe(
+        Effect.withSpan("desktop.settings.setLocalBackendEnabled", {
+          attributes: { enabled },
+        }),
+      ),
     setServerExposureMode: (mode) =>
       persist((settings) => setServerExposureMode(settings, mode)).pipe(
         Effect.withSpan("desktop.settings.setServerExposureMode", { attributes: { mode } }),
@@ -565,6 +602,8 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
         load: SynchronizedRef.get(settingsRef),
         setMainWindowBounds: (bounds, isMaximized) =>
           update((settings) => setMainWindowBounds(settings, bounds, isMaximized)),
+        setLocalBackendEnabled: (enabled) =>
+          update((settings) => setLocalBackendEnabled(settings, enabled)),
         setServerExposureMode: (mode) =>
           update((settings) => setServerExposureMode(settings, mode)),
         setTailscaleServe: (input) => update((settings) => setTailscaleServe(settings, input)),

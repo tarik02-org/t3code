@@ -1,11 +1,11 @@
 {
   "name": "t3",
-  "version": "2026.7.2900+tarik02",
+  "version": "2026.8.1100",
   "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tarik02/t3code",
+    "url": "https://github.com/tarik02-org/t3code",
     "directory": "apps/server"
   },
   "bin": {
@@ -17,7 +17,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/bin.ts",
-    "build:bundle": "vp pack",
+    "build:bundle": "vp pack && vp pack src/service-launcher.ts --out-dir dist --no-clean",
     "start": "node dist/bin.mjs",
     "typecheck": "tsgo --noEmit",
     "test": "vp test run"

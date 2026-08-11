@@ -25,13 +25,20 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
-import { APP_STAGE_LABEL } from "~/branding";
-import { resolveSidebarV2Enabled } from "~/branding.logic";
 import { ensureLocalApi } from "~/localApi";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { progressiveThreadHistoryEnabledAtom } from "~/state/clientSettings";
+import {
+  getThemeDefinition,
+  getThemePreviewSidebarArtwork,
+  resolveThemeHalf,
+  subscribeToThemePreview,
+} from "~/themePalette";
 import * as Struct from "effect/Struct";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useTheme } from "./useTheme";
 
 const CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE = "[CLIENT_SETTINGS]";
 
@@ -62,6 +69,10 @@ function getClientSettingsSnapshot(): ClientSettings {
 
 function replaceClientSettingsSnapshot(settings: ClientSettings): void {
   clientSettingsSnapshot = settings;
+  appAtomRegistry.set(
+    progressiveThreadHistoryEnabledAtom,
+    settings.progressiveThreadHistoryEnabled,
+  );
   emitClientSettingsChange();
 }
 
@@ -226,41 +237,51 @@ export function useClientSettings<T = ClientSettings>(
 export function resolveEnvironmentIdentificationMode(input: {
   mode: EnvironmentIdentificationMode;
   settingsHydrated: boolean;
+  paletteThemeActive?: boolean;
+  paletteThemeAllowsArtwork?: boolean;
 }): EnvironmentIdentificationMode {
   // Avoid briefly rendering the default artwork before a persisted pill/none choice loads.
-  return input.settingsHydrated ? input.mode : "none";
+  if (!input.settingsHydrated) return "none";
+  // Stage artwork has fixed colors that can clash with palette themes. Keep an
+  // explicit "none", but use the theme-aware pill in place of artwork.
+  return input.paletteThemeActive && !input.paletteThemeAllowsArtwork && input.mode === "artwork"
+    ? "pill"
+    : input.mode;
 }
 
 export function useEnvironmentIdentificationMode(): EnvironmentIdentificationMode {
   const settingsHydrated = useClientSettingsHydrated();
   const mode = useClientSettingsValue().environmentIdentificationMode;
-  return resolveEnvironmentIdentificationMode({ mode, settingsHydrated });
+  const { resolvedTheme, theme, themeHalves } = useTheme();
+  const previewSidebarArtwork = useSyncExternalStore(
+    subscribeToThemePreview,
+    getThemePreviewSidebarArtwork,
+    () => null,
+  );
+  const activeTheme = resolveThemeHalf(theme, themeHalves, resolvedTheme);
+  const activeThemeDefinition = getThemeDefinition(activeTheme);
+  return resolveEnvironmentIdentificationMode({
+    mode,
+    settingsHydrated,
+    paletteThemeActive: previewSidebarArtwork !== null || activeThemeDefinition !== null,
+    paletteThemeAllowsArtwork:
+      previewSidebarArtwork ?? activeThemeDefinition?.sidebarArtwork === true,
+  });
 }
 
 /**
- * Resolved sidebar v2 state: an explicit choice in Settings → Beta if the user
- * has made one, otherwise the default for this build stage (on for nightly and
- * dev, off for production). Every consumer must read through this rather than
- * `settings.sidebarV2Enabled`, which is only meaningful alongside
- * `sidebarV2ConfiguredByUser`.
+ * Whether the legacy sidebar (Settings → General → Legacy features) replaces
+ * the default one.
  *
- * Held at v1 until client settings hydrate. The pre-hydration snapshot is just
- * the schema defaults, so resolving against it would mount one sidebar and then
- * swap it out once persisted settings land — remounting the whole tree.
+ * Held at the default sidebar until client settings hydrate: the pre-hydration
+ * snapshot is just the schema defaults, so resolving against it could mount one
+ * sidebar and then swap it out once persisted settings land — remounting the
+ * whole tree for everyone instead of only for legacy opt-ins.
  */
-export function useSidebarV2Enabled(): boolean {
+export function useLegacySidebarEnabled(): boolean {
   const settingsHydrated = useClientSettingsHydrated();
-  const settings = useClientSettingsValue();
-  return useMemo(
-    () =>
-      resolveSidebarV2Enabled({
-        enabled: settings.sidebarV2Enabled,
-        configuredByUser: settings.sidebarV2ConfiguredByUser,
-        settingsHydrated,
-        stageLabel: APP_STAGE_LABEL,
-      }),
-    [settings.sidebarV2Enabled, settings.sidebarV2ConfiguredByUser, settingsHydrated],
-  );
+  const legacySidebarEnabled = useClientSettingsValue().legacySidebarEnabled;
+  return settingsHydrated && legacySidebarEnabled;
 }
 
 /** Read current settings for one environment, merged with client-local preferences. */
@@ -302,7 +323,6 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           });
         }
       }
-
       if (Object.keys(clientPatch).length > 0) {
         persistClientSettings({
           ...getClientSettingsSnapshot(),
@@ -336,6 +356,10 @@ export function useUpdateClientSettings() {
 export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsHydrationGeneration += 1;
   clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
+  appAtomRegistry.set(
+    progressiveThreadHistoryEnabledAtom,
+    DEFAULT_CLIENT_SETTINGS.progressiveThreadHistoryEnabled,
+  );
   clientSettingsHydrated = false;
   clientSettingsHydrationPromise = null;
   clientSettingsListeners.clear();
@@ -345,6 +369,10 @@ export function __resetClientSettingsPersistenceForTests(): void {
 export function __setClientSettingsForTests(settings: ClientSettings): void {
   clientSettingsHydrationGeneration += 1;
   clientSettingsSnapshot = settings;
+  appAtomRegistry.set(
+    progressiveThreadHistoryEnabledAtom,
+    settings.progressiveThreadHistoryEnabled,
+  );
   clientSettingsHydrated = true;
   clientSettingsHydrationPromise = null;
 }
