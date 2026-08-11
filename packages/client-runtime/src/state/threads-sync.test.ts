@@ -110,6 +110,7 @@ function testSession(
   options?: {
     readonly completionMarker?: boolean;
     readonly messagePagination?: boolean;
+    readonly transport?: "websocket" | "webrtc";
   },
 ): RpcSession.RpcSession {
   return {
@@ -121,6 +122,7 @@ function testSession(
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
+    ...(options?.transport === undefined ? {} : { transport: options.transport }),
   };
 }
 
@@ -141,6 +143,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly httpSnapshotEffect?: Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
   readonly completionMarker?: boolean;
   readonly messagePagination?: boolean;
+  readonly transport?: "websocket" | "webrtc";
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -180,10 +183,13 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     Option.some(
       testSession(
         client,
-        options?.completionMarker === true || options?.messagePagination === true
+        options?.completionMarker === true ||
+          options?.messagePagination === true ||
+          options?.transport !== undefined
           ? {
               ...(options.completionMarker === true ? { completionMarker: true } : {}),
               ...(options.messagePagination === true ? { messagePagination: true } : {}),
+              ...(options.transport === undefined ? {} : { transport: options.transport }),
             }
           : undefined,
       ),
@@ -360,6 +366,24 @@ const deleted = (): OrchestrationThreadStreamItem => ({
 });
 
 describe("EnvironmentThreads", () => {
+  it.effect("uses a complete WebRTC subscription snapshot without an HTTP load", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        transport: "webrtc",
+        httpSnapshot: Option.some({ snapshotSequence: 99, thread: BASE_THREAD }),
+      });
+      yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+
+      expect(Option.getOrThrow(state.data)).toEqual(BASE_THREAD);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();
+    }),
+  );
+
   it.effect("publishes cached data immediately from a warm cache", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });

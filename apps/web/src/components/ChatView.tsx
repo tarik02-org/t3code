@@ -259,7 +259,6 @@ import {
   resolveEffectiveEnvMode,
   resolveLocalCheckoutBranchMismatch,
   shouldShowComposerContextStrip,
-  shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
 import {
   getProviderStatusBannerKey,
@@ -1877,10 +1876,7 @@ function ChatViewContent(props: ChatViewProps) {
     logicalProjectEnvironments.find(
       (environment) => environment.environmentId === activeThread?.environmentId,
     ) ?? null;
-  const showComposerEnvironmentIndicator = shouldShowEnvironmentIndicator({
-    activeEnvironment: activeEnvironmentOption,
-    canPickEnvironment: hasMultipleEnvironments,
-  });
+  const showComposerEnvironmentIndicator = activeEnvironmentOption !== null;
 
   const openPullRequestDialog = useCallback(
     (reference?: string) => {

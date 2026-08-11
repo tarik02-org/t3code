@@ -3,11 +3,14 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
@@ -56,12 +59,14 @@ import {
   type TerminalError,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
+  WebRtcFastPathUnsupportedError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import * as SocketServer from "effect/unstable/socket/SocketServer";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -122,6 +127,17 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import {
+  makeWebRtcFastPathController,
+  type WebRtcFastPathController,
+} from "./webrtc/WebRtcFastPathController.ts";
+import { loadServerWebRtcRuntime } from "./webrtc/WebRtcPeer.ts";
+import { RpcTransport, type RpcTransportKind } from "./webrtc/RpcTransport.ts";
+import { makeSingleSocketServer } from "./webrtc/SingleSocketServer.ts";
+import {
+  WebRtcSessionSupervisor,
+  WebRtcSessionSupervisorLive,
+} from "./webrtc/WebRtcSessionSupervisor.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
@@ -345,9 +361,11 @@ function toAuthAccessStreamEvent(
 const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
+  webRtc: WebRtcFastPathController,
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
+      const rpcTransport = yield* RpcTransport;
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
@@ -434,21 +452,19 @@ const makeWsRpcLayer = (
         effect: Effect.Effect<A, E, R>,
         traceAttributes?: Readonly<Record<string, unknown>>,
       ) =>
-        instrumentRpcEffect(
-          method,
-          authorizeEffect(requiredScopeForRpcMethod(method), effect),
-          traceAttributes,
-        );
+        instrumentRpcEffect(method, authorizeEffect(requiredScopeForRpcMethod(method), effect), {
+          ...traceAttributes,
+          "rpc.transport": rpcTransport,
+        });
       const observeRpcStream = <A, E, R>(
         method: string,
         stream: Stream.Stream<A, E, R>,
         traceAttributes?: Readonly<Record<string, unknown>>,
       ) =>
-        instrumentRpcStream(
-          method,
-          authorizeStream(requiredScopeForRpcMethod(method), stream),
-          traceAttributes,
-        );
+        instrumentRpcStream(method, authorizeStream(requiredScopeForRpcMethod(method), stream), {
+          ...traceAttributes,
+          "rpc.transport": rpcTransport,
+        });
       const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
         method: string,
         effect: Effect.Effect<
@@ -461,7 +477,7 @@ const makeWsRpcLayer = (
         instrumentRpcStreamEffect(
           method,
           authorizeEffect(requiredScopeForRpcMethod(method), effect),
-          traceAttributes,
+          { ...traceAttributes, "rpc.transport": rpcTransport },
         );
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
@@ -1110,7 +1126,13 @@ const makeWsRpcLayer = (
         const auth = yield* serverAuth.getDescriptor();
 
         return {
-          environment,
+          environment: {
+            ...environment,
+            capabilities: {
+              ...environment.capabilities,
+              ...(webRtc.capability === null ? {} : { webRtcRpcFastPath: webRtc.capability }),
+            },
+          },
           auth,
           cwd: config.cwd,
           keybindingsConfigPath: config.keybindingsConfigPath,
@@ -1441,7 +1463,38 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverGetConfig]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetConfig, loadServerConfig, {
             "rpc.aggregate": "server",
+            "rpc.transport": rpcTransport,
           }),
+        [WS_METHODS.transportWebRtcNegotiate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.transportWebRtcNegotiate,
+            rpcTransport === "websocket"
+              ? webRtc.negotiate(input)
+              : Effect.fail(
+                  new WebRtcFastPathUnsupportedError({
+                    message: "WebRTC signaling is only available through the control WebSocket.",
+                  }),
+                ),
+            {
+              "rpc.aggregate": "transport",
+              "rpc.transport": rpcTransport,
+            },
+          ),
+        [WS_METHODS.transportWebRtcAbort]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.transportWebRtcAbort,
+            rpcTransport === "websocket"
+              ? webRtc.abort(input.attemptId)
+              : Effect.fail(
+                  new WebRtcFastPathUnsupportedError({
+                    message: "WebRTC signaling is only available through the control WebSocket.",
+                  }),
+                ),
+            {
+              "rpc.aggregate": "transport",
+              "rpc.transport": rpcTransport,
+            },
+          ),
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
@@ -2201,10 +2254,43 @@ const makeWsRpcLayer = (
     }),
   );
 
+const makeWsRpcHandlerLayer = (options: {
+  readonly session: EnvironmentAuth.AuthenticatedSession;
+  readonly previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"];
+  readonly serverSelfUpdate: ServerSelfUpdate.ServerSelfUpdate["Service"];
+  readonly webRtc: WebRtcFastPathController;
+  readonly transport: RpcTransportKind;
+}) =>
+  makeWsRpcLayer(options.session, options.previewAutomationBroker, options.webRtc).pipe(
+    Layer.provide(Layer.succeed(RpcTransport, options.transport)),
+    Layer.provide(ProviderMaintenanceRunner.layer),
+    Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, options.serverSelfUpdate)),
+    Layer.provide(
+      SourceControlDiscovery.layer.pipe(
+        Layer.provide(
+          SourceControlProviderRegistry.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                AzureDevOpsCli.layer,
+                BitbucketApi.layer,
+                GitHubCli.layer,
+                GitLabCli.layer,
+              ),
+            ),
+            Layer.provideMerge(GitVcsDriver.layer),
+            Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer))),
+          ),
+        ),
+        Layer.provide(VcsProcess.layer),
+      ),
+    ),
+  );
+
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+    const webRtcSessionSupervisor = yield* WebRtcSessionSupervisor;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2212,6 +2298,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
         const sessions = yield* SessionStore.SessionStore;
+        const config = yield* ServerConfig.ServerConfig;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request).pipe(
           Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
             failEnvironmentAuthInvalid(EnvironmentAuth.serverAuthCredentialReason(error)),
@@ -2220,43 +2307,74 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             failEnvironmentInternal("internal_error", error),
           ),
         );
-        const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
-          disableTracing: true,
-        }).pipe(
-          Effect.provide(
-            makeWsRpcLayer(session, previewAutomationBroker).pipe(
-              Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(ProviderMaintenanceRunner.layer),
-              Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
+        const sessionScope = yield* webRtcSessionSupervisor.forkScope;
+        const lifecycleFiber = yield* Effect.gen(function* () {
+          const socketServer = yield* makeSingleSocketServer();
+          const webRtcRuntime =
+            config.webRtcFastPathEnabled === true ? yield* loadServerWebRtcRuntime : Option.none();
+          const webRtc = yield* makeWebRtcFastPathController({
+            enabled: config.webRtcFastPathEnabled === true,
+            iceServers: config.webRtcIceServers ?? [],
+            ...(config.webRtcUdpPortRange === undefined
+              ? {}
+              : { udpPortRange: config.webRtcUdpPortRange }),
+            runtime: webRtcRuntime,
+            socketServer,
+          });
+          const websocketHandlers = makeWsRpcHandlerLayer({
+            session,
+            previewAutomationBroker,
+            serverSelfUpdate,
+            webRtc,
+            transport: "websocket",
+          });
+          const webRtcHandlers = makeWsRpcHandlerLayer({
+            session,
+            previewAutomationBroker,
+            serverSelfUpdate,
+            webRtc,
+            transport: "webrtc",
+          });
+          yield* Layer.build(
+            RpcServer.layer(WsRpcGroup, { disableTracing: true }).pipe(
+              Layer.provide(webRtcHandlers),
+              Layer.provide(RpcServer.layerProtocolSocketServer),
               Layer.provide(
-                SourceControlDiscovery.layer.pipe(
-                  Layer.provide(
-                    SourceControlProviderRegistry.layer.pipe(
-                      Layer.provide(
-                        Layer.mergeAll(
-                          AzureDevOpsCli.layer,
-                          BitbucketApi.layer,
-                          GitHubCli.layer,
-                          GitLabCli.layer,
-                        ),
-                      ),
-                      Layer.provideMerge(GitVcsDriver.layer),
-                      Layer.provide(
-                        VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer)),
-                      ),
-                    ),
-                  ),
-                  Layer.provide(VcsProcess.layer),
+                Layer.mergeAll(
+                  Layer.succeed(SocketServer.SocketServer, socketServer.server),
+                  RpcSerialization.layerJson,
                 ),
               ),
             ),
-          ),
+          );
+          const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
+            disableTracing: true,
+          }).pipe(Effect.provide(Layer.mergeAll(websocketHandlers, RpcSerialization.layerJson)));
+          const lifecycle = Effect.acquireUseRelease(
+            sessions.markConnected(session.sessionId),
+            () =>
+              Effect.gen(function* () {
+                const controlExit = yield* Effect.exit(rpcWebSocketHttpEffect);
+                if (controlExit._tag === "Failure" && Cause.hasInterruptsOnly(controlExit.cause)) {
+                  return yield* Effect.failCause(controlExit.cause);
+                }
+                yield* webRtc.awaitSessionEndAfterControlClose;
+                if (controlExit._tag === "Failure") {
+                  return yield* Effect.failCause(controlExit.cause);
+                }
+                return controlExit.value;
+              }),
+            (_, exit) =>
+              Scope.close(sessionScope, exit).pipe(
+                Effect.andThen(sessions.markDisconnected(session.sessionId)),
+              ),
+          );
+          return yield* webRtcSessionSupervisor.fork(lifecycle);
+        }).pipe(
+          Scope.provide(sessionScope),
+          Effect.onError((cause) => Scope.close(sessionScope, Exit.failCause(cause))),
         );
-        return yield* Effect.acquireUseRelease(
-          sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
-          () => sessions.markDisconnected(session.sessionId),
-        );
+        return yield* Fiber.join(lifecycleFiber);
       }).pipe(
         Effect.catchTags({
           EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
@@ -2265,4 +2383,4 @@ export const websocketRpcRouteLayer = Layer.unwrap(
       ),
     );
   }),
-);
+).pipe(Layer.provide(WebRtcSessionSupervisorLive));

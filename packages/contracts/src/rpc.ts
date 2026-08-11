@@ -105,6 +105,13 @@ import {
   TerminalWriteInput,
 } from "./terminal.ts";
 import {
+  WebRtcAbortInput,
+  WebRtcAbortResult,
+  WebRtcNegotiateInput,
+  WebRtcNegotiateResult,
+  WebRtcSignalingError,
+} from "./webrtc.ts";
+import {
   DiscoveredLocalServerList,
   PreviewCloseInput,
   PreviewError,
@@ -248,6 +255,10 @@ export const WS_METHODS = {
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
 
+  // Optional transports
+  transportWebRtcNegotiate: "transport.webrtc.negotiate",
+  transportWebRtcAbort: "transport.webrtc.abort",
+
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -292,6 +303,18 @@ export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   payload: Schema.Struct({}),
   success: ServerConfig,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+export const WsTransportWebRtcNegotiateRpc = Rpc.make(WS_METHODS.transportWebRtcNegotiate, {
+  payload: WebRtcNegotiateInput,
+  success: WebRtcNegotiateResult,
+  error: Schema.Union([WebRtcSignalingError, EnvironmentAuthorizationError]),
+});
+
+export const WsTransportWebRtcAbortRpc = Rpc.make(WS_METHODS.transportWebRtcAbort, {
+  payload: WebRtcAbortInput,
+  success: WebRtcAbortResult,
+  error: Schema.Union([WebRtcSignalingError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -824,6 +847,8 @@ export const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeReso
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
+  WsTransportWebRtcNegotiateRpc,
+  WsTransportWebRtcAbortRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsServerUpdateServerRpc,

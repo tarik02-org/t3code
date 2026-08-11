@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { createEnvironmentSessionAtoms } from "@t3tools/client-runtime/state/session";
+import type { RpcTransport } from "@t3tools/client-runtime/rpc";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -11,6 +12,9 @@ export const environmentSession = createEnvironmentSessionAtoms(connectionAtomRu
 
 const EMPTY_PREPARED_CONNECTION_ATOM = Atom.make(Option.none()).pipe(
   Atom.withLabel("web-prepared-connection:empty"),
+);
+const EMPTY_RPC_TRANSPORT_ATOM = Atom.make<RpcTransport | null>(null).pipe(
+  Atom.withLabel("web-rpc-transport:empty"),
 );
 
 export function usePreparedConnection(environmentId: EnvironmentId | null) {
@@ -24,6 +28,14 @@ export function usePreparedConnection(environmentId: EnvironmentId | null) {
 export function readPreparedConnection(environmentId: EnvironmentId) {
   return Option.getOrNull(
     appAtomRegistry.get(environmentSession.preparedConnectionValueAtom(environmentId)),
+  );
+}
+
+export function useEnvironmentRpcTransport(environmentId: EnvironmentId | null) {
+  return useAtomValue(
+    environmentId === null
+      ? EMPTY_RPC_TRANSPORT_ATOM
+      : environmentSession.rpcTransportValueAtom(environmentId),
   );
 }
 

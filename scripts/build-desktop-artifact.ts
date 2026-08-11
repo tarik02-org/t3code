@@ -621,6 +621,7 @@ interface StagePackageJson {
   readonly main: string;
   readonly build: Record<string, unknown>;
   readonly dependencies: Record<string, unknown>;
+  readonly optionalDependencies: Record<string, unknown>;
   readonly devDependencies: {
     readonly electron: string;
   };
@@ -1794,6 +1795,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         cause,
       }),
   });
+  const resolvedServerOptionalDependencies = yield* Effect.try({
+    try: () =>
+      resolveCatalogDependencies(
+        serverPackageJson.optionalDependencies ?? {},
+        workspaceCatalog,
+        "apps/server",
+      ),
+    catch: (cause) =>
+      new DesktopBuildDependencyResolutionError({
+        kind: "server-production",
+        manifestPath: "apps/server/package.json",
+        cause,
+      }),
+  });
   const resolvedDesktopRuntimeDependencies = yield* Effect.try({
     try: () => resolveDesktopRuntimeDependencies(desktopPackageJson.dependencies, workspaceCatalog),
     catch: (cause) =>
@@ -1941,10 +1956,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         )
       : {}),
   };
-  const stagePatchedDependencies = createStagePatchedDependencies(
-    workspacePatchedDependencies,
-    stageDependencies,
-  );
+  const stagePatchedDependencies = createStagePatchedDependencies(workspacePatchedDependencies, {
+    ...stageDependencies,
+    ...resolvedServerOptionalDependencies,
+  });
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,
@@ -1970,6 +1985,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         : undefined,
     ),
     dependencies: stageDependencies,
+    optionalDependencies: resolvedServerOptionalDependencies,
     devDependencies: {
       electron: electronVersion,
     },

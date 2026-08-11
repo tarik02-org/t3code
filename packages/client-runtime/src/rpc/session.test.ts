@@ -7,17 +7,31 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Socket from "effect/unstable/socket/Socket";
+import {
+  makeWebRtcDataChannelConnection,
+  type WebRtcDataChannelPort,
+} from "@t3tools/shared/webrtcDataChannel";
 
 import {
   ConnectionTransientError,
   PrimaryConnectionTarget,
   type PreparedConnection,
 } from "../connection/model.ts";
+import {
+  WebRtcPeerError,
+  WebRtcPeerFactory,
+  type WebRtcPeer,
+  type WebRtcPeerFactoryService,
+} from "../platform/capabilities.ts";
 import * as RpcSession from "./session.ts";
 
 type SocketEventType = "open" | "message" | "close" | "error";
@@ -133,6 +147,21 @@ const SERVER_CONFIG: ServerConfigType = {
   settings: DEFAULT_SERVER_SETTINGS,
 };
 
+const WEBRTC_SERVER_CONFIG: ServerConfigType = {
+  ...SERVER_CONFIG,
+  environment: {
+    ...SERVER_CONFIG.environment,
+    capabilities: {
+      ...SERVER_CONFIG.environment.capabilities,
+      webRtcRpcFastPath: {
+        version: 1,
+        signaling: "same-websocket-rpc",
+        iceServers: [],
+      },
+    },
+  },
+};
+
 const RpcRequest = Schema.TaggedStruct("Request", {
   id: Schema.Union([Schema.String, Schema.Number]),
   payload: Schema.Unknown,
@@ -140,9 +169,13 @@ const RpcRequest = Schema.TaggedStruct("Request", {
 });
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeRpcRequest = Schema.decodeUnknownSync(RpcRequest);
+const decodeWebRtcNegotiatePayload = Schema.decodeUnknownSync(
+  Schema.Struct({ attemptId: Schema.String }),
+);
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeServerConfig = Schema.encodeSync(ServerConfig);
 const ENCODED_SERVER_CONFIG = encodeServerConfig(SERVER_CONFIG);
+const ENCODED_WEBRTC_SERVER_CONFIG = encodeServerConfig(WEBRTC_SERVER_CONFIG);
 const LEGACY_SERVER_CONFIG = {
   ...ENCODED_SERVER_CONFIG,
   environment: {
@@ -153,17 +186,164 @@ const LEGACY_SERVER_CONFIG = {
   },
 };
 
-const makeFactory = Effect.fn("TestRpcSessionFactory.make")(function* () {
+const makeFactory = Effect.fn("TestRpcSessionFactory.make")(function* (
+  webRtcPeerFactory: WebRtcPeerFactoryService | null = null,
+) {
   const sockets: TestWebSocket[] = [];
   const constructorLayer = Layer.succeed(Socket.WebSocketConstructor, (url) => {
     const socket = new TestWebSocket(url);
     sockets.push(socket);
     return socket as unknown as globalThis.WebSocket;
   });
-  const layer = RpcSession.layer.pipe(Layer.provide(constructorLayer));
+  const layer = RpcSession.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(constructorLayer, Layer.succeed(WebRtcPeerFactory, webRtcPeerFactory)),
+    ),
+  );
   const factory = yield* RpcSession.RpcSessionFactory.pipe(Effect.provide(layer));
   return { factory, sockets };
 });
+
+class TestDataChannelPort implements WebRtcDataChannelPort {
+  readonly label = "t3-rpc-v1";
+  readonly ordered = true;
+  #open = true;
+  #peer: TestDataChannelPort | null = null;
+  #messageListeners = new Set<(data: Uint8Array) => void>();
+  #closeListeners = new Set<() => void>();
+
+  connect(peer: TestDataChannelPort): void {
+    this.#peer = peer;
+  }
+
+  isOpen(): boolean {
+    return this.#open;
+  }
+
+  bufferedAmount(): number {
+    return 0;
+  }
+
+  setBufferedAmountLowThreshold(_bytes: number): void {}
+
+  send(data: Uint8Array): void {
+    if (this.#peer === null) {
+      return;
+    }
+    const copy = data.slice();
+    for (const listener of this.#peer.#messageListeners) {
+      listener(copy);
+    }
+  }
+
+  close(): void {
+    if (!this.#open) {
+      return;
+    }
+    this.#open = false;
+    for (const listener of this.#closeListeners) {
+      listener();
+    }
+  }
+
+  onOpen(_listener: () => void): () => void {
+    return () => undefined;
+  }
+
+  onMessage(listener: (data: Uint8Array) => void): () => void {
+    this.#messageListeners.add(listener);
+    return () => this.#messageListeners.delete(listener);
+  }
+
+  onClose(listener: () => void): () => void {
+    this.#closeListeners.add(listener);
+    return () => this.#closeListeners.delete(listener);
+  }
+
+  onError(_listener: (error: Error) => void): () => void {
+    return () => undefined;
+  }
+
+  onBufferedAmountLow(_listener: () => void): () => void {
+    return () => undefined;
+  }
+}
+
+const makeRtcHarness = Effect.fn("TestRpcSessionFactory.makeRtcHarness")(function* () {
+  const clientPort = new TestDataChannelPort();
+  const serverPort = new TestDataChannelPort();
+  clientPort.connect(serverPort);
+  serverPort.connect(clientPort);
+  const peerClosed = yield* Deferred.make<never, WebRtcPeerError>();
+  const created = yield* Queue.unbounded<void>();
+  const rtcRequests = yield* Queue.unbounded<string>();
+  const peer: WebRtcPeer = {
+    dataChannel: clientPort,
+    createOffer: Effect.succeed("v=0\r\n"),
+    acceptAnswer: () => Effect.void,
+    closed: Deferred.await(peerClosed),
+    selectedIcePairType: Effect.succeed("host/host"),
+    close: Effect.sync(() => clientPort.close()),
+  };
+  const peerFactory: WebRtcPeerFactoryService = {
+    create: () => Queue.offer(created, undefined).pipe(Effect.as(peer)),
+  };
+  const serverConnection = yield* makeWebRtcDataChannelConnection(serverPort);
+  yield* Effect.gen(function* () {
+    yield* serverConnection.awaitBinding;
+    yield* serverConnection.sendBindingAck;
+    const writer = yield* serverConnection.socket.writer;
+    yield* serverConnection.socket.runString((message) => {
+      const request = decodeRpcRequest(decodeJson(message));
+      return Queue.offer(rtcRequests, request.tag).pipe(
+        Effect.andThen(
+          writer(
+            encodeJson({
+              _tag: "Exit",
+              requestId: request.id,
+              exit: {
+                _tag: "Success",
+                value:
+                  request.tag === WS_METHODS.serverGetConfig ? ENCODED_WEBRTC_SERVER_CONFIG : {},
+              },
+            }),
+          ),
+        ),
+      );
+    });
+  }).pipe(Effect.forkScoped);
+  return {
+    clientPort,
+    peerClosed,
+    peerFactory,
+    created,
+    rtcRequests,
+  };
+});
+
+const completeWebRtcSignaling = Effect.fn("TestRpcSessionFactory.completeWebRtcSignaling")(
+  function* (socket: TestWebSocket) {
+    const request = yield* awaitRequest(socket, 1);
+    const payload = decodeWebRtcNegotiatePayload(request.payload);
+    expect(request.tag).toBe(WS_METHODS.transportWebRtcNegotiate);
+    socket.serverMessage(
+      encodeJson({
+        _tag: "Exit",
+        requestId: request.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            version: 1,
+            attemptId: payload.attemptId,
+            answerSdp: "v=0\r\n",
+            bindingToken: "binding-token",
+            expiresAt: "2099-08-09T00:00:00.000Z",
+          },
+        },
+      }),
+    );
+  },
+);
 
 const awaitSocket = Effect.fn("TestRpcSessionFactory.awaitSocket")(function* (
   sockets: ReadonlyArray<TestWebSocket>,
@@ -215,6 +395,164 @@ const completeInitialConfig = Effect.fn("TestRpcSessionFactory.completeInitialCo
 });
 
 describe("RpcSessionFactory", () => {
+  it.effect("stays on WebSocket when the server capability is absent", () =>
+    Effect.gen(function* () {
+      const { factory, sockets } = yield* makeFactory();
+      const session = yield* factory.connect(PREPARED);
+      const readyFiber = yield* Effect.forkChild(session.ready);
+      const socket = yield* awaitSocket(sockets);
+
+      socket.open();
+      yield* completeInitialConfig(socket);
+      yield* Fiber.join(readyFiber);
+
+      expect(session.transport).toBe("websocket");
+      expect(socket.sent).toHaveLength(1);
+    }),
+  );
+
+  it.effect("stays on WebSocket when the platform has no WebRTC adapter", () =>
+    Effect.gen(function* () {
+      const { factory, sockets } = yield* makeFactory();
+      const session = yield* factory.connect(PREPARED);
+      const readyFiber = yield* Effect.forkChild(session.ready);
+      const socket = yield* awaitSocket(sockets);
+
+      socket.open();
+      yield* completeInitialConfig(socket, ENCODED_WEBRTC_SERVER_CONFIG);
+      yield* Fiber.join(readyFiber);
+
+      expect(session.transport).toBe("websocket");
+      expect(socket.sent).toHaveLength(1);
+    }),
+  );
+
+  it.effect("silently falls back when WebRTC peer creation fails", () =>
+    Effect.gen(function* () {
+      const peerFactory: WebRtcPeerFactoryService = {
+        create: () =>
+          Effect.fail(
+            new WebRtcPeerError({
+              stage: "create",
+              cause: new Error("WebRTC unavailable in test."),
+            }),
+          ),
+      };
+      const { factory, sockets } = yield* makeFactory(peerFactory);
+      const session = yield* factory.connect(PREPARED);
+      const readyFiber = yield* Effect.forkChild(session.ready);
+      const socket = yield* awaitSocket(sockets);
+
+      socket.open();
+      yield* completeInitialConfig(socket, ENCODED_WEBRTC_SERVER_CONFIG);
+      yield* Fiber.join(readyFiber);
+
+      expect(session.transport).toBe("websocket");
+      expect(socket.sent).toHaveLength(1);
+    }),
+  );
+
+  it.effect("reaches WebSocket readiness and keeps selected WebRTC after control closes", () =>
+    Effect.gen(function* () {
+      const rtc = yield* makeRtcHarness();
+      const { factory, sockets } = yield* makeFactory(rtc.peerFactory);
+      const session = yield* factory.connect(PREPARED);
+      const readyFiber = yield* Effect.forkChild(session.ready);
+      const socket = yield* awaitSocket(sockets);
+
+      socket.open();
+      yield* completeInitialConfig(socket, ENCODED_WEBRTC_SERVER_CONFIG);
+      yield* Fiber.join(readyFiber);
+
+      expect(session.transport).toBe("websocket");
+      const transportChanges = session.transportChanges;
+      if (transportChanges === undefined) {
+        return yield* Effect.die(new Error("Expected session transport changes."));
+      }
+      const upgraded = yield* transportChanges.pipe(
+        Stream.filter((transport) => transport === "webrtc"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.forkChild,
+      );
+      yield* completeWebRtcSignaling(socket);
+      expect(yield* Fiber.join(upgraded)).toBe("webrtc");
+      expect(session.transport).toBe("webrtc");
+      expect(yield* Queue.take(rtc.rtcRequests)).toBe(WS_METHODS.serverProbe);
+      expect(yield* Queue.take(rtc.rtcRequests)).toBe(WS_METHODS.serverGetConfig);
+      expect(socket.sent.map((value) => decodeRpcRequest(decodeJson(value)).tag)).toEqual([
+        WS_METHODS.serverGetConfig,
+        WS_METHODS.transportWebRtcNegotiate,
+      ]);
+
+      const closedFiber = yield* Effect.flip(session.closed).pipe(Effect.forkChild);
+      socket.close(1012, "service restart");
+      yield* Effect.yieldNow;
+
+      expect(closedFiber.pollUnsafe()).toBeUndefined();
+      expect(rtc.clientPort.isOpen()).toBe(true);
+      const probe = yield* session.probe.pipe(Effect.forkChild);
+      expect(yield* Queue.take(rtc.rtcRequests)).toBe(WS_METHODS.serverProbe);
+      yield* Fiber.join(probe);
+
+      rtc.clientPort.close();
+      const closeError = yield* Fiber.join(closedFiber);
+      expect(closeError).toMatchObject({ reason: "transport" });
+    }),
+  );
+
+  it.effect("fails after selected WebRTC closes and cools down the next attempt", () =>
+    Effect.gen(function* () {
+      const rtc = yield* makeRtcHarness();
+      const { factory, sockets } = yield* makeFactory(rtc.peerFactory);
+      const firstSession = yield* factory.connect(PREPARED);
+      const firstReady = yield* Effect.forkChild(firstSession.ready);
+      const firstSocket = yield* awaitSocket(sockets);
+
+      firstSocket.open();
+      yield* completeInitialConfig(firstSocket, ENCODED_WEBRTC_SERVER_CONFIG);
+      yield* Fiber.join(firstReady);
+
+      expect(firstSession.transport).toBe("websocket");
+      const transportChanges = firstSession.transportChanges;
+      if (transportChanges === undefined) {
+        return yield* Effect.die(new Error("Expected session transport changes."));
+      }
+      const upgraded = yield* transportChanges.pipe(
+        Stream.filter((transport) => transport === "webrtc"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.forkChild,
+      );
+      yield* completeWebRtcSignaling(firstSocket);
+      expect(yield* Fiber.join(upgraded)).toBe("webrtc");
+      expect(firstSession.transport).toBe("webrtc");
+
+      const firstClosed = yield* Effect.flip(firstSession.closed).pipe(Effect.forkChild);
+      rtc.clientPort.close();
+      const closeError = yield* Fiber.join(firstClosed);
+      expect(closeError).toMatchObject({ reason: "transport" });
+      expect(closeError.cause).toMatchObject({ _tag: "WebRtcFastPathTransportClosedError" });
+
+      const secondSession = yield* factory.connect(PREPARED);
+      const secondReady = yield* Effect.forkChild(secondSession.ready);
+      for (let attempt = 0; attempt < 100 && sockets.length < 2; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      const secondSocket = sockets[1];
+      if (secondSocket === undefined) {
+        return yield* Effect.die(new Error("Expected a replacement WebSocket."));
+      }
+      secondSocket.open();
+      yield* completeInitialConfig(secondSocket, ENCODED_WEBRTC_SERVER_CONFIG);
+      yield* Fiber.join(secondReady);
+
+      expect(secondSession.transport).toBe("websocket");
+      expect(secondSocket.sent).toHaveLength(1);
+      expect(yield* Queue.size(rtc.created)).toBe(1);
+    }),
+  );
+
   it.effect("owns one scoped websocket attempt and exposes readiness and closure", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();
