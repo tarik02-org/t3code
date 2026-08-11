@@ -198,15 +198,20 @@ const bootstrap = Effect.gen(function* () {
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const serverExposureState = yield* serverExposure.configureFromSettings({ port: backendPort });
   const backendConfig = yield* serverExposure.backendConfig;
-  const rendererTarget = environment.isDevelopment
-    ? Option.getOrThrow(environment.devServerUrl)
-    : backendConfig.httpBaseUrl;
-  yield* electronProtocol.registerDesktopProtocol({
-    scheme: desktopScheme,
-    targetOrigin: rendererTarget,
-    backendOrigin: backendConfig.httpBaseUrl,
-    clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
-  });
+  if (environment.isDevelopment) {
+    yield* electronProtocol.registerDesktopProtocol({
+      scheme: desktopScheme,
+      targetOrigin: Option.getOrThrow(environment.devServerUrl),
+      backendOrigin: backendConfig.httpBaseUrl,
+      clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+    });
+  } else {
+    yield* electronProtocol.registerDesktopFileProtocol({
+      scheme: desktopScheme,
+      rendererRootPath: environment.rendererRootPath,
+      clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+    });
+  }
   yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
     baseUrl: backendConfig.httpBaseUrl.href,
   });

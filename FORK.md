@@ -77,7 +77,8 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 ### Desktop Backendless Mode
 
 - The desktop app has a persisted **Local backend** setting under **Settings** → **Connections**. It defaults to enabled. Changing it restarts the app.
-- When disabled, Electron does not start the managed local or WSL backends. Packaged builds serve the bundled web client directly and load saved direct and SSH environments.
+- Packaged desktop builds always serve the bundled web client directly from Electron. Development builds continue to load the Vite server.
+- When the local backend is disabled, Electron does not start the managed local or WSL backends and loads saved direct and SSH environments.
 - Local projects, threads, and settings remain on disk and return when the local backend is enabled again.
 
 ### Fork Persistence
