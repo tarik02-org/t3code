@@ -1,9 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import { beforeEach, vi } from "vite-plus/test";
 
-const { autoUpdaterMock } = vi.hoisted(() => ({
-  autoUpdaterMock: {
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+
+const { autoUpdaterMock, updaterConstructorMock } = vi.hoisted(() => {
+  const autoUpdaterMock = {
     allowDowngrade: false,
     allowPrerelease: false,
     autoDownload: true,
@@ -17,14 +21,24 @@ const { autoUpdaterMock } = vi.hoisted(() => ({
     quitAndInstall: vi.fn(),
     removeListener: vi.fn(),
     setFeedURL: vi.fn(),
-  },
-}));
+  };
+  const updaterConstructorMock = vi.fn(function () {
+    return autoUpdaterMock;
+  });
+  return { autoUpdaterMock, updaterConstructorMock };
+});
 
 vi.mock("electron-updater", () => ({
-  autoUpdater: autoUpdaterMock,
+  AppImageUpdater: updaterConstructorMock,
+  MacUpdater: updaterConstructorMock,
+  NsisUpdater: updaterConstructorMock,
 }));
 
 import * as ElectronUpdater from "./ElectronUpdater.ts";
+
+const updaterLayer = ElectronUpdater.layer.pipe(
+  Layer.provide(Layer.merge(NodeServices.layer, Layer.succeed(HostProcessPlatform, "linux"))),
+);
 
 describe("ElectronUpdater", () => {
   beforeEach(() => {
@@ -56,9 +70,9 @@ describe("ElectronUpdater", () => {
         }),
       );
 
-      assert.deepEqual(autoUpdaterMock.on.mock.calls, [["update-available", listener]]);
+      assert.deepEqual(autoUpdaterMock.on.mock.calls.at(-1), ["update-available", listener]);
       assert.deepEqual(autoUpdaterMock.removeListener.mock.calls, [["update-available", listener]]);
-    }).pipe(Effect.provide(ElectronUpdater.layer)),
+    }).pipe(Effect.provide(updaterLayer)),
   );
 
   it.effect("wraps rejected update checks in the method-specific typed error", () =>
@@ -76,7 +90,7 @@ describe("ElectronUpdater", () => {
       assert.strictEqual(error.cause, cause);
       assert.equal(error.message, "Electron updater failed to check for updates on channel beta.");
       assert.notInclude(error.message, cause.message);
-    }).pipe(Effect.provide(ElectronUpdater.layer)),
+    }).pipe(Effect.provide(updaterLayer)),
   );
 
   it.effect("preserves the execution-time channel on download failures", () =>
@@ -97,7 +111,7 @@ describe("ElectronUpdater", () => {
         "Electron updater failed to download the update on channel nightly.",
       );
       assert.notInclude(error.message, cause.message);
-    }).pipe(Effect.provide(ElectronUpdater.layer)),
+    }).pipe(Effect.provide(updaterLayer)),
   );
 
   it.effect("sets full changelog mode", () =>
@@ -109,7 +123,7 @@ describe("ElectronUpdater", () => {
 
       yield* updater.setFullChangelog(false);
       assert.equal(autoUpdaterMock.fullChangelog, false);
-    }).pipe(Effect.provide(ElectronUpdater.layer)),
+    }).pipe(Effect.provide(updaterLayer)),
   );
 
   it.effect("preserves quit-and-install flags and the execution-time channel", () =>
@@ -137,6 +151,6 @@ describe("ElectronUpdater", () => {
       );
       assert.notInclude(error.message, cause.message);
       assert.deepEqual(autoUpdaterMock.quitAndInstall.mock.calls, [[true, false]]);
-    }).pipe(Effect.provide(ElectronUpdater.layer)),
+    }).pipe(Effect.provide(updaterLayer)),
   );
 });
