@@ -63,6 +63,10 @@
       "types": "./src/KeyedCoalescingWorker.ts",
       "import": "./src/KeyedCoalescingWorker.ts"
     },
+    "./LRUCache": {
+      "types": "./src/LRUCache.ts",
+      "import": "./src/LRUCache.ts"
+    },
     "./schemaJson": {
       "types": "./src/schemaJson.ts",
       "import": "./src/schemaJson.ts"
@@ -98,6 +102,10 @@
     "./projectLaunchEnv": {
       "types": "./src/projectLaunchEnv.ts",
       "import": "./src/projectLaunchEnv.ts"
+    },
+    "./threadEnvMode": {
+      "types": "./src/threadEnvMode.ts",
+      "import": "./src/threadEnvMode.ts"
     },
     "./t3ProjectFile": {
       "types": "./src/t3ProjectFile.ts",
@@ -214,6 +222,14 @@
     "./devProxy": {
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
+    },
+    "./usageMerge": {
+      "types": "./src/usageMerge.ts",
+      "import": "./src/usageMerge.ts"
+    },
+    "./usageFormat": {
+      "types": "./src/usageFormat.ts",
+      "import": "./src/usageFormat.ts"
     }
   },
   "scripts": {

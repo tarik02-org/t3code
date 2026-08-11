@@ -251,6 +251,7 @@ describe("DesktopServerExposure", () => {
       get: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
       load: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
       setMainWindowBounds: () => Effect.die("unexpected main window bounds update"),
+      setLocalBackendEnabled: () => Effect.die("unexpected local backend toggle"),
       setServerExposureMode: () => Effect.fail(settingsFailure),
       setTailscaleServe: () => Effect.fail(settingsFailure),
       setUpdateChannel: () => Effect.die("unexpected update channel change"),

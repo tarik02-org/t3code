@@ -19,6 +19,11 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Exception: upstream actualization PRs may preserve upstream commit structure when that makes future syncs easier to audit.
 - Staged formatting tolerates chunks containing only ignored files so large upstream actualization commits can pass the pre-commit hook.
 
+### Compatibility
+
+- Fork backend changes must remain compatible with non-fork clients. Upstream clients must be able to use a fork server without fork-specific assumptions or protocol failures.
+- Fork database changes and migrations must leave the database usable by regular upstream builds. The upstream backend must still open and use the database, and the upstream frontend must still work through that backend. Prefer sidecar databases for fork-only data.
+
 ### Protocol Compatibility
 
 - Fork protocol extensions use separate extension RPC methods and additive optional capabilities.
@@ -30,11 +35,19 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - Fork backends advertise `threadDeltaSubscription` and expose `orchestration.subscribeThread.withDelta` alongside the upstream thread subscription.
 - Fork clients use the fork subscription only when advertised. Upstream backends therefore continue receiving the upstream subscription.
-- The fork subscription replays gaps of at most 1,000 orchestration events and sends a fresh thread snapshot for larger or invalid gaps. If the thread no longer exists, it sends `not-found` so clients clear stale cached state.
+- The fork subscription replays gaps of at most 1,000 orchestration events and sends a fresh thread snapshot for larger or invalid gaps. Fallback snapshots preserve upstream window pagination when requested. If the thread no longer exists, it sends `not-found` so clients clear stale cached state.
+
+### Thread History Protocol
+
+- Upstream `threadSnapshotPagination` is the default bounded-history protocol and keeps its standard thread snapshot endpoint and cursor semantics.
+- Fork backends separately advertise `threadMessagePagination` for the beta advanced-history client. Its initial bounded snapshot uses `/api/orchestration/threads/:threadId/with-message-history`; bidirectional message pages and the history outline remain fork-only endpoints.
+- The two capabilities are independent. Upstream-compatible clients never receive fork message-history fields or fork-specific pagination semantics.
 
 ### Release And CI
 
-- Fork workflows create/update a daily stable release PR while main-branch pushes produce nightly releases.
+- Fork workflows create/update a daily stable release PR, main-branch pushes produce nightly releases, and canary-branch pushes produce canary releases.
+- Canary releases use immutable `X.Y.Z-canary.YYYYMMDD.RUN` versions and GitHub prereleases without changing stable package versions.
+- The Nix dependency hash workflow checks both `main` and `canary`, and targets repair PRs back to the branch that drifted.
 - Stable release PRs list every commit since the previous stable tag, including commits brought in by upstream merges.
 - Main-branch pushes update the stable release PR immediately when the committed package version is already tagged.
 - Stable-version pushes wait for the matching release to finish so tag-based version resolution advances past the published version.
@@ -53,27 +66,40 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 ### Nix Package
 
 - The fork exposes the server and web bundle as an `x86_64-linux` flake package.
-- The package version follows the server manifest by default and supports the generated nightly version override.
-- Main-branch pushes verify the pnpm dependency hash, open or update a repair PR when it drifts, and fail the source workflow run.
+- The package version follows the server manifest by default and supports generated nightly and canary version overrides.
+- Main- and canary-branch pushes verify the pnpm dependency hash, open or update a repair PR against the affected branch when it drifts, and fail the source workflow run.
 
 ### Desktop Updater Channels
 
-- Stable builds use `latest`; nightly builds use `nightly`.
-- Nightly detection accepts fork release metadata while preserving the upstream channel split.
+- Stable builds use `latest`, nightly builds use `nightly`, and canary builds use `canary`.
+- Nightly and canary detection accepts fork release metadata while preserving separate updater feeds.
+- Canary desktop builds isolate server and client state under `~/.t3/canary` and Electron data under `t3code-canary`. Desktop settings stay shared so update-track changes survive channel switches.
+
+### Desktop Backendless Mode
+
+- The desktop app has a persisted **Local backend** setting under **Settings** → **Connections**. It defaults to enabled. Changing it restarts the app.
+- Packaged desktop builds always serve the bundled web client directly from Electron. Development builds continue to load the Vite server.
+- With the local backend enabled, Electron opens the client as soon as the backend launch is requested. Initial authentication waits for backend readiness in the background instead of delaying the window.
+- When the local backend is disabled, Electron does not start the managed local or WSL backends and loads saved direct and SSH environments.
+- Local projects, threads, and settings remain on disk and return when the local backend is enabled again.
 
 ### Fork Persistence
 
 - Fork-only goal persistence is stored in a sidecar database named `state-tarik02.sqlite`.
+- Bounded live-thread snapshots use fork-namespaced cache keys, so the fork never decodes legacy
+  unbounded snapshot JSON during startup and upstream clients ignore the fork cache entries.
+- The web client keeps fetched thread-history rows in an unbounded, normalized sidecar IndexedDB
+  cache. Messages, activities, and plans are stored once and reused for covered history ranges.
+  Cached records are schema-decoded independently so large activity batches cannot stall on a
+  cooperative runtime yield. An authoritative bounded snapshot clears cached segments because it
+  may replace an event replay that contained a thread revert.
+- The mobile client keeps recently fetched thread-history pages in a bounded, session-only
+  in-memory LRU. It avoids repeat requests while browsing nearby segments without adding mobile
+  database state or migrations, and it does not request the web-only minimap outline.
 
 ### Goals UI
 
-- The fork adds thread goal support, goal activity rendering, and goal sidebar/panel UI.
-
-### Subagent Activity
-
-- Parent timelines keep subagent commands, file changes, tool calls, web searches, image views, and diffs.
-- Subagent messages, reasoning, goals, plans, token usage, and thread/turn state stay out of the parent timeline. Codex child relationships are recognized from both `collabAgentToolCall` and `subAgentActivity` items.
-- Root-agent activity remains visible. Filtering applies only to provider thread IDs explicitly discovered through those child relationship items.
+- The fork adds thread goal support, goal activity rendering, and a dedicated right-side goal panel. Upstream turn plans remain inline in the timeline and do not share the goal panel.
 
 ### Provider Launch Environment
 
@@ -89,8 +115,23 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 ### UX Changes
 
+- Progressive thread history is a client-local beta setting and defaults to off. Disabled clients
+  use upstream snapshot pagination; enabled clients use the separately advertised fork advanced-history protocol.
+- Thread detail snapshots keep a bounded live tail. Historical browsing uses bounded,
+  bidirectional keyset windows cut only at user-turn boundaries, while the web minimap indexes every
+  user message across the full thread and loads the selected segment on demand. One LegendList owns
+  both live and historical scrolling, and its visible-content anchoring stabilizes page changes and
+  late row measurements. The local scrollbar only represents the current bounded segment; the
+  minimap is the global conversation-indexed scrubber. Historical windows retain every raw message
+  and work-telemetry row belonging to their turns, and only display activity for turns represented
+  by the active message window. Reaching a segment edge loads the adjacent window
+  without moving visible rows. Scroll-to-end returns directly to the bounded live tail.
+- Paginated history responses use the same client-facing activity payload projection as full thread
+  snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
+  The persisted activity remains unchanged.
+- Failed segment requests release their pending navigation target. Keyboard, pointer, touch, or wheel
+  input immediately cancels target alignment. Minimap dragging follows the pointer immediately while
+  throttling segment requests, and only the latest explicit jump may replace the active segment.
 - Desktop context-menu style is configurable from Appearance settings.
-- The sidebar follows the active thread when it appears or when navigation originates elsewhere.
-- Sidebar environments can be hidden or shown dynamically from the project toolbar.
-- Threads can be archived with middle click.
+- Legacy sidebar threads can be archived with middle click.
 - Terminal selection has a copy action.

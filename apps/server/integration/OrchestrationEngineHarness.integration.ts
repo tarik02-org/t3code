@@ -51,10 +51,14 @@ import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityRe
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../src/orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../src/orchestration/ThreadPlanProgress.ts";
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { CheckpointReactor } from "../src/orchestration/Services/CheckpointReactor.ts";
+import { ProviderRuntimeIngestionService } from "../src/orchestration/Services/ProviderRuntimeIngestion.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -218,6 +222,8 @@ export interface OrchestrationIntegrationHarness {
       timeoutMs?: number,
     ): Effect.Effect<Receipt, never>;
   };
+  readonly drainProviderRuntime: Effect.Effect<void>;
+  readonly drainCheckpointReactor: Effect.Effect<void>;
   readonly dispose: Effect.Effect<void, never>;
 }
 
@@ -304,6 +310,8 @@ export const makeOrchestrationIntegrationHarness = (
     const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(persistenceLayer),
+      Layer.provide(ThreadBackgroundLiveness.layer),
+      Layer.provide(ThreadPlanProgress.layer),
     );
     const runtimeServicesLayer = Layer.mergeAll(
       projectionSnapshotQueryLayer,
@@ -313,6 +321,9 @@ export const makeOrchestrationIntegrationHarness = (
       checkpointStoreLayer,
       providerLayer,
       RuntimeReceiptBusTest,
+    ).pipe(
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
@@ -404,6 +415,13 @@ export const makeOrchestrationIntegrationHarness = (
     ).pipe(Effect.orDie);
     const reactor = yield* tryRuntimePromise("load OrchestrationReactor service", () =>
       runtime.runPromise(Effect.service(OrchestrationReactor)),
+    ).pipe(Effect.orDie);
+    const providerRuntimeIngestion = yield* tryRuntimePromise(
+      "load ProviderRuntimeIngestion service",
+      () => runtime.runPromise(Effect.service(ProviderRuntimeIngestionService)),
+    ).pipe(Effect.orDie);
+    const checkpointReactor = yield* tryRuntimePromise("load CheckpointReactor service", () =>
+      runtime.runPromise(Effect.service(CheckpointReactor)),
     ).pipe(Effect.orDie);
     const snapshotQuery = yield* tryRuntimePromise("load ProjectionSnapshotQuery service", () =>
       runtime.runPromise(Effect.service(ProjectionSnapshotQuery)),
@@ -569,6 +587,8 @@ export const makeOrchestrationIntegrationHarness = (
       waitForDomainEvent,
       waitForPendingApproval,
       waitForReceipt,
+      drainProviderRuntime: providerRuntimeIngestion.drain,
+      drainCheckpointReactor: checkpointReactor.drain,
       dispose,
     } satisfies OrchestrationIntegrationHarness;
   });
