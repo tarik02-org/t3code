@@ -74,6 +74,12 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 - Nightly and canary detection accepts fork release metadata while preserving separate updater feeds.
 - Canary desktop builds isolate server and client state under `~/.t3/canary` and Electron data under `t3code-canary`. Desktop settings stay shared so update-track changes survive channel switches.
 
+### Desktop Backendless Mode
+
+- The desktop app has a persisted **Local backend** setting under **Settings** → **Connections**. It defaults to enabled. Changing it restarts the app.
+- When disabled, Electron does not start the managed local or WSL backends. Packaged builds serve the bundled web client directly and load saved direct and SSH environments.
+- Local projects, threads, and settings remain on disk and return when the local backend is enabled again.
+
 ### Fork Persistence
 
 - Fork-only goal persistence is stored in a sidecar database named `state-tarik02.sqlite`.
