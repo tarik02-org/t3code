@@ -78,6 +78,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - The desktop app has a persisted **Local backend** setting under **Settings** → **Connections**. It defaults to enabled. Changing it restarts the app.
 - Packaged desktop builds always serve the bundled web client directly from Electron. Development builds continue to load the Vite server.
+- With the local backend enabled, Electron opens the client as soon as the backend launch is requested. Initial authentication retries while the backend starts instead of delaying the window until readiness.
 - When the local backend is disabled, Electron does not start the managed local or WSL backends and loads saved direct and SSH environments.
 - Local projects, threads, and settings remain on disk and return when the local backend is enabled again.
 

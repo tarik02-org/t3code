@@ -232,15 +232,22 @@ const bootstrap = Effect.gen(function* () {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const primaryBackend = yield* pool.primary;
     const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
-    // In wsl-only mode the renderer is served by the WSL backend, which can be
-    // slow to cold-boot — show a "Connecting to WSL" splash immediately so the
-    // app feels responsive instead of presenting no window until WSL is ready.
-    // (Dual mode opens fast off the Windows primary, so no splash there.)
+    // Resolving the primary config in wsl-only mode can wait on a WSL cold boot.
+    // Show a lightweight splash before that work starts. The main window replaces
+    // it as soon as the backend publishes a usable config.
     if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
       yield* desktopWindow.showConnectingSplash;
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
+    const primaryConfig = yield* primaryBackend.currentConfig;
+    if (
+      Option.isSome(primaryConfig) &&
+      Option.isNone(primaryConfig.value.preflightFailure) &&
+      !(yield* Ref.get(state.quitting))
+    ) {
+      yield* desktopWindow.createMain;
+    }
     // Bring up the WSL backend if the user previously enabled it. The
     // primary is already starting; reconcile fires off the WSL register
     // in parallel rather than blocking primary readiness on a possibly
