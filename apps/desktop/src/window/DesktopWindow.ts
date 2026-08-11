@@ -795,6 +795,11 @@ export const make = Effect.gen(function* () {
         yield* electronWindow.reveal(existingWindow.value);
         return;
       }
+      const settings = yield* desktopSettings.get;
+      if (!settings.localBackendEnabled) {
+        yield* createMain;
+        return;
+      }
       // No real main window yet. While the backend is still cold-booting,
       // re-reveal the connecting splash so taskbar/dock activation brings it
       // back instead of doing nothing. Once the backend is ready we fall
@@ -826,8 +831,12 @@ export const make = Effect.gen(function* () {
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action) {
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* focusedMainWindow;
-      if (Option.isNone(existingWindow) && !(yield* Ref.get(backendReadyRef))) {
-        return;
+      if (Option.isNone(existingWindow)) {
+        const backendReady = yield* Ref.get(backendReadyRef);
+        const settings = yield* desktopSettings.get;
+        if (!backendReady && settings.localBackendEnabled) {
+          return;
+        }
       }
       const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* ensureMain;
 

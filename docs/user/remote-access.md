@@ -32,6 +32,22 @@ That gives you:
 - transport security at the network layer
 - less exposure than opening the server to the public internet
 
+## Using the desktop app without a local backend
+
+The desktop app can connect only to saved remote environments without starting a backend on your
+computer:
+
+1. Open **Settings** → **Connections**.
+2. Under **Desktop app**, turn off **Local backend**.
+3. Confirm the restart.
+
+The desktop app keeps its UI and connection catalog on your computer. It stops the managed local
+backend and hides that environment, but does not delete its projects, threads, or settings. Add a
+direct or SSH environment under **Remote environments** to keep working.
+
+Finish active local work before changing the setting because the restart interrupts running local
+turns. Turn **Local backend** on again to restore the managed environment and its saved data.
+
 ## Enabling Network Access
 
 There are three ways to reach your server from another device: expose the desktop app's backend,
