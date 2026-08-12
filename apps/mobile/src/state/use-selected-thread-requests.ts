@@ -1,7 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useMemo, useState } from "react";
 
-import { ApprovalRequestId, type ProviderApprovalDecision } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  type ProviderApprovalDecision,
+  type UserInputQuestion,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -13,6 +17,7 @@ import {
   derivePendingUserInputs,
   setPendingUserInputCustomAnswer,
   sortThreadActivities,
+  togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
 import { appAtomRegistry } from "./atom-registry";
@@ -24,15 +29,21 @@ const userInputDraftsByRequestKeyAtom = Atom.make<
   Record<string, Record<string, PendingUserInputDraftAnswer>>
 >({}).pipe(Atom.keepAlive, Atom.withLabel("mobile:user-input-drafts"));
 
-function setUserInputDraftOption(requestKey: string, questionId: string, label: string): void {
+function setUserInputDraftOption(
+  requestKey: string,
+  question: UserInputQuestion,
+  label: string,
+): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
   appAtomRegistry.set(userInputDraftsByRequestKeyAtom, {
     ...current,
     [requestKey]: {
       ...current[requestKey],
-      [questionId]: {
-        selectedOptionLabel: label,
-      },
+      [question.id]: togglePendingUserInputOptionSelection(
+        question,
+        current[requestKey]?.[question.id],
+        label,
+      ),
     },
   });
 }
@@ -98,13 +109,13 @@ export function useSelectedThreadRequests() {
     : null;
 
   const onSelectUserInputOption = useCallback(
-    (requestId: ApprovalRequestId, questionId: string, label: string) => {
+    (requestId: ApprovalRequestId, question: UserInputQuestion, label: string) => {
       if (!selectedThreadShell) {
         return;
       }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftOption(requestKey, questionId, label);
+      setUserInputDraftOption(requestKey, question, label);
     },
     [selectedThreadShell],
   );

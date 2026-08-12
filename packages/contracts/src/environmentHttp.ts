@@ -43,6 +43,12 @@ import {
   ORCHESTRATION_THREAD_TURN_PAGE_MAX_LIMIT,
 } from "./orchestration.ts";
 import {
+  PullRequestDiffInput,
+  PullRequestDiffResult,
+  PullRequestOperationError,
+  PullRequestUnavailableError,
+} from "./pullRequest.ts";
+import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
   RelayEnvironmentConfigRequest,
@@ -613,6 +619,22 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+/** Large, compressible pull-request payloads travel over HTTP rather than the RPC socket. */
+export class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").add(
+  HttpApiEndpoint.post("diff", "/api/pull-requests/diff", {
+    headers: OptionalBearerHeaders,
+    payload: PullRequestDiffInput,
+    success: PullRequestDiffResult,
+    error: [
+      PullRequestUnavailableError,
+      PullRequestOperationError,
+      EnvironmentAuthInvalidError,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 export class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
   .add(
     HttpApiEndpoint.post("linkProof", "/api/connect/link-proof", {
@@ -678,4 +700,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
+  .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentConnectHttpApi) {}
