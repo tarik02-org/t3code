@@ -4,6 +4,7 @@
   lib,
   runtime,
   stdenvNoCC,
+  xdg-utils,
 }:
 
 stdenvNoCC.mkDerivation {
@@ -16,8 +17,32 @@ stdenvNoCC.mkDerivation {
 
     mkdir -p "$out/bin" "$out/share/applications" "$out/share/icons/hicolor/512x512/apps"
 
+    cat > "$out/share/applications/t3code-url-handler.desktop" <<EOF
+    [Desktop Entry]
+    Name=T3 Code URL Handler
+    Exec=$out/bin/t3code %U
+    Terminal=false
+    Type=Application
+    NoDisplay=true
+    StartupNotify=false
+    MimeType=x-scheme-handler/t3code;x-scheme-handler/t3code-dev;
+    EOF
+
     cat > "$out/bin/t3code" <<'EOF'
     #!/bin/sh
+    applications_dir="''${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    handler_name=t3code-url-handler.desktop
+    handler_source=${placeholder "out"}/share/applications/$handler_name
+    handler_target="$applications_dir/$handler_name"
+
+    if ${lib.getExe' coreutils "mkdir"} -p "$applications_dir" &&
+       ${lib.getExe' coreutils "install"} -m 0644 "$handler_source" "$handler_target"; then
+      ${lib.getExe' xdg-utils "xdg-mime"} default "$handler_name" x-scheme-handler/t3code \
+        >/dev/null 2>&1 || true
+      ${lib.getExe' xdg-utils "xdg-mime"} default "$handler_name" x-scheme-handler/t3code-dev \
+        >/dev/null 2>&1 || true
+    fi
+
     profile_user="''${USER:-$(${lib.getExe' coreutils "id"} -un)}"
     export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$profile_user/bin:$PATH"
     export T3CODE_DISABLE_AUTO_UPDATE=1
