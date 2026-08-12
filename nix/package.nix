@@ -2,7 +2,6 @@
   cacert,
   fetchPnpmDeps,
   lib,
-  makeBinaryWrapper,
   node-gyp,
   nodejs_24,
   pnpm_11,
@@ -28,16 +27,16 @@ let
   };
 in
 stdenv.mkDerivation (finalAttrs: {
-  pname = "t3code";
+  pname = "t3code-runtime";
   version = if version == null then sourceVersion else version;
   inherit src;
   strictDeps = true;
 
   pnpmWorkspaces = [
     "@t3tools/monorepo"
-    "t3..."
-    "@t3tools/web..."
+    "@t3tools/desktop..."
     "@t3tools/scripts..."
+    "t3..."
   ];
 
   pnpmDeps = fetchPnpmDeps {
@@ -49,7 +48,7 @@ stdenv.mkDerivation (finalAttrs: {
       ;
     inherit pnpm;
     fetcherVersion = 4;
-    hash = "sha256-AsQbHD0P0Zciu6oIVon5kli3vGlb5m5FvkSt6nm+QbI=";
+    hash = "sha256-t9T9CjSgPSttkfKNTLaC5DHVb9df5JN7CtMxZSqDx28=";
   };
 
   postPatch = lib.optionalString (finalAttrs.version != sourceVersion) ''
@@ -63,7 +62,6 @@ stdenv.mkDerivation (finalAttrs: {
   '';
 
   nativeBuildInputs = [
-    makeBinaryWrapper
     node-gyp
     nodejs
     pnpm
@@ -84,37 +82,55 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
-
-    pnpm --filter @t3tools/web build
-    pnpm --filter t3 build:bundle
-
+    pnpm run build:desktop
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
 
-    mkdir --parents "$out"/libexec/t3code/apps/server
-    cp --recursive --no-preserve=mode node_modules "$out"/libexec/t3code
-    cp --recursive --no-preserve=mode packages "$out"/libexec/t3code
-    cp --recursive --no-preserve=mode apps/server/{node_modules,dist} "$out"/libexec/t3code/apps/server
-    cp --recursive --no-preserve=mode apps/web/dist "$out"/libexec/t3code/apps/server/dist/client
+    app="$out/libexec/t3code"
+    mkdir -p "$app/apps/desktop" "$app/apps/server"
+
+    cp --recursive --no-preserve=mode node_modules packages "$app"
+    cp --recursive --no-preserve=mode \
+      apps/desktop/node_modules \
+      apps/desktop/dist-electron \
+      apps/desktop/resources \
+      "$app/apps/desktop"
+    cp --recursive --no-preserve=mode apps/desktop/resources \
+      "$app/apps/desktop/prod-resources"
+    cp --recursive --no-preserve=mode \
+      apps/server/node_modules \
+      apps/server/dist \
+      "$app/apps/server"
+
+    ${lib.getExe nodejs} -e '
+      const fs = require("node:fs");
+      const desktop = JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8"));
+      fs.writeFileSync(process.argv[1], JSON.stringify({
+        name: "t3code",
+        version: desktop.version,
+        productName: desktop.productName,
+        main: "apps/desktop/dist-electron/main.cjs",
+        type: "module"
+      }, null, 2) + "\n");
+    ' "$app/package.json"
+
     install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
-      "$out"/libexec/t3code/apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor
+      "$app/apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor"
+    install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
+      "$app/apps/desktop/prod-resources/resource-monitor/t3-resource-monitor"
 
-    find "$out"/libexec/t3code -xtype l -delete
-
-    makeWrapper ${lib.getExe nodejs} "$out"/bin/t3 \
-      --add-flags "$out"/libexec/t3code/apps/server/dist/bin.mjs
+    find "$app" -xtype l -delete
 
     runHook postInstall
   '';
 
   meta = {
-    description = "Remote control for coding agents";
+    description = "Shared runtime for T3 Code server and desktop packages";
     homepage = "https://github.com/tarik02-org/t3code";
     license = lib.licenses.mit;
-    mainProgram = "t3";
     platforms = [ "x86_64-linux" ];
   };
 })
