@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           nix run github:Mic92/nix-update/cf68051e7b7e08de6c707484cdcd1a53feb48e05 -- \
-            t3code \
+            t3code-runtime \
             --flake \
             --version=skip \
             --override-filename nix/package.nix \

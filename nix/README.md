@@ -1,6 +1,16 @@
 # Nix
 
-The flake exports the T3 Code package for `x86_64-linux`.
+The flake exports headless and desktop T3 Code packages for `x86_64-linux`:
+
+- `t3code-headless` provides the `t3` CLI and server.
+- `t3code-desktop` provides the Electron desktop application.
+- `t3code` and `default` remain aliases for `t3code-headless`.
+
+Run the desktop application directly with:
+
+```console
+nix run github:tarik02-org/t3code#t3code-desktop
+```
 
 ## NixOS user service
 
@@ -16,7 +26,7 @@ Then add the package and user service to your NixOS configuration:
 { inputs, pkgs, ... }:
 
 let
-  t3code = inputs.t3code.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  t3code = inputs.t3code.packages.${pkgs.stdenv.hostPlatform.system}.t3code-headless;
 in
 {
   environment.systemPackages = [ t3code ];

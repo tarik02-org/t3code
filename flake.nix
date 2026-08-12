@@ -10,10 +10,18 @@
       pkgs = import nixpkgs { inherit system; };
     in
     {
-      packages.${system} = rec {
-        t3code = pkgs.callPackage ./nix/package.nix { src = self; };
-        default = t3code;
-      };
+      packages.${system} =
+        let
+          runtime = pkgs.callPackage ./nix/package.nix { src = self; };
+        in
+        rec {
+          t3code-runtime = runtime;
+          t3code-headless = pkgs.callPackage ./nix/headless.nix { inherit runtime; };
+          t3code-desktop = pkgs.callPackage ./nix/desktop.nix { inherit runtime; };
+
+          t3code = t3code-headless;
+          default = t3code;
+        };
 
       formatter.${system} = pkgs.nixfmt;
     };
