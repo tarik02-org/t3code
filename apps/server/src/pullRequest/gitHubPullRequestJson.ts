@@ -12,6 +12,7 @@ import type {
   PullRequestMergeCapabilities,
   PullRequestMergeability,
   PullRequestReviewCommentDraft,
+  PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
   PullRequestReviewerCandidate,
@@ -588,6 +589,22 @@ const REVIEW_EVENTS: Record<PullRequestReviewVerdict, "COMMENT" | "APPROVE" | "R
   "request-changes": "REQUEST_CHANGES",
 };
 
+function gitHubReviewPosition(position: PullRequestReviewPosition): {
+  readonly line: number;
+  readonly side: "LEFT" | "RIGHT";
+} {
+  switch (position.kind) {
+    case "added":
+      return { line: position.newLine, side: "RIGHT" };
+    case "deleted":
+      return { line: position.oldLine, side: "LEFT" };
+    case "context":
+      return position.side === "left"
+        ? { line: position.oldLine, side: "LEFT" }
+        : { line: position.newLine, side: "RIGHT" };
+  }
+}
+
 /** The whole review as one request body, which is how GitHub keeps it invisible until sent. */
 export function buildReviewSubmissionJson(input: {
   readonly verdict: PullRequestReviewVerdict;
@@ -599,8 +616,7 @@ export function buildReviewSubmissionJson(input: {
     body: input.body,
     comments: input.comments.map((comment) => ({
       path: comment.path,
-      line: comment.line,
-      side: comment.side === "left" ? ("LEFT" as const) : ("RIGHT" as const),
+      ...gitHubReviewPosition(comment.position),
       body: comment.body,
     })),
   });

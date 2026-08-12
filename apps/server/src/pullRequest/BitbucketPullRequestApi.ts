@@ -12,6 +12,7 @@ import type {
   PullRequestMergeMethod,
   PullRequestMergeability,
   PullRequestReviewCommentDraft,
+  PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
   PullRequestReviewerCandidateList,
@@ -337,6 +338,19 @@ function mergeStrategy(method: PullRequestMergeMethod | undefined): string {
       return "rebase_fast_forward";
     default:
       return "merge_commit";
+  }
+}
+
+function bitbucketReviewPosition(
+  position: PullRequestReviewPosition,
+): { readonly from: number } | { readonly to: number } {
+  switch (position.kind) {
+    case "added":
+      return { to: position.newLine };
+    case "deleted":
+      return { from: position.oldLine };
+    case "context":
+      return position.side === "left" ? { from: position.oldLine } : { to: position.newLine };
   }
 }
 
@@ -730,7 +744,7 @@ export const make = Effect.gen(function* () {
                   content: { raw: comment.body },
                   inline: {
                     path: comment.path,
-                    ...(comment.side === "left" ? { from: comment.line } : { to: comment.line }),
+                    ...bitbucketReviewPosition(comment.position),
                   },
                 }),
               }),
