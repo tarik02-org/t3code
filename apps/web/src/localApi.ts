@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import { requestConfirmDialog } from "./confirmDialog";
-import { showContextMenuFallback } from "./contextMenuFallback";
+import { dismissContextMenu, showContextMenuFallback } from "./contextMenuFallback";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { isMacPlatform } from "./lib/utils";
 import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
@@ -74,6 +74,14 @@ function createBrowserLocalApi(): LocalApi {
           }
         }
         return showContextMenuFallback(items, position);
+      },
+      // A native desktop menu blocks keyboard input and closes on outside
+      // interaction, so nothing to do there; the DOM fallback needs an explicit
+      // dismiss when the state behind it goes away.
+      close: async () => {
+        if (!window.desktopBridge) {
+          dismissContextMenu();
+        }
       },
     },
     persistence: {

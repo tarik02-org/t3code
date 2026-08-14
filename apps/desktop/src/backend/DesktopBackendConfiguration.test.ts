@@ -17,6 +17,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
+import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
 
 const PersistedServerObservabilitySettingsDocument = Schema.Struct({
   observability: Schema.Struct({
@@ -115,6 +116,7 @@ const withHarness = <A, E, R>(
           Layer.provideMerge(serverExposureLayer),
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(DesktopWslEnvironment.layerTest()),
+          Layer.provideMerge(DesktopWslServerTree.layerTest()),
           Layer.provideMerge(makeEnvironmentLayer(baseDir)),
         ),
       ),
@@ -153,6 +155,53 @@ describe("DesktopBackendConfiguration", () => {
     ),
   );
 
+  it.effect("resolvePrimary starts from server.asar without materializing the WSL tree", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-test-",
+      });
+      const resourcesPath = `${baseDir}/resources`;
+
+      const result = yield* Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolvePrimary;
+        return { config, environment };
+      }).pipe(
+        Effect.provide(
+          DesktopBackendConfiguration.layer.pipe(
+            Layer.provideMerge(serverExposureLayer),
+            Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslEnvironment.layerTest()),
+            Layer.provideMerge(
+              Layer.succeed(
+                DesktopWslServerTree.DesktopWslServerTree,
+                DesktopWslServerTree.DesktopWslServerTree.of({
+                  ensure: Effect.die("Windows primary must not extract the WSL server tree"),
+                }),
+              ),
+            ),
+            Layer.provideMerge(
+              makeEnvironmentLayer(baseDir, {
+                appPath: `${resourcesPath}/app.asar`,
+                platform: "win32",
+                resourcesPath,
+              }),
+            ),
+          ),
+        ),
+      );
+
+      assert.equal(result.config.entryPath, result.environment.backendEntryPath);
+      assert.equal(
+        result.environment.serverRoot,
+        result.environment.path.join(resourcesPath, "server.asar"),
+      );
+      assert.equal(result.config.env.ELECTRON_RUN_AS_NODE, "1");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("resolveWsl reuses the primary's bootstrap token", () =>
     withHarness(
       Effect.gen(function* () {
@@ -169,28 +218,16 @@ describe("DesktopBackendConfiguration", () => {
   it.effect("resolveWsl pins a default-tracking run to the concrete default distro", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-desktop-backend-config-test-",
       });
+      const entryPath = path.join(baseDir, "apps/server/dist/bin.mjs");
+      yield* fileSystem.makeDirectory(path.dirname(entryPath), { recursive: true });
+      yield* fileSystem.writeFileString(entryPath, "");
 
       const observedDistros: Array<string | null> = [];
       const config = yield* Effect.gen(function* () {
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const wslAppRoot = environment.path.join(environment.resourcesPath, "app.asar.unpacked");
-        const entryPath = environment.path.join(wslAppRoot, "apps/server/dist/bin.mjs");
-        yield* Effect.addFinalizer(() =>
-          Effect.all([
-            fileSystem.remove(entryPath, { force: true }),
-            fileSystem.remove(environment.path.dirname(entryPath), {
-              recursive: true,
-              force: true,
-            }),
-            fileSystem.remove(wslAppRoot, { recursive: true, force: true }),
-          ]).pipe(Effect.orElseSucceed(() => undefined)),
-        );
-        yield* fileSystem.makeDirectory(environment.path.dirname(entryPath), { recursive: true });
-        yield* fileSystem.writeFileString(entryPath, "export {};\n");
-
         const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
         return yield* configuration.resolveWsl({ port: 5000, distro: null });
       }).pipe(
@@ -198,6 +235,7 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(
               DesktopWslEnvironment.layerTest({
                 isAvailable: true,
@@ -242,33 +280,19 @@ describe("DesktopBackendConfiguration", () => {
     () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
         const baseDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-desktop-backend-config-test-",
         });
+        const entryPath = path.join(baseDir, "apps/server/dist/bin.mjs");
+        yield* fileSystem.makeDirectory(path.dirname(entryPath), { recursive: true });
+        yield* fileSystem.writeFileString(entryPath, "");
 
         const nodePath = "/home/test user's/.nvm/versions/node/v22.0.0/bin/node";
         const linuxEntryPath = "/tmp/t3 code's launch/entry file.mjs";
         const resolvedPath = "/home/test user/bin:/opt/test's tools/bin:/usr/bin:/bin";
         const devServerUrl = "http://127.0.0.1:5733/dev%20assets/?label=hello%20world";
         const config = yield* Effect.gen(function* () {
-          const environment = yield* DesktopEnvironment.DesktopEnvironment;
-          const wslAppRoot = environment.path.join(environment.resourcesPath, "app.asar.unpacked");
-          const entryPath = environment.path.join(wslAppRoot, "apps/server/dist/bin.mjs");
-          yield* Effect.addFinalizer(() =>
-            Effect.all([
-              fileSystem.remove(entryPath, { force: true }),
-              fileSystem.remove(environment.path.dirname(entryPath), {
-                recursive: true,
-                force: true,
-              }),
-              fileSystem.remove(wslAppRoot, { recursive: true, force: true }),
-            ]).pipe(Effect.orElseSucceed(() => undefined)),
-          );
-          yield* fileSystem.makeDirectory(environment.path.dirname(entryPath), {
-            recursive: true,
-          });
-          yield* fileSystem.writeFileString(entryPath, "export {};\n");
-
           const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
           return yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
         }).pipe(
@@ -276,6 +300,7 @@ describe("DesktopBackendConfiguration", () => {
             DesktopBackendConfiguration.layer.pipe(
               Layer.provideMerge(serverExposureLayer),
               Layer.provideMerge(DesktopAppSettings.layerTest()),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
               Layer.provideMerge(
                 DesktopWslEnvironment.layerTest({
                   isAvailable: true,
@@ -412,6 +437,7 @@ describe("DesktopBackendConfiguration", () => {
             DesktopBackendConfiguration.layer.pipe(
               Layer.provideMerge(serverExposureLayer),
               Layer.provideMerge(DesktopAppSettings.layerTest()),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
               Layer.provideMerge(DesktopWslEnvironment.layerTest()),
               Layer.provideMerge(makeEnvironmentLayer(baseDir)),
               Layer.provideMerge(failingFileSystemLayer),
@@ -453,6 +479,7 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(DesktopWslEnvironment.layerTest()),
             Layer.provideMerge(
               makeEnvironmentLayer(baseDir, {
@@ -512,6 +539,7 @@ describe("DesktopBackendConfiguration", () => {
             DesktopBackendConfiguration.layer.pipe(
               Layer.provideMerge(serverExposureLayer),
               Layer.provideMerge(DesktopAppSettings.layerTest()),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
               Layer.provideMerge(
                 DesktopWslEnvironment.layerTest({
                   isAvailable: true,
@@ -562,6 +590,7 @@ describe("DesktopBackendConfiguration", () => {
                   wslOnly: true,
                 }),
               ),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
               Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: false })),
               Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
             ),
@@ -599,6 +628,7 @@ describe("DesktopBackendConfiguration", () => {
                   wslDistro: "Removed-Distro",
                 }),
               ),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
               Layer.provideMerge(
                 DesktopWslEnvironment.layerTest({
                   isAvailable: true,
@@ -632,6 +662,7 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(
               DesktopWslEnvironment.layerTest({
                 isAvailable: true,
@@ -666,6 +697,49 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
+            Layer.provideMerge(
+              DesktopWslEnvironment.layerTest({
+                isAvailable: true,
+                distros: [{ name: "Ubuntu", isDefault: true, version: 2 }],
+              }),
+            ),
+            Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("resolveWsl surfaces sidecar extraction failures through typed preflight", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-test-",
+      });
+
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolveWsl({ port: 5050, distro: "Ubuntu" });
+        const failure = Option.getOrThrow(config.preflightFailure);
+
+        assert.isFalse(failure.fatal);
+        assert.equal(failure.retryLimit, 12);
+        assert.include(failure.reason, "could not be extracted");
+      }).pipe(
+        Effect.provide(
+          DesktopBackendConfiguration.layer.pipe(
+            Layer.provideMerge(serverExposureLayer),
+            Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(
+              DesktopWslServerTree.layerTest({
+                result: {
+                  ok: false,
+                  reason: "WSL server files could not be extracted",
+                  fatal: false,
+                },
+              }),
+            ),
             Layer.provideMerge(
               DesktopWslEnvironment.layerTest({
                 isAvailable: true,
@@ -698,6 +772,7 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(
               DesktopWslEnvironment.layerTest({
                 isAvailable: true,
@@ -734,6 +809,7 @@ describe("DesktopBackendConfiguration", () => {
                 wslDistro: "Ubuntu",
               }),
             ),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: true })),
             Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
           ),
@@ -774,6 +850,7 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(DesktopWslEnvironment.layerTest()),
             Layer.provideMerge(
               makeEnvironmentLayer(baseDir, {
@@ -819,6 +896,7 @@ describe("DesktopBackendConfiguration", () => {
           DesktopBackendConfiguration.layer.pipe(
             Layer.provideMerge(serverExposureLayer),
             Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(DesktopWslEnvironment.layerTest()),
             Layer.provideMerge(
               makeEnvironmentLayer(baseDir, {
@@ -869,6 +947,7 @@ describe("DesktopBackendConfiguration", () => {
                 wslDistro: "Ubuntu",
               }),
             ),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
             Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: false })),
             Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
           ),
@@ -890,6 +969,7 @@ describe("DesktopBackendConfiguration", () => {
       DesktopBackendConfiguration.layer.pipe(
         Layer.provideMerge(serverExposureLayer),
         Layer.provideMerge(DesktopAppSettings.layerTest()),
+        Layer.provideMerge(DesktopWslServerTree.layerTest()),
         Layer.provideMerge(DesktopWslEnvironment.layer),
         // isAvailable on win32 only touches the filesystem, never the spawner,
         // so a die-stub is enough to satisfy the layer's deps.
