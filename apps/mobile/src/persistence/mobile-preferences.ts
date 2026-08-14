@@ -26,6 +26,7 @@ export interface Preferences {
   /** @deprecated Kept temporarily so older OTA bundles retain the selected mode. */
   readonly projectGroupingEnabled?: boolean;
   readonly projectGroupingMode?: SidebarProjectGroupingMode;
+  readonly autoSettleOnMerge?: boolean;
   /**
    * Device-local mirror of the web `legacySidebarEnabled` setting. Mobile has
    * no client-settings sync, so the legacy grouped thread list is opted into
@@ -35,6 +36,8 @@ export interface Preferences {
    */
   readonly progressiveThreadHistoryEnabled?: boolean;
   readonly legacyThreadListEnabled?: boolean;
+  /** Device-local counterpart of desktop's `planModeEnabled` legacy flag. */
+  readonly planModeEnabled?: boolean;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -75,7 +78,22 @@ export class MobilePreferencesStore extends Context.Service<
 >()("@t3tools/mobile/persistence/MobilePreferencesStore") {}
 
 function sanitizePreferences(parsed: Preferences): Preferences {
-  const preferences: { -readonly [Key in keyof Preferences]: Preferences[Key] } = {};
+  const preferences: {
+    liveActivitiesEnabled?: boolean;
+    baseFontSize?: number;
+    terminalFontSize?: number | null;
+    markdownFontSize?: number;
+    codeFontSize?: number | null;
+    codeWordBreak?: boolean;
+    connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
+    collapsedProjectGroups?: readonly string[];
+    projectGroupingEnabled?: boolean;
+    projectGroupingMode?: SidebarProjectGroupingMode;
+    autoSettleOnMerge?: boolean;
+    progressiveThreadHistoryEnabled?: boolean;
+    legacyThreadListEnabled?: boolean;
+    planModeEnabled?: boolean;
+  } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
@@ -111,14 +129,17 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   ) {
     preferences.projectGroupingMode = parsed.projectGroupingMode;
   }
+  if (typeof parsed.autoSettleOnMerge === "boolean") {
+    preferences.autoSettleOnMerge = parsed.autoSettleOnMerge;
+  }
   if (typeof parsed.legacyThreadListEnabled === "boolean") {
     preferences.legacyThreadListEnabled = parsed.legacyThreadListEnabled;
   }
-  if (
-    parsed.progressiveThreadHistoryEnabled === true ||
-    parsed.progressiveThreadHistoryEnabled === false
-  ) {
+  if (typeof parsed.progressiveThreadHistoryEnabled === "boolean") {
     preferences.progressiveThreadHistoryEnabled = parsed.progressiveThreadHistoryEnabled;
+  }
+  if (typeof parsed.planModeEnabled === "boolean") {
+    preferences.planModeEnabled = parsed.planModeEnabled;
   }
   return preferences;
 }
