@@ -67,6 +67,7 @@ This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork 
 
 - The fork exposes the server and web bundle as an `x86_64-linux` flake package.
 - The package version follows the server manifest by default and supports generated nightly and canary version overrides.
+- Pull requests verify the pnpm dependency hash and maintain one comment with the exact `nix/package.nix` fix when it drifts.
 - Main- and canary-branch pushes verify the pnpm dependency hash, open or update a repair PR against the affected branch when it drifts, and fail the source workflow run.
 
 ### Desktop Updater Channels

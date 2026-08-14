@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - main
+      - canary
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
@@ -37,6 +41,7 @@ jobs:
           components: rustfmt
 
       - name: Ensure Electron runtime is installed
+        if: github.event_name == 'pull_request'
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Check
@@ -48,19 +53,43 @@ jobs:
       - name: Check resource monitor formatting
         run: cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
 
+      # Release Build performs this exact build on branch pushes. PRs still
+      # exercise it here so broken build inputs never reach main.
       - name: Build desktop pipeline
+        if: github.event_name == 'pull_request'
         run: vp run build:desktop
 
       - name: Verify preload bundle output
+        if: github.event_name == 'pull_request'
         run: |
           test -f apps/desktop/dist-electron/preload.cjs
           grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
           grep -n "__clerk_internal_electron_passkeys" apps/desktop/dist-electron/preload.cjs
 
-  test:
-    name: Test
+  test_js:
+    name: Test shard (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: server 1/2
+            filters: --filter t3
+            args: --shard=1/2
+            artifact_suffix: server-1
+          - shard: server 2/2
+            filters: --filter t3
+            args: --shard=2/2
+            artifact_suffix: server-2
+          - shard: web
+            filters: --filter @t3tools/web
+          - shard: mobile
+            filters: --filter @t3tools/mobile
+          - shard: desktop
+            filters: --filter @t3tools/desktop
+          - shard: libraries
+            filters: --filter './packages/*' --filter './scripts' --filter './oxlint-plugin-t3code' --filter './infra/*'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -77,38 +106,81 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Ensure Electron runtime is installed
+        if: matrix.shard == 'desktop'
         run: vp run --filter @t3tools/desktop ensure:electron
 
-      - name: Test
+      - name: Test ${{ matrix.shard }}
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
-        run: vp run test
+        run: vp run ${{ matrix.filters }} test ${{ matrix.args }}
 
       - name: Publish transfer budget report
-        if: always()
+        if: always() && startsWith(matrix.shard, 'server')
         run: |
           if test -f "${{ runner.temp }}/t3code-transfer-budget.md"; then
             tee -a "$GITHUB_STEP_SUMMARY" < "${{ runner.temp }}/t3code-transfer-budget.md"
-          else
-            echo "Transfer budget report was not produced." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload thread transfer result
-        if: always()
+      - name: Upload sharded thread transfer result
+        if: always() && startsWith(matrix.shard, 'server')
         uses: actions/upload-artifact@v7
         with:
-          name: thread-transfer-results
+          name: thread-transfer-results-${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}/thread-transfer-result.json
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 1
+
+  test_native:
+    name: Test shard (resource monitor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: native/resource-monitor
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Test resource monitor
         run: cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
+
+  test:
+    name: Test
+    if: always()
+    needs:
+      - test_js
+      - test_native
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Download sharded thread transfer result
+        if: needs.test_js.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: thread-transfer-results-server-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/thread-transfer
+
+      - name: Upload thread transfer result
+        if: needs.test_js.result == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: thread-transfer-results
+          path: ${{ runner.temp }}/thread-transfer/thread-transfer-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Check shard results
+        env:
+          JS_RESULT: ${{ needs.test_js.result }}
+          NATIVE_RESULT: ${{ needs.test_native.result }}
+        run: |
+          test "$JS_RESULT" = success
+          test "$NATIVE_RESULT" = success
 
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
