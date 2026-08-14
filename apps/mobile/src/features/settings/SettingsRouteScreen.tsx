@@ -522,9 +522,21 @@ function ConfiguredSettingsRouteScreen() {
 }
 
 function GeneralSettingsSection() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const autoSettleOnMerge =
+    !AsyncResult.isSuccess(preferencesResult) ||
+    preferencesResult.value.autoSettleOnMerge !== false;
+
   return (
     <SettingsSection title="General">
       <SettingsRow icon="folder" label="Project Grouping" target="SettingsProjectGrouping" />
+      <SettingsSwitchRow
+        icon="arrow.triangle.branch"
+        label="Auto-settle merged threads"
+        value={autoSettleOnMerge}
+        onValueChange={(value) => savePreferences({ autoSettleOnMerge: value })}
+      />
       <SettingsRow icon="chart.bar.xaxis" label="Usage" target="SettingsUsage" />
     </SettingsSection>
   );
@@ -542,6 +554,8 @@ function LegacySettingsSection() {
   const progressiveThreadHistoryEnabled =
     AsyncResult.isSuccess(preferencesResult) &&
     preferencesResult.value.progressiveThreadHistoryEnabled === true;
+  const planModeEnabled =
+    AsyncResult.isSuccess(preferencesResult) && preferencesResult.value.planModeEnabled === true;
 
   return (
     <View className="gap-3">
@@ -553,6 +567,12 @@ function LegacySettingsSection() {
           onValueChange={(value) => savePreferences({ legacyThreadListEnabled: value })}
         />
         <SettingsSwitchRow
+          icon="hammer"
+          label="Plan Mode"
+          value={planModeEnabled}
+          onValueChange={(value) => savePreferences({ planModeEnabled: value })}
+        />
+        <SettingsSwitchRow
           icon="doc.text"
           label="Progressive Thread History"
           value={progressiveThreadHistoryEnabled}
@@ -560,9 +580,9 @@ function LegacySettingsSection() {
         />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Brings back the original grouped thread list. The default list is flat, in creation order:
-        active work renders as cards; settled threads collapse to compact rows. Progressive Thread
-        History loads large conversations in pages instead of downloading the full thread.
+        Opt into retired interfaces kept for compatibility. Legacy Thread List restores the original
+        grouped list. Plan Mode restores the Build/Plan control. Progressive Thread History loads
+        large conversations in pages.
       </Text>
     </View>
   );
@@ -598,7 +618,10 @@ function AppSettingsSection() {
     if (updateInFlight.current) return;
     updateInFlight.current = true;
     try {
+      // The user asked for this restart by tapping the version row, so it may
+      // apply immediately instead of prompting.
       await runAppUpdateCheck({
+        applyMode: "immediate",
         onFailure: (message) => Alert.alert("Update failed", message),
         onStateChange: setUpdateState,
       });
@@ -621,11 +644,15 @@ function AppSettingsSection() {
       ? "Checking…"
       : updateState === "downloading"
         ? "Downloading…"
-        : updateState === "restarting"
-          ? "Restarting…"
-          : updateState === "current"
-            ? "Up to date"
-            : null;
+        : // "ready" appears only when this check joined an in-flight background-mode
+          // check; that download installs at the next backgrounding.
+          updateState === "ready"
+          ? "Update ready"
+          : updateState === "restarting"
+            ? "Restarting…"
+            : updateState === "current"
+              ? "Up to date"
+              : null;
 
   const versionRow = (
     <View className="flex-row items-center gap-4 p-4">

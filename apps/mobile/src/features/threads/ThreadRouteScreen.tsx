@@ -829,7 +829,6 @@ function ThreadRouteContent(
             selectedThreadDetailState.history.loading === "after"
           }
           loadEarlier={loadEarlierTurns}
-          activeThreadBusy={composer.activeThreadBusy}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
