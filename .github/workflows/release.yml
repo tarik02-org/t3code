@@ -33,7 +33,7 @@ jobs:
   preflight:
     name: Preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     outputs:
       release_channel: ${{ steps.release_meta.outputs.release_channel }}
       version: ${{ steps.release_meta.outputs.version }}
@@ -843,8 +843,8 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [preflight, build, build_web_dist, publish_cli]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.build_web_dist.result == 'success' && needs.publish_cli.result == 'success' }}
+    needs: [preflight, build, build_web_dist]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.build_web_dist.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
