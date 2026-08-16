@@ -1,0 +1,191 @@
+name: Release Publish
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Release Build
+    types:
+      - completed
+    branches:
+      - main
+      - canary
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    name: Publish release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: release-publish-${{ github.event.workflow_run.head_branch }}-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - id: runs
+        name: Match successful CI and build runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          ci_run_id="$(
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f branch="$RELEASE_BRANCH" \
+              -f head_sha="$RELEASE_SHA" \
+              -f event=push \
+              -f status=success \
+              -f per_page=20 \
+              --jq '.workflow_runs[0].id // empty'
+          )"
+          if [[ "$TRIGGER_EVENT" == workflow_dispatch ]]; then
+            if [[ "$TRIGGER_WORKFLOW" != "Release Build" ]]; then
+              echo "Unexpected manually dispatched workflow: $TRIGGER_WORKFLOW" >&2
+              exit 1
+            fi
+            build_run_id="$TRIGGER_RUN_ID"
+          else
+            build_run_id="$(
+              gh api --method GET \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs" \
+                -f branch="$RELEASE_BRANCH" \
+                -f head_sha="$RELEASE_SHA" \
+                -f event=push \
+                -f status=success \
+                -f per_page=20 \
+                --jq '.workflow_runs[0].id // empty'
+            )"
+          fi
+
+          if [[ -z "$ci_run_id" || -z "$build_run_id" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "build_run_id=$build_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download release metadata
+        if: steps.runs.outputs.ready == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: release-metadata
+          path: release-metadata
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.runs.outputs.build_run_id }}
+
+      - id: metadata
+        name: Read release metadata
+        if: steps.runs.outputs.ready == 'true'
+        run: |
+          metadata=release-metadata/release.json
+          {
+            echo "version=$(jq -r .version "$metadata")"
+            echo "tag=$(jq -r .tag "$metadata")"
+            echo "name=$(jq -r .name "$metadata")"
+            echo "previous_tag=$(jq -r .previousTag "$metadata")"
+            echo "prerelease=$(jq -r .prerelease "$metadata")"
+            echo "make_latest=$(jq -r .makeLatest "$metadata")"
+            echo "ref=$(jq -r .ref "$metadata")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release source
+        if: steps.runs.outputs.ready == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.metadata.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        if: steps.runs.outputs.ready == 'true'
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Download desktop artifacts
+        if: steps.runs.outputs.ready == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.runs.outputs.build_run_id }}
+
+      - name: Download web artifact
+        if: steps.runs.outputs.ready == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: release-assets
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.runs.outputs.build_run_id }}
+
+      - name: Merge macOS updater manifests
+        if: steps.runs.outputs.ready == 'true'
+        run: |
+          shopt -s nullglob
+          for x64_manifest in release-assets/*-mac-x64.yml; do
+            arm64_manifest="${x64_manifest%-x64.yml}.yml"
+            if [[ ! -f "$arm64_manifest" ]]; then
+              echo "Missing arm64 manifest for $x64_manifest" >&2
+              exit 1
+            fi
+            node scripts/merge-update-manifests.ts --platform mac "$arm64_manifest" "$x64_manifest"
+            rm "$x64_manifest"
+          done
+
+      - name: Publish release
+        if: steps.runs.outputs.ready == 'true' && steps.metadata.outputs.previous_tag != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          target_commitish: ${{ steps.metadata.outputs.ref }}
+          name: ${{ steps.metadata.outputs.name }}
+          generate_release_notes: true
+          previous_tag: ${{ steps.metadata.outputs.previous_tag }}
+          prerelease: ${{ steps.metadata.outputs.prerelease }}
+          make_latest: ${{ steps.metadata.outputs.make_latest }}
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true
+
+      - name: Publish first release
+        if: steps.runs.outputs.ready == 'true' && steps.metadata.outputs.previous_tag == ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          target_commitish: ${{ steps.metadata.outputs.ref }}
+          name: ${{ steps.metadata.outputs.name }}
+          generate_release_notes: true
+          prerelease: ${{ steps.metadata.outputs.prerelease }}
+          make_latest: ${{ steps.metadata.outputs.make_latest }}
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true

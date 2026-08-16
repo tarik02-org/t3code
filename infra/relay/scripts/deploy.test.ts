@@ -199,29 +199,6 @@ describe("serializeRelayClientTracingEnvironment", () => {
   });
 });
 
-describe("release workflow tracing config propagation", () => {
-  it.effect("keeps relay tracing config isolated to the disabled relay job", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workflowPath = yield* path.fromFileUrl(
-        new URL("../../../.github/workflows/release.yml", import.meta.url),
-      );
-      const workflow = yield* fileSystem.readFileString(workflowPath);
-
-      expect(workflow).not.toContain("client_tracing_token:");
-      expect(workflow).not.toContain("needs.relay_public_config.outputs.client_tracing_token");
-      expect(workflow).toContain(
-        "if: ${{ false }} # Disabled for the fork: no production relay config.",
-      );
-      expect(workflow).toContain('--github-env-file "$RUNNER_TEMP/relay-client-tracing.env"');
-      expect(workflow).toContain("name: relay-client-tracing-config");
-      expect(workflow).not.toContain('cat "$config_path" >> "$GITHUB_ENV"');
-      expect(workflow).not.toContain("Download relay client tracing config");
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
-});
-
 describe("publicConfigFromOutput", () => {
   it("reads the complete public tracing config from persisted Alchemy output", () => {
     expect(

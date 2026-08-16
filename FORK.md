@@ -1,137 +1,104 @@
-# Fork Notes
+# T3 Code fork
 
-This repository is a fork of `pingdotgg/t3code`. Keep this file focused on fork behavior that intentionally differs from upstream.
+This repository is the `tarik02-org/t3code` fork of `pingdotgg/t3code`. This file records the parts the fork owns, the compatibility rules it keeps, and the behavior that intentionally differs from upstream.
 
-## Maintenance Workflow
+## Ownership boundaries
 
-- Update this file in the same change whenever fork-only behavior changes.
-- Keep workflow-only fork changes narrow and prefer job-level disables over broad refactors.
-- Do not commit package version bumps solely to represent fork releases.
-- Re-check Electron updater channel behavior when changing version strings, release metadata, or desktop packaging.
+| Path                                                      | Status                         | Maintenance rule                                                                                                                                      |
+| --------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/`                                                   | Out of scope                   | The directory comes from upstream and may not describe the fork correctly. Fork changes do not require updates there.                                 |
+| `.github/workflows/`                                      | Fully replaced                 | The fork owns every workflow. Do not merge upstream workflow changes mechanically. Port useful changes into the fork pipelines when they still apply. |
+| `README.md`, `FORK.md`, `.github/nix/`, `flake.*`, `nix/` | Fork-owned                     | These files describe and distribute the fork. Maintain them against the fork rather than upstream.                                                    |
+| Application and shared package code                       | Upstream-compatible fork delta | Keep changes narrow enough to make upstream merges reviewable. Preserve client, protocol, and data compatibility where the rules below require it.    |
+
+`README.md` and this file are the maintained entry points for fork users and maintainers.
+
+## Maintenance
+
+- Update this file when fork ownership, compatibility rules, or user-visible fork behavior changes.
 - Prepare fork PR branches from `origin/main` and target `tarik02-org/t3code:main`.
-- If a fork PR branch includes unintended upstream history, rebuild it from `origin/main` and replay only the intended diff.
+- Squash fork feature PRs. Upstream actualization PRs may preserve upstream commits when that makes later syncs easier to audit.
+- Treat `.github/workflows/` as fork code during upstream merges. Review upstream automation for useful ideas, but keep the fork implementation.
+- Do not spend fork work on `docs/`. Avoid linking users to it as fork documentation.
+- Only the automated stable release PR commits release version bumps. Nightly and canary versions are generated during their builds.
+- Recheck Electron updater channels and artifact names when changing versions, release metadata, or desktop packaging.
+- Staged formatting tolerates chunks that contain only ignored files so large upstream merges can pass the pre-commit hook.
 
-## Changes
+## Compatibility contract
 
-### Maintenance
+### Clients and RPC
 
-- Squash commits when merging fork PRs.
-- Exception: upstream actualization PRs may preserve upstream commit structure when that makes future syncs easier to audit.
-- Staged formatting tolerates chunks containing only ignored files so large upstream actualization commits can pass the pre-commit hook.
+- Upstream clients must be able to use a fork server without fork-specific assumptions or protocol failures.
+- Existing upstream RPC methods keep their upstream request, response, and behavior contracts.
+- Fork protocol extensions use separate RPC methods and optional advertised capabilities.
+- Fork clients call an extension only when the server advertises it. They keep the upstream path as a fallback.
+- Fork servers keep the upstream handler beside each extension.
 
-### Compatibility
+### Persistence
 
-- Fork backend changes must remain compatible with non-fork clients. Upstream clients must be able to use a fork server without fork-specific assumptions or protocol failures.
-- Fork database changes and migrations must leave the database usable by regular upstream builds. The upstream backend must still open and use the database, and the upstream frontend must still work through that backend. Prefer sidecar databases for fork-only data.
+- Upstream builds must still be able to open and use the main database after it has been used by the fork.
+- Fork-only durable data belongs in a sidecar database. Thread goals use `state-tarik02.sqlite`.
+- Bounded thread snapshots use fork-namespaced cache keys, so upstream clients ignore them and the fork does not decode old unbounded snapshot entries.
 
-### Protocol Compatibility
+## Fork features
 
-- Fork protocol extensions use separate extension RPC methods and additive optional capabilities.
-- Existing upstream RPC methods keep their upstream request, response, and behavior contracts so upstream clients remain compatible with the fork backend.
-- Fork clients call a fork RPC only when the backend advertises its capability and otherwise retain the upstream RPC path.
-- Fork backends keep the upstream RPC handler alongside each fork extension.
+### Thread synchronization and history
 
-### Thread Delta Subscription
+- Fork servers advertise `threadDeltaSubscription` and expose `orchestration.subscribeThread.withDelta` beside the upstream thread subscription.
+- Delta subscriptions replay gaps of up to 1,000 orchestration events. Larger or invalid gaps receive a fresh snapshot. A deleted thread produces `not-found`, which lets clients clear stale state.
+- Upstream `threadSnapshotPagination` remains the default bounded-history protocol with its original endpoint and cursor behavior.
+- The beta advanced-history client uses the independent `threadMessagePagination` capability. It adds a bounded initial snapshot, bidirectional message pages, and a thread-history outline through fork-only endpoints.
+- Progressive thread history is a client setting and defaults to off.
+- The web client keeps normalized history pages in an IndexedDB sidecar cache. The mobile client uses a bounded in-memory LRU for the current session.
+- The web timeline keeps a bounded live tail and loads historical windows at user-turn boundaries. Its minimap indexes the whole conversation and loads the selected segment on demand.
+- Paginated history uses the same client-facing activity projection as regular snapshots. The server removes omitted command output before schema decoding without changing persisted activity.
 
-- Fork backends advertise `threadDeltaSubscription` and expose `orchestration.subscribeThread.withDelta` alongside the upstream thread subscription.
-- Fork clients use the fork subscription only when advertised. Upstream backends therefore continue receiving the upstream subscription.
-- The fork subscription replays gaps of at most 1,000 orchestration events and sends a fresh thread snapshot for larger or invalid gaps. Fallback snapshots preserve upstream window pagination when requested. If the thread no longer exists, it sends `not-found` so clients clear stale cached state.
+### Thread goals
 
-### Thread History Protocol
+- Providers that support goals can report goal state and receive goal commands.
+- The web client renders goal activity, exposes `/goal`, and adds a right-side goal panel.
+- Plans remain timeline entries and do not share the goal panel.
 
-- Upstream `threadSnapshotPagination` is the default bounded-history protocol and keeps its standard thread snapshot endpoint and cursor semantics.
-- Fork backends separately advertise `threadMessagePagination` for the beta advanced-history client. Its initial bounded snapshot uses `/api/orchestration/threads/:threadId/with-message-history`; bidirectional message pages and the history outline remain fork-only endpoints.
-- The two capabilities are independent. Upstream-compatible clients never receive fork message-history fields or fork-specific pagination semantics.
+### Desktop behavior
 
-### Release And CI
+- Packaged desktop builds serve the bundled web client directly from Electron. Development builds keep using Vite.
+- The persisted **Local backend** setting lives under **Settings** then **Connections** and defaults to enabled. Changing it restarts the app.
+- When the local backend is enabled, Electron opens the client while backend authentication finishes in the background.
+- When it is disabled, Electron skips the managed local and WSL backends and loads saved direct and SSH environments. Local data stays on disk and returns when the setting is enabled again.
+- Stable, nightly, and canary builds use separate `latest`, `nightly`, and `canary` updater feeds.
+- Canary builds keep server and client state under `~/.t3/canary` and Electron data under `t3code-canary`. Desktop settings stay shared across channels.
+- macOS updates are unsigned. A detached helper replaces the installed app bundle instead of using the Squirrel.Mac installer.
+- Desktop context-menu style is configurable. Legacy sidebar threads support middle-click archive, and terminal selections have a copy action.
 
-- Fork workflows create/update a daily stable release PR, main-branch pushes produce nightly releases, and canary-branch pushes produce canary releases.
-- Canary releases use immutable `X.Y.Z-canary.YYYYMMDD.RUN` versions and GitHub prereleases without changing stable package versions.
-- The Nix dependency hash workflow checks both `main` and `canary`, and targets repair PRs back to the branch that drifted.
-- Stable release PRs list every commit since the previous stable tag, including commits brought in by upstream merges.
-- Main-branch pushes update the stable release PR immediately when the committed package version is already tagged.
-- Stable-version pushes wait for the matching release to finish so tag-based version resolution advances past the published version.
-- Release build jobs skip relay client tracing config because the relay config job is disabled.
-- Release builds publish updater metadata against the fork repository.
-- Unsigned macOS updates replace the installed app bundle with a detached helper instead of using Squirrel.Mac installation.
-- Fork stable release versions use date-based `YYYY.M.DDSS` numbers without build metadata. Release PRs commit them before release artifacts are built and tagged.
-- macOS release signing is separate from Apple notarization.
-- Self-signed macOS signing certificates are trusted during release builds.
-- macOS passkey entitlements are only enabled when Apple notarization/profile configuration is present.
-- Windows releases can sign with the static certificate when Azure Trusted Signing is not configured.
-- Fork GitHub Actions jobs use GitHub-hosted runners instead of upstream private or third-party runner pools.
-- Fork test runs limit package task concurrency to two to avoid starving tests on GitHub-hosted runners.
-- Web dist release archives are built as hosted static apps and carry the release channel.
+### Runtime and remote access
 
-### Nix Package
+- Provider sessions use one shared launch-environment pipeline.
+- Default-mode Codex instructions allow `request_user_input` when the runtime exposes it.
+- Served web assets support a base path, and clients normalize remote URLs consistently.
 
-- The fork exposes the server and web bundle as an `x86_64-linux` flake package.
-- The package version follows the server manifest by default and supports generated nightly and canary version overrides.
-- Main- and canary-branch pushes verify the pnpm dependency hash, open or update a repair PR against the affected branch when it drifts, and fail the source workflow run.
+## CI and releases
 
-### Desktop Updater Channels
+### CI
 
-- Stable builds use `latest`, nightly builds use `nightly`, and canary builds use `canary`.
-- Nightly and canary detection accepts fork release metadata while preserving separate updater feeds.
-- Canary desktop builds isolate server and client state under `~/.t3/canary` and Electron data under `t3code-canary`. Desktop settings stay shared so update-track changes survive channel switches.
+- All jobs use GitHub-hosted runners and Vite+ dependency caching.
+- JavaScript tests run as server, web, mobile, desktop, and library shards. Server tests split into two Vitest shards. Rust resource-monitor tests run separately.
+- Pull requests also run checks, typechecks, the desktop build, mobile native static analysis, release smoke coverage, and the Nix dependency hash check.
+- Thread-transfer results from the server shards feed the separate transfer-budget report workflow.
 
-### Desktop Backendless Mode
+### Releases
 
-- The desktop app has a persisted **Local backend** setting under **Settings** → **Connections**. It defaults to enabled. Changing it restarts the app.
-- Packaged desktop builds always serve the bundled web client directly from Electron. Development builds continue to load the Vite server.
-- With the local backend enabled, Electron opens the client as soon as the backend launch is requested. Initial authentication waits for backend readiness in the background instead of delaying the window.
-- When the local backend is disabled, Electron does not start the managed local or WSL backends and loads saved direct and SSH environments.
-- Local projects, threads, and settings remain on disk and return when the local backend is enabled again.
+- The stable release workflow maintains a release PR from `release/stable` to `main`. It refreshes after relevant main changes, after a stable publish, on a daily schedule, and on manual dispatch.
+- Merging a stable release PR commits the next date-based `YYYY.M.DDSS` version. The matching main build publishes it as stable.
+- Other main pushes publish immutable nightly versions. Canary branch pushes publish immutable `X.Y.Z-canary.YYYYMMDD.RUN` versions.
+- Stable release notes include every commit since the previous stable tag, including commits introduced by upstream merges.
+- Shared server and desktop build output is produced once with Nix and reused by the macOS, Linux, and Windows packaging jobs. GitHub Actions caches the Nix store paths.
+- Releases contain unsigned macOS DMGs, a Linux AppImage, a Windows NSIS installer, updater metadata, and a hosted-static web archive.
+- Release reruns update an existing GitHub Release and replace its assets, so a partially published release can be recovered.
+- The workflows contain no signing or notarization path.
 
-### Fork Persistence
+### Nix packages
 
-- Fork-only goal persistence is stored in a sidecar database named `state-tarik02.sqlite`.
-- Bounded live-thread snapshots use fork-namespaced cache keys, so the fork never decodes legacy
-  unbounded snapshot JSON during startup and upstream clients ignore the fork cache entries.
-- The web client keeps fetched thread-history rows in an unbounded, normalized sidecar IndexedDB
-  cache. Messages, activities, and plans are stored once and reused for covered history ranges.
-  Cached records are schema-decoded independently so large activity batches cannot stall on a
-  cooperative runtime yield. An authoritative bounded snapshot clears cached segments because it
-  may replace an event replay that contained a thread revert.
-- The mobile client keeps recently fetched thread-history pages in a bounded, session-only
-  in-memory LRU. It avoids repeat requests while browsing nearby segments without adding mobile
-  database state or migrations, and it does not request the web-only minimap outline.
-
-### Goals UI
-
-- The fork adds thread goal support, goal activity rendering, and a dedicated right-side goal panel. Upstream turn plans remain inline in the timeline and do not share the goal panel.
-
-### Provider Launch Environment
-
-- Provider sessions use a shared launch environment pipeline instead of ad hoc environment assembly.
-
-### Provider Instructions
-
-- Default-mode Codex instructions allow `request_user_input` when configured instead of treating it as unavailable.
-
-### Base Path And Remote URLs
-
-- The fork includes base-path handling for served web assets and remote URL normalization.
-
-### UX Changes
-
-- Progressive thread history is a client-local beta setting and defaults to off. Disabled clients
-  use upstream snapshot pagination; enabled clients use the separately advertised fork advanced-history protocol.
-- Thread detail snapshots keep a bounded live tail. Historical browsing uses bounded,
-  bidirectional keyset windows cut only at user-turn boundaries, while the web minimap indexes every
-  user message across the full thread and loads the selected segment on demand. One LegendList owns
-  both live and historical scrolling, and its visible-content anchoring stabilizes page changes and
-  late row measurements. The local scrollbar only represents the current bounded segment; the
-  minimap is the global conversation-indexed scrubber. Historical windows retain every raw message
-  and work-telemetry row belonging to their turns, and only display activity for turns represented
-  by the active message window. Reaching a segment edge loads the adjacent window
-  without moving visible rows. Scroll-to-end returns directly to the bounded live tail.
-- Paginated history responses use the same client-facing activity payload projection as full thread
-  snapshots, and command output omitted by that projection is removed in SQLite before schema decode.
-  The persisted activity remains unchanged.
-- Failed segment requests release their pending navigation target. Keyboard, pointer, touch, or wheel
-  input immediately cancels target alignment. Minimap dragging follows the pointer immediately while
-  throttling segment requests, and only the latest explicit jump may replace the active segment.
-- Desktop context-menu style is configurable from Appearance settings.
-- Legacy sidebar threads can be archived with middle click.
-- Terminal selection has a copy action.
+- The flake exports `t3code-headless`, `t3code-desktop`, and the shared `t3code-runtime` for `x86_64-linux`. `t3code` and `default` point to the headless package.
+- Package versions follow the server manifest for stable builds and accept generated nightly or canary versions during release builds.
+- Pull requests verify the pnpm dependency hash and keep one comment with the exact `nix/package.nix` fix when it drifts.
+- Main, master, and canary pushes open or update a repair PR against the affected branch when the hash drifts, then fail the source workflow.

@@ -1,6 +1,7 @@
 name: Nix pnpm dependency hash
 
 on:
+  pull_request:
   push:
     branches:
       - main
@@ -12,11 +13,75 @@ permissions:
 
 concurrency:
   group: nix-pnpm-dependency-hash-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  check:
+    name: Check PR pnpm dependency hash
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - id: update
+        name: Calculate pnpm dependency hash fix
+        shell: bash
+        run: |
+          nix run github:Mic92/nix-update/cf68051e7b7e08de6c707484cdcd1a53feb48e05 -- \
+            t3code-runtime \
+            --flake \
+            --version=skip \
+            --override-filename nix/package.nix \
+            --build
+
+          if git diff --quiet -- nix/package.nix; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'The Nix pnpm dependency hash is stale. Apply this change to the pull request:'
+              echo
+              echo '```diff'
+              git diff -- nix/package.nix
+              echo '```'
+            } | tee "$RUNNER_TEMP/nix-pnpm-dependency-hash.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Post proposed hash change
+        if: >-
+          steps.update.outputs.changed == 'true' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: nix-pnpm-dependency-hash
+          path: ${{ runner.temp }}/nix-pnpm-dependency-hash.md
+
+      - name: Remove resolved hash comment
+        if: >-
+          steps.update.outputs.changed == 'false' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: nix-pnpm-dependency-hash
+          delete: true
+
+      - name: Fail on dependency hash drift
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          echo '::error::The Nix pnpm dependency hash is stale. Apply the change from the job summary or pull request comment.'
+          exit 1
+
   update:
     name: Check pnpm dependency hash
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

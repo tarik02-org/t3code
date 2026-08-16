@@ -42,24 +42,14 @@ stdenv.mkDerivation (finalAttrs: {
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs)
       pname
-      version
       src
       pnpmWorkspaces
       ;
+    version = sourceVersion;
     inherit pnpm;
     fetcherVersion = 4;
     hash = "sha256-t9T9CjSgPSttkfKNTLaC5DHVb9df5JN7CtMxZSqDx28=";
   };
-
-  postPatch = lib.optionalString (finalAttrs.version != sourceVersion) ''
-    substituteInPlace \
-      apps/desktop/package.json \
-      apps/server/package.json \
-      apps/web/package.json \
-      packages/contracts/package.json \
-      --replace-fail '"version": "${sourceVersion}"' \
-      '"version": "${finalAttrs.version}"'
-  '';
 
   nativeBuildInputs = [
     node-gyp
@@ -76,8 +66,18 @@ stdenv.mkDerivation (finalAttrs: {
 
   preBuild = ''
     export npm_config_nodedir=${nodejs}
+    export pnpm_config_verify_deps_before_run=false
     export ELECTRON_SKIP_BINARY_DOWNLOAD=1
     pnpm rebuild --pending "''${pnpmInstallFlags[@]}" --filter '!@t3tools/monorepo'
+    ${lib.optionalString (finalAttrs.version != sourceVersion) ''
+      substituteInPlace \
+        apps/desktop/package.json \
+        apps/server/package.json \
+        apps/web/package.json \
+        packages/contracts/package.json \
+        --replace-fail '"version": "${sourceVersion}"' \
+        '"version": "${finalAttrs.version}"'
+    ''}
   '';
 
   buildPhase = ''

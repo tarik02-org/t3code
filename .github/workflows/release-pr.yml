@@ -1,4 +1,4 @@
-name: Release PR
+name: Stable Release PR
 
 on:
   push:
@@ -6,11 +6,14 @@ on:
       - main
   workflow_run:
     workflows:
-      - Release
+      - Release Publish
     types:
       - completed
     branches:
       - main
+  release:
+    types:
+      - published
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
@@ -20,13 +23,15 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: fork-release-pr
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  group: stable-release-pr
+  cancel-in-progress: true
 
 jobs:
-  trigger:
-    name: Resolve release PR trigger
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+  state:
+    name: Check stable release state
+    if: >-
+      (github.event_name != 'release' || github.event.release.prerelease == false) &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -38,34 +43,24 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Fetch release tags
+      - name: Fetch tags
         run: git fetch --force --tags origin
 
       - id: release_state
-        name: Check release state
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        name: Check for the current stable tag
         run: |
           package_version="$(node -p "require('./apps/server/package.json').version")"
-          package_tag_sha="$(git rev-parse "refs/tags/v${package_version}^{commit}" 2>/dev/null || true)"
-          prepare=false
-
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            if [[ "$package_tag_sha" == "$WORKFLOW_RUN_SHA" ]]; then
-              prepare=true
-            fi
-          elif [[ -n "$package_tag_sha" ]]; then
-            prepare=true
+          tag_sha="$(git rev-parse "refs/tags/v${package_version}^{commit}" 2>/dev/null || true)"
+          if [[ -n "$tag_sha" ]]; then
+            echo "prepare=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prepare=false" >> "$GITHUB_OUTPUT"
           fi
-
-          echo "prepare=$prepare" >> "$GITHUB_OUTPUT"
 
   prepare:
     name: Prepare stable release PR
-    needs: trigger
-    if: needs.trigger.outputs.prepare == 'true'
+    needs: state
+    if: needs.state.outputs.prepare == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -98,26 +93,24 @@ jobs:
               - --filter=@t3tools/scripts...
               - --filter=@t3tools/oxlint-plugin-t3code...
 
-      - name: Fetch release tags
-        run: git fetch --force --tags origin
+      - name: Fetch tags and release branch
+        run: |
+          git fetch --force --tags origin
+          git fetch origin release/stable || true
 
       - id: release_meta
-        name: Resolve stable release metadata
-        shell: bash
-        env:
-          RELEASE_DATE: ${{ github.run_started_at }}
+        name: Resolve next stable version
         run: |
-          release_date="$(date -u -d "$RELEASE_DATE" +%Y%m%d)"
           node scripts/resolve-fork-stable-release.ts \
-            --date "$release_date" \
+            --date "$(date -u +%Y%m%d)" \
             --github-output
 
       - id: update_versions
-        name: Update version metadata
+        name: Update package versions
         run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}" --github-output
 
       - id: previous_tag
-        name: Resolve previous stable release tag
+        name: Resolve previous stable release
         run: |
           node scripts/resolve-previous-release-tag.ts \
             --channel stable \
@@ -133,7 +126,7 @@ jobs:
         run: vp install --lockfile-only --ignore-scripts
 
       - id: app_bot
-        name: Resolve GitHub App bot identity
+        name: Resolve release bot identity
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
@@ -143,16 +136,13 @@ jobs:
           echo "email=${user_id}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
 
       - name: Push release branch
-        shell: bash
         env:
           BRANCH_NAME: release/stable
           RELEASE_VERSION: ${{ steps.release_meta.outputs.version }}
         run: |
           git config user.name "${{ steps.app_bot.outputs.name }}"
           git config user.email "${{ steps.app_bot.outputs.email }}"
-          git fetch origin "$BRANCH_NAME" || true
-          git switch -c "$BRANCH_NAME"
-
+          git switch -C "$BRANCH_NAME"
           git add apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json pnpm-lock.yaml
           if git diff --cached --quiet; then
             git commit --allow-empty -m "prepare stable release $RELEASE_VERSION"
@@ -173,7 +163,7 @@ jobs:
           body="$(mktemp)"
           commits="$(mktemp)"
           if [[ -n "$PREVIOUS_TAG" ]]; then
-            git log --pretty=format:'- %s (`%h`)' "$PREVIOUS_TAG..origin/main" > "$commits"
+            git log --pretty=format:"- %s (%h)" "$PREVIOUS_TAG..origin/main" > "$commits"
           else
             echo "- No previous stable tag found." > "$commits"
           fi
@@ -181,18 +171,18 @@ jobs:
             echo "- No commits found since the latest stable release." > "$commits"
           fi
 
-          cat > "$body" <<EOF
-          ## Stable Release
+          {
+            echo "## Stable Release"
+            echo
+            echo "Merging this PR publishes $RELEASE_TAG."
+            echo
+            echo "Previous stable: ${PREVIOUS_TAG:-none}"
+            echo
+            echo "## Commits Since Previous Stable"
+            cat "$commits"
+          } > "$body"
 
-          Merging this PR publishes $RELEASE_TAG.
-
-          Previous stable: ${PREVIOUS_TAG:-none}
-
-          ## Commits Since Previous Stable
-          EOF
-          cat "$commits" >> "$body"
-
-          existing="$(gh pr list --head "$BRANCH_NAME" --base main --state open --json number --jq '.[0].number // empty')"
+          existing="$(gh pr list --head "$BRANCH_NAME" --base main --state open --json number --jq ".[0].number // empty")"
           if [[ -n "$existing" ]]; then
             gh pr edit "$existing" --title "$title" --body-file "$body"
           else
