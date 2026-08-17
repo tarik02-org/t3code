@@ -4,6 +4,7 @@ import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { cn } from "~/lib/utils";
 import { formatTimestamp } from "../../timestampFormat";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 type GoalTimelineRowData = Extract<MessagesTimelineRow, { kind: "goal" }>;
 
@@ -52,9 +53,14 @@ export function GoalTimelineRow({
         </span>
         <span className="shrink-0 font-medium text-foreground/85">{row.label}</span>
         {row.detail ? (
-          <span className="min-w-0 truncate text-muted-foreground/80" title={row.detail}>
-            {row.detail}
-          </span>
+          <Tooltip>
+            <TooltipTrigger render={<span className="min-w-0 truncate text-muted-foreground/80" />}>
+              {row.detail}
+            </TooltipTrigger>
+            <TooltipPopup className="max-w-80 whitespace-normal leading-tight">
+              {row.detail}
+            </TooltipPopup>
+          </Tooltip>
         ) : null}
         <span className="shrink-0 text-muted-foreground/45">
           {formatTimestamp(row.createdAt, timestampFormat)}

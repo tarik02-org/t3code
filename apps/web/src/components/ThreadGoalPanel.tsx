@@ -5,6 +5,7 @@ import { formatGoalDuration, formatGoalTokens, goalStatusLabel } from "../goalPr
 import { cn } from "~/lib/utils";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 function goalStatusClassName(status: OrchestrationThreadGoal["status"]): string {
   switch (status) {
@@ -39,12 +40,16 @@ export function ThreadGoalPanel({
       <div className="flex items-start gap-2">
         <TargetIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground/60" />
         <div className="min-w-0 flex-1">
-          <p
-            className="line-clamp-2 text-[13px] leading-snug text-foreground/90"
-            title={goal.objective}
-          >
-            {goal.objective}
-          </p>
+          <Tooltip>
+            <TooltipTrigger
+              render={<p className="line-clamp-2 text-[13px] leading-snug text-foreground/90" />}
+            >
+              {goal.objective}
+            </TooltipTrigger>
+            <TooltipPopup className="max-w-80 whitespace-normal leading-tight">
+              {goal.objective}
+            </TooltipPopup>
+          </Tooltip>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <Badge
               variant="outline"

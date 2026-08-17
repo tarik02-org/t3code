@@ -8,6 +8,7 @@ import type {
   PullRequestRef,
   PullRequestReviewPosition,
   PullRequestReviewThread,
+  PullRequestThreadCommentsResult,
 } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
@@ -18,7 +19,6 @@ import {
   MessageSquareIcon,
   MessageSquareOffIcon,
   Rows3Icon,
-  SparklesIcon,
   TextWrapIcon,
   TriangleAlertIcon,
   XIcon,
@@ -139,12 +139,11 @@ interface DraftAnchor {
   readonly range: SelectedLineRange;
 }
 
-/** A range of the diff, and whatever the reader wants to know about it. */
-export interface PullRequestAskSelectionInput {
+/** A range of the diff and the reader's request for the agent. */
+export interface PullRequestAgentSelectionInput {
   /** The marked lines, already in the shape the composer draws and the agent reads. */
   readonly comment: ReviewCommentContext;
-  /** Empty where the reader pressed Ask without typing: the lines are the question. */
-  readonly question: string;
+  readonly request: string;
 }
 
 /** The contract's sides named the way the diff viewer names them, and back again. */
@@ -189,7 +188,7 @@ export function PullRequestCodeTab({
   pendingFinding,
   fixFindingLabel = "Fix in a thread",
   onFixFinding,
-  onAskAboutSelection,
+  onAddToAgentSelection,
   onRefresh,
   refreshToken = 0,
 }: {
@@ -203,8 +202,8 @@ export function PullRequestCodeTab({
   pendingFinding?: string | null;
   fixFindingLabel?: string;
   onFixFinding?: (finding: PullRequestFinding) => void;
-  /** Absent where a selection has no agent to go to, which takes the Ask button off the box. */
-  onAskAboutSelection?: (input: PullRequestAskSelectionInput) => void;
+  /** Absent where there is no active agent composer to receive a local comment. */
+  onAddToAgentSelection?: (input: PullRequestAgentSelectionInput) => void;
   onRefresh: () => void;
   /** Bumped by the panel's refresh button: drop the accumulated pages and re-read the diff. */
   refreshToken?: number;
@@ -336,6 +335,9 @@ export function PullRequestCodeTab({
     reportFailure: false,
   });
   const updateComment = useAtomCommand(pullRequestEnvironment.updateComment, {
+    reportFailure: false,
+  });
+  const loadThreadComments = useAtomCommand(pullRequestEnvironment.threadComments, {
     reportFailure: false,
   });
   const getDiffFileContents = useAtomCommand(pullRequestEnvironment.diffFileContents);
@@ -631,8 +633,8 @@ export function PullRequestCodeTab({
   // Built here because the parsed diff only lives here, and built by the same function the
   // thread panel's own line selection uses — the gesture is the same one, so a second reading of
   // the hunks would only be a second place for it to drift.
-  const askAboutSelection = useCallback(
-    (anchor: DraftAnchor, question: string) => {
+  const finishSelection = useCallback(
+    (anchor: DraftAnchor, text: string, onFinish: (comment: ReviewCommentContext) => void) => {
       const file = files.find((candidate) => buildFileDiffRenderKey(candidate) === anchor.fileKey);
       const comment =
         file === undefined
@@ -644,14 +646,13 @@ export function PullRequestCodeTab({
               filePath: anchor.path,
               fileDiff: file,
               range: anchor.range,
-              text: question,
+              text,
             });
       setDraft(null);
       setSelectedLines(null);
-      if (comment === null || !onAskAboutSelection) return;
-      onAskAboutSelection({ comment, question });
+      if (comment !== null) onFinish(comment);
     },
-    [detail.number, files, onAskAboutSelection],
+    [detail.number, files],
   );
 
   // The viewer's SlotPortals memoizes each visible file's header/annotation portal on these
@@ -690,13 +691,12 @@ export function PullRequestCodeTab({
       // chevron follows it rather than recomputing the default here.
       const collapsed = item.collapsed === true;
       return (
-        <button
-          type="button"
+        <Button
+          size="icon-micro"
+          variant="ghost-muted"
           aria-expanded={!collapsed}
           aria-label={collapsed ? "Expand diff" : "Collapse diff"}
-          className={cn(
-            "mr-1 inline-flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground",
-          )}
+          className="mr-1 rounded hover:bg-transparent"
           onClick={(event) => {
             event.stopPropagation();
             toggleFile(item.id);
@@ -707,7 +707,7 @@ export function PullRequestCodeTab({
           ) : (
             <ChevronDownIcon className="size-4" />
           )}
-        </button>
+        </Button>
       );
     },
     [toggleFile],
@@ -802,6 +802,20 @@ export function PullRequestCodeTab({
         fixPending={pendingFinding === pullRequestFindingKey({ kind: "thread", thread })}
         fixLabel={fixFindingLabel}
         {...(onFixFinding ? { onFix: () => onFixFinding({ kind: "thread", thread }) } : {})}
+        onLoadMore={async (cursor): Promise<PullRequestThreadCommentsResult | null> => {
+          const result = await loadThreadComments({
+            environmentId,
+            input: { ...reference, threadId: thread.id, cursor },
+          });
+          if (result._tag === "Failure") {
+            toastManager.add({
+              type: "error",
+              title: "More comments could not be loaded",
+            });
+            return null;
+          }
+          return result.value;
+        }}
         onReply={(body) =>
           runThreadCommand("Reply could not be posted", () =>
             replyToThread({
@@ -837,6 +851,7 @@ export function PullRequestCodeTab({
       detail,
       environmentId,
       fixFindingLabel,
+      loadThreadComments,
       onRefresh,
       onFixFinding,
       pendingFinding,
@@ -868,13 +883,14 @@ export function PullRequestCodeTab({
             rangeLabel={`${draft.path}:${getReviewPositionAnchor(draft.position).line}`}
             text=""
             submitLabel="Add to review"
-            {...(onAskAboutSelection
+            {...(onAddToAgentSelection
               ? {
                   secondaryAction: {
-                    label: "Ask",
-                    icon: <SparklesIcon className="size-3" />,
-                    allowEmpty: true,
-                    onAction: (question: string) => askAboutSelection(draft, question),
+                    label: "Add to agent",
+                    onAction: (text: string) =>
+                      finishSelection(draft, text, (comment) =>
+                        onAddToAgentSelection({ comment, request: text }),
+                      ),
                   },
                 }
               : {})}
@@ -899,9 +915,9 @@ export function PullRequestCodeTab({
     ),
     [
       addComment,
-      askAboutSelection,
       draft,
-      onAskAboutSelection,
+      finishSelection,
+      onAddToAgentSelection,
       removeComment,
       renderThreadCard,
       reviewKey,
@@ -920,7 +936,7 @@ export function PullRequestCodeTab({
     review.verdicts.length === 0 ? null : (
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
         {reviewOpen ? (
-          <div className="chat-composer-glass pointer-events-auto absolute inset-x-3 bottom-3 rounded-xl border border-border/60 shadow-lg">
+          <div className="surface-glass pointer-events-auto absolute inset-x-3 bottom-3 rounded-xl border border-border/60 shadow-lg">
             <Button
               type="button"
               size="icon-sm"
@@ -944,10 +960,11 @@ export function PullRequestCodeTab({
         ) : (
           // Bottom-right, clear of the vertical scrollbar the diff view keeps to its own right
           // edge.
-          <button
-            type="button"
-            className="chat-composer-glass pointer-events-auto absolute bottom-3 right-4 flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1.5 text-xs font-medium shadow-lg"
+          <Button
+            className="pointer-events-auto absolute right-4 bottom-3 rounded-full shadow-lg"
             onClick={() => setReviewOpen(true)}
+            size="compact"
+            variant="glass"
           >
             <MessageSquareIcon className="size-3.5" />
             Review
@@ -956,7 +973,7 @@ export function PullRequestCodeTab({
                 {pendingComments.length}
               </span>
             ) : null}
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -980,7 +997,7 @@ export function PullRequestCodeTab({
    * diff API offers it.
    */
   const toolbar = (
-    <div className="surface-subheader justify-between gap-2 px-4 text-xs text-muted-foreground">
+    <div className="flex h-10 min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background px-4 text-xs text-muted-foreground">
       <div className="flex min-w-0 flex-1 items-center gap-3">
         {/* A host that reports no commits has nothing to scope by, and a dropdown whose only
             entry is the scope already showing is a control that does nothing. */}
@@ -1008,9 +1025,12 @@ export function PullRequestCodeTab({
                 >
                   {/* Headlines run long, and the abbreviated oid after one is what a reader
                       matches against the commit list on the host. */}
-                  <span className="min-w-0 truncate" title={entry.messageHeadline}>
-                    {entry.messageHeadline}
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<span className="min-w-0 truncate">{entry.messageHeadline}</span>}
+                    />
+                    <TooltipPopup side="top">{entry.messageHeadline}</TooltipPopup>
+                  </Tooltip>
                   <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
                     {entry.oid.slice(0, 7)}
                   </span>
@@ -1266,9 +1286,14 @@ export function PullRequestCodeTab({
               <div className="max-h-64 space-y-3 overflow-auto px-4 pb-3">
                 {[...orphanFiles].map(([path, threads]) => (
                   <div key={path}>
-                    <p className="truncate px-3 text-xs text-muted-foreground" title={path}>
-                      {path}
-                    </p>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <p className="truncate px-3 text-xs text-muted-foreground">{path}</p>
+                        }
+                      />
+                      <TooltipPopup side="top">{path}</TooltipPopup>
+                    </Tooltip>
                     <div className="mt-1 space-y-2">
                       {threads.map((thread) => (
                         <div key={thread.id}>
