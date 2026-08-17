@@ -35,12 +35,6 @@ macOS:
 brew install --cask t3-code
 ```
 
-Arch Linux:
-
-```bash
-yay -S t3code-bin
-```
-
 ## Providers
 
 T3 Code drives provider CLIs; it does not ship them. Install the CLI for each provider you want
