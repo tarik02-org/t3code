@@ -17,7 +17,10 @@
         rec {
           t3code-runtime = runtime;
           t3code-headless = pkgs.callPackage ./nix/headless.nix { inherit runtime; };
-          t3code-desktop = pkgs.callPackage ./nix/desktop.nix { inherit runtime; };
+          t3code-desktop = pkgs.callPackage ./nix/desktop.nix {
+            inherit runtime;
+            src = self;
+          };
 
           t3code = t3code-headless;
           default = t3code;

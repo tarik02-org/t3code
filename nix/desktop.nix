@@ -1,8 +1,10 @@
 {
   coreutils,
   electron_41,
+  imagemagick,
   lib,
   runtime,
+  src,
   stdenvNoCC,
   xdg-utils,
 }:
@@ -54,7 +56,9 @@ stdenvNoCC.mkDerivation {
     EOF
     chmod 755 "$out/bin/t3code"
 
-    install -Dm644 ${runtime}/libexec/t3code/apps/desktop/resources/icon.png \
+    ${imagemagick}/bin/magick \
+      ${src}/assets/prod/black-universal-1024.png \
+      -resize 512x512 \
       "$out/share/icons/hicolor/512x512/apps/t3code.png"
 
     cat > "$out/share/applications/t3code.desktop" <<EOF
