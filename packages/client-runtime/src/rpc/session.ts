@@ -1,4 +1,7 @@
 import { type ServerConfig, WS_METHODS } from "@t3tools/contracts";
+import { makeClientLogicalSocket } from "@t3tools/websocket-webrtc/client";
+import { WebRtcClientPlatform } from "@t3tools/websocket-webrtc/peer";
+import { prepareUpgradeUrl } from "@t3tools/websocket-webrtc/wire";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -67,6 +70,7 @@ function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionA
 
 export const make = Effect.gen(function* () {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
+  const webRtcPlatform = yield* WebRtcClientPlatform;
 
   const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {
     yield* Effect.annotateCurrentSpan({
@@ -92,9 +96,42 @@ export const make = Effect.gen(function* () {
         Effect.asVoid,
       ),
     });
-    const socketLayer = Socket.layerWebSocket(connection.socketUrl, {
-      openTimeout: SOCKET_OPEN_TIMEOUT,
-    }).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, webSocketConstructor)));
+    const preparedUpgrade =
+      webRtcPlatform === null
+        ? null
+        : yield* prepareUpgradeUrl(connection.socketUrl, webRtcPlatform).pipe(
+            Effect.catchTags({
+              WebRtcPeerError: (error) =>
+                Effect.logDebug("Could not prepare WebRTC upgrade capability.", { error }).pipe(
+                  Effect.as(null),
+                ),
+              WebRtcWireError: (error) =>
+                Effect.logDebug("Could not mark the WebSocket URL for WebRTC upgrade.", {
+                  error,
+                }).pipe(Effect.as(null)),
+            }),
+          );
+    const rawSocketLayer = Socket.layerWebSocket(
+      preparedUpgrade === null ? connection.socketUrl : preparedUpgrade.url,
+      {
+        openTimeout: SOCKET_OPEN_TIMEOUT,
+      },
+    ).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, webSocketConstructor)));
+    const socketLayer =
+      preparedUpgrade === null || webRtcPlatform === null
+        ? rawSocketLayer
+        : Layer.effect(
+            Socket.Socket,
+            Socket.Socket.pipe(
+              Effect.map((socket) =>
+                makeClientLogicalSocket({
+                  socket,
+                  nonce: preparedUpgrade.nonce,
+                  peerFactory: webRtcPlatform,
+                }),
+              ),
+            ),
+          ).pipe(Layer.provide(rawSocketLayer));
     const protocolLayer = Layer.effect(
       RpcClient.Protocol,
       RpcClient.makeProtocolSocket({

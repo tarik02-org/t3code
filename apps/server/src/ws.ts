@@ -60,6 +60,10 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { mapSocketUpgrade } from "@t3tools/websocket-webrtc/effect-http";
+import { makeServerLogicalSocket } from "@t3tools/websocket-webrtc/server";
+import { loadWeriftServerPeerFactory } from "@t3tools/websocket-webrtc/werift";
+import { readUpgradeNonce } from "@t3tools/websocket-webrtc/wire";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -2324,6 +2328,20 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             failEnvironmentInternal("internal_error", error),
           ),
         );
+        const upgradeNonce = readUpgradeNonce(new URL(request.url, "http://localhost"));
+        let rpcRequest = request;
+        if (upgradeNonce !== null) {
+          const peerFactory = yield* loadWeriftServerPeerFactory;
+          if (Option.isSome(peerFactory)) {
+            rpcRequest = mapSocketUpgrade(request, (socket) =>
+              makeServerLogicalSocket({
+                socket,
+                nonce: upgradeNonce,
+                peerFactory: peerFactory.value,
+              }),
+            );
+          }
+        }
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
@@ -2361,7 +2379,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         );
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
+          () =>
+            rpcWebSocketHttpEffect.pipe(
+              Effect.provideService(HttpServerRequest.HttpServerRequest, rpcRequest),
+            ),
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(

@@ -42,6 +42,7 @@
     "@t3tools/shared": "workspace:*",
     "@t3tools/tailscale": "workspace:*",
     "@t3tools/web": "workspace:*",
+    "@t3tools/websocket-webrtc": "workspace:*",
     "@types/bun": "1.3.14",
     "@types/node": "catalog:",
     "effect-acp": "workspace:*",

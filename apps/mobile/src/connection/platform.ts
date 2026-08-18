@@ -15,6 +15,17 @@ import {
   Wakeups,
 } from "@t3tools/client-runtime/connection";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
+import {
+  makeClientWebRtcPeerFactory,
+  type PlatformWebRtcPeerConnection,
+  type WebRtcSessionDescription,
+} from "@t3tools/websocket-webrtc/client";
+import {
+  type WebRtcDataChannelPort,
+  type WebRtcIceServer,
+  WebRtcClientPlatform,
+  WebRtcPeerError,
+} from "@t3tools/websocket-webrtc/peer";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -22,8 +33,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as ExpoCrypto from "expo-crypto";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
+import { RTCPeerConnection, RTCSessionDescription } from "react-native-webrtc";
 
 import { authClientMetadata } from "../lib/authClientMetadata";
 import * as Runtime from "../lib/runtime";
@@ -33,6 +46,125 @@ import { clearThreadOutboxEnvironment } from "../state/thread-outbox";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import { connectionStorageLayer } from "./storage";
+
+type MobileDataChannel = ReturnType<RTCPeerConnection["createDataChannel"]>;
+
+interface MobileDataChannelMessageEvent {
+  readonly data: string | ArrayBuffer | Blob;
+}
+
+interface MobileDataChannelEventTarget {
+  addEventListener(type: "message", listener: (event: MobileDataChannelMessageEvent) => void): void;
+  addEventListener(type: "close" | "error" | "open", listener: () => void): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: MobileDataChannelMessageEvent) => void,
+  ): void;
+  removeEventListener(type: "close" | "error" | "open", listener: () => void): void;
+}
+
+function mobileDataChannelPort(channel: MobileDataChannel): WebRtcDataChannelPort {
+  // react-native-webrtc implements EventTarget here, but its generated declaration omits it.
+  const eventChannel = channel as MobileDataChannel & MobileDataChannelEventTarget;
+  channel.binaryType = "arraybuffer";
+  return {
+    label: channel.label,
+    ordered: channel.ordered,
+    isOpen: () => channel.readyState === "open",
+    bufferedAmount: () => channel.bufferedAmount,
+    send: (data) => channel.send(data),
+    close: () => channel.close(),
+    onOpen: (listener) => {
+      eventChannel.addEventListener("open", listener);
+      return () => eventChannel.removeEventListener("open", listener);
+    },
+    onMessage: (listener) => {
+      const onMessage = (event: MobileDataChannelMessageEvent) => {
+        if (event.data instanceof ArrayBuffer) {
+          listener(new Uint8Array(event.data));
+          return;
+        }
+        if (typeof event.data === "string") {
+          listener(new TextEncoder().encode(event.data));
+          return;
+        }
+        void event.data
+          .arrayBuffer()
+          .then((buffer: ArrayBuffer) => listener(new Uint8Array(buffer)));
+      };
+      eventChannel.addEventListener("message", onMessage);
+      return () => eventChannel.removeEventListener("message", onMessage);
+    },
+    onClose: (listener) => {
+      eventChannel.addEventListener("close", listener);
+      return () => eventChannel.removeEventListener("close", listener);
+    },
+    onError: (listener) => {
+      const onError = () => listener(new Error("Mobile WebRTC DataChannel error."));
+      eventChannel.addEventListener("error", onError);
+      return () => eventChannel.removeEventListener("error", onError);
+    },
+  };
+}
+
+function mobileSessionDescription(
+  description: RTCSessionDescription,
+): WebRtcSessionDescription | null {
+  if (description.type !== "offer" && description.type !== "answer") {
+    return null;
+  }
+  return { type: description.type, sdp: description.sdp };
+}
+
+function createMobileRtcPeerConnection(
+  iceServers: ReadonlyArray<WebRtcIceServer>,
+): PlatformWebRtcPeerConnection {
+  const peer = new RTCPeerConnection({
+    iceServers: iceServers.map((server) => ({
+      urls: [...server.urls],
+      ...(server.username === undefined ? {} : { username: server.username }),
+      ...(server.credential === undefined ? {} : { credential: server.credential }),
+    })),
+  });
+  return {
+    createDataChannel: (label) =>
+      mobileDataChannelPort(peer.createDataChannel(label, { ordered: true })),
+    createOffer: () =>
+      peer
+        .createOffer()
+        .then((description) => mobileSessionDescription(new RTCSessionDescription(description))),
+    setLocalDescription: (description) =>
+      peer.setLocalDescription(new RTCSessionDescription(description)),
+    localDescription: () =>
+      peer.localDescription === null ? null : mobileSessionDescription(peer.localDescription),
+    setRemoteDescription: (description) =>
+      peer.setRemoteDescription(new RTCSessionDescription(description)),
+    iceGatheringState: () => peer.iceGatheringState,
+    onIceGatheringStateChange: (listener) => {
+      peer.onicegatheringstatechange = listener;
+      return () => {
+        peer.onicegatheringstatechange = null;
+      };
+    },
+    onConnectionStateChange: (listener) => {
+      const onStateChange = () => listener(peer.connectionState);
+      peer.onconnectionstatechange = onStateChange;
+      return () => {
+        peer.onconnectionstatechange = null;
+      };
+    },
+    close: () => peer.close(),
+  };
+}
+
+const mobileWebRtcClientPlatform = makeClientWebRtcPeerFactory({
+  createPeerConnection: createMobileRtcPeerConnection,
+  randomBytes: (size) =>
+    Effect.try({
+      try: () => ExpoCrypto.getRandomBytes(size),
+      catch: (cause) => new WebRtcPeerError({ stage: "create", cause }),
+    }),
+});
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
   if (state.isConnected === false) {
@@ -191,6 +323,7 @@ const capabilitiesLayer = Layer.effectContext(
           disconnect: () => Effect.void,
         }),
       ),
+      Context.add(WebRtcClientPlatform, mobileWebRtcClientPlatform),
     );
   }),
 );
