@@ -51,7 +51,7 @@ jobs:
             {
               echo 'The Nix pnpm dependency hash is stale.'
               echo
-              echo "A maintainer can apply this change by commenting \`/apply-nix-fix\`. Fork pull requests must allow maintainer edits."
+              echo "The PR author or a maintainer can apply this change by commenting \`/apply-nix-fix\`. Fork pull requests must allow maintainer edits."
               echo
               echo '```diff'
               git diff -- nix/package.nix
@@ -88,12 +88,14 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
-      github.event.comment.body == '/apply-nix-fix'
+      github.event.issue.state == 'open' &&
+      github.event.comment.body == '/apply-nix-fix' &&
+      (github.actor == github.event.issue.user.login ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      issues: write
       pull-requests: read
     steps:
       - id: pull_request
@@ -101,57 +103,20 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const actor = context.payload.comment.user.login;
-            const allowedPermissions = new Set(["admin", "maintain", "push", "write"]);
-            const { data: collaborator } =
-              await github.rest.repos.getCollaboratorPermissionLevel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                username: actor,
-              });
-
-            if (!allowedPermissions.has(collaborator.permission)) {
-              core.setFailed(`@${actor} does not have write access to this repository.`);
-              return;
-            }
-
             const { data: pullRequest } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
+            const headRepository = pullRequest.head.repo.full_name;
 
-            if (pullRequest.state !== "open") {
-              core.setFailed(`Pull request #${pullRequest.number} is not open.`);
-              return;
-            }
-
-            const headRepository = pullRequest.head.repo?.full_name;
-            if (!headRepository) {
-              core.setFailed(`Pull request #${pullRequest.number} no longer has a head repository.`);
-              return;
-            }
-
-            if (
-              headRepository !== context.payload.repository.full_name &&
-              !pullRequest.maintainer_can_modify
-            ) {
-              core.setFailed(
-                `Pull request #${pullRequest.number} does not allow maintainer edits.`,
-              );
-              return;
+            if (headRepository !== context.payload.repository.full_name && !pullRequest.maintainer_can_modify) {
+              throw new Error(`Pull request #${pullRequest.number} does not allow maintainer edits.`);
             }
 
             core.setOutput("head-repository", headRepository);
             core.setOutput("head-ref", pullRequest.head.ref);
             core.setOutput("head-sha", pullRequest.head.sha);
-
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: "eyes",
-            });
 
       - name: Checkout pull request
         uses: actions/checkout@v6
@@ -179,6 +144,7 @@ jobs:
             echo 'The Nix pnpm dependency hash is already current.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            git add -- nix/package.nix
           fi
 
       # PR-controlled code is inspected above. Mint the write token only after that work finishes.
@@ -191,99 +157,25 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - id: commit
-        name: Commit dependency hash fix
+      - name: Commit dependency hash fix
         if: steps.update.outputs.changed == 'true'
-        uses: actions/github-script@v8
         env:
           APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
           HEAD_REF: ${{ steps.pull_request.outputs.head-ref }}
           HEAD_REPOSITORY: ${{ steps.pull_request.outputs.head-repository }}
-          HEAD_SHA: ${{ steps.pull_request.outputs.head-sha }}
-        with:
-          github-token: ${{ steps.app_token.outputs.token }}
-          script: |
-            const { readFile } = require("node:fs/promises");
+        shell: bash
+        run: |
+          bot_name="${APP_SLUG}[bot]"
+          bot_id="$(gh api "/users/${bot_name}" --jq '.id')"
 
-            const [owner, repo, ...extraParts] = process.env.HEAD_REPOSITORY.split("/");
-            if (!owner || !repo || extraParts.length > 0) {
-              throw new Error(`Invalid head repository: ${process.env.HEAD_REPOSITORY}`);
-            }
-
-            const headRef = process.env.HEAD_REF;
-            const headSha = process.env.HEAD_SHA;
-            const { data: currentRef } = await github.rest.git.getRef({
-              owner,
-              repo,
-              ref: `heads/${headRef}`,
-            });
-
-            if (currentRef.object.sha !== headSha) {
-              throw new Error("The pull request branch changed while the hash fix was running. Try again.");
-            }
-
-            const { data: headCommit } = await github.rest.git.getCommit({
-              owner,
-              repo,
-              commit_sha: headSha,
-            });
-            const packageNix = await readFile("nix/package.nix", "utf8");
-            const { data: tree } = await github.rest.git.createTree({
-              owner,
-              repo,
-              base_tree: headCommit.tree.sha,
-              tree: [
-                {
-                  path: "nix/package.nix",
-                  mode: "100644",
-                  type: "blob",
-                  content: packageNix,
-                },
-              ],
-            });
-
-            const botLogin = `${process.env.APP_SLUG}[bot]`;
-            const { data: bot } = await github.rest.users.getByUsername({
-              username: botLogin,
-            });
-            const identity = {
-              name: botLogin,
-              email: `${bot.id}+${botLogin}@users.noreply.github.com`,
-            };
-            const { data: commit } = await github.rest.git.createCommit({
-              owner,
-              repo,
-              message: "fix(nix): update pnpm dependency hash",
-              tree: tree.sha,
-              parents: [headSha],
-              author: identity,
-              committer: identity,
-            });
-
-            await github.rest.git.updateRef({
-              owner,
-              repo,
-              ref: `heads/${headRef}`,
-              sha: commit.sha,
-              force: false,
-            });
-
-            core.setOutput("url", `https://github.com/${owner}/${repo}/commit/${commit.sha}`);
-            await core.summary
-              .addLink("Committed the Nix pnpm dependency hash fix", `https://github.com/${owner}/${repo}/commit/${commit.sha}`)
-              .write();
-
-      - name: Acknowledge command
-        if: success()
-        uses: actions/github-script@v8
-        with:
-          script: |
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: "+1",
-            });
+          git config user.name "$bot_name"
+          git config user.email "${bot_id}+${bot_name}@users.noreply.github.com"
+          git -c core.hooksPath=/dev/null -c commit.gpgsign=false \
+            commit -m 'fix(nix): update pnpm dependency hash'
+          git -c core.hooksPath=/dev/null \
+            push "https://x-access-token:${GH_TOKEN}@github.com/${HEAD_REPOSITORY}.git" \
+            "HEAD:refs/heads/${HEAD_REF}"
 
   update:
     name: Check pnpm dependency hash
