@@ -222,7 +222,9 @@ function makeServerDriver(options: {
         case "abort": {
           const attempt = currentAttempt;
           return source === "websocket" && attempt?.attemptId === message.attemptId
-            ? disposeAttempt(attempt)
+            ? options.session
+                .fallbackToWebSocket(attempt.attemptId)
+                .pipe(Effect.andThen(disposeAttempt(attempt)))
             : Effect.void;
         }
         case "ack":

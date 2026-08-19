@@ -29,12 +29,14 @@
     }
   },
   "scripts": {
+    "test": "vp test run",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "vite-plus": "catalog:"
   },
