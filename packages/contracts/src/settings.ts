@@ -18,7 +18,11 @@ import {
   PreviewViewportSetting,
   PreviewZoomFactor,
 } from "./preview.ts";
-import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  ProviderInstanceConfig,
+  ProviderInstanceId,
+  type ProviderDriverKind,
+} from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -413,8 +417,9 @@ export type ClaudeSettings = typeof ClaudeSettings.Type;
 
 export const CursorSettings = makeProviderSettingsSchema(
   {
+    // Enabled by default alongside Codex and Claude Agent.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("cursor-agent").pipe(
@@ -448,8 +453,10 @@ export type CursorSettings = typeof CursorSettings.Type;
 
 export const GrokSettings = makeProviderSettingsSchema(
   {
+    // Off by default (like Cursor and OpenCode): the binding is not yet
+    // stable enough to probe on every install. Users opt in from Settings.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("grok").pipe(
@@ -472,8 +479,10 @@ export type GrokSettings = typeof GrokSettings.Type;
 
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
+    // Off by default (like Cursor and Grok): the binding is not yet stable
+    // enough to probe on every install. Users opt in from Settings.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("opencode").pipe(
@@ -594,6 +603,18 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Whether agents may drive the in-app preview browser. Turning this off
+   * withholds the MCP credential, so the `t3-code` server (and with it every
+   * `preview_*` tool) is never attached to a provider session, and the prompt
+   * text describing those tools is dropped along with them. The user's own
+   * browser panel is unaffected — this gates agent access only.
+   *
+   * Server-authoritative rather than client-local: tool injection and prompt
+   * construction both happen on the server, and the answer must not differ
+   * between a desktop window and a phone attached to the same server.
+   */
+  enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -664,6 +685,50 @@ export const ServerSettings = Schema.Struct({
 export type ServerSettings = typeof ServerSettings.Type;
 
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({});
+
+/**
+ * Read the legacy `enabled` flag embedded in a provider instance config
+ * blob. The envelope-level `ProviderInstanceConfig.enabled` is the single
+ * flag going forward; this reader exists for legacy `providers.<kind>`
+ * blobs and old settings files that still carry the flag in-config.
+ */
+export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | undefined => {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    return undefined;
+  }
+  const enabled = (config as { readonly enabled?: unknown }).enabled;
+  return typeof enabled === "boolean" ? enabled : undefined;
+};
+
+/**
+ * Default enabled state for a built-in driver when neither the envelope nor
+ * the config blob carries a flag. Derived from the driver's settings schema
+ * through `DEFAULT_SERVER_SETTINGS`, so the schema's decoding default stays
+ * the single source of truth. Unknown (fork) drivers default to enabled.
+ */
+export const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean => {
+  const legacyDefaults = DEFAULT_SERVER_SETTINGS.providers as Record<
+    string,
+    { readonly enabled?: boolean } | undefined
+  >;
+  return legacyDefaults[driver]?.enabled ?? true;
+};
+
+/**
+ * Resolve whether a configured provider instance is enabled. An explicit
+ * false on either the envelope or the in-config flag wins (most
+ * restrictive), so a user's disable is never silently undone by the other
+ * flag. Otherwise: envelope, then config, then the driver's default.
+ */
+export const resolveProviderInstanceEnabled = (
+  instance: Pick<ProviderInstanceConfig, "driver" | "enabled" | "config">,
+): boolean => {
+  const configEnabled = providerInstanceConfigEnabledFlag(instance.config);
+  if (instance.enabled === false || configEnabled === false) {
+    return false;
+  }
+  return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
+};
 
 export const ServerSettingsOperation = Schema.Literals([
   "normalize",
@@ -757,6 +822,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
