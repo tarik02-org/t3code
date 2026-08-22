@@ -74,14 +74,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: server 1/2
+          - shard: server 1/3
             filters: --filter t3
-            args: --shard=1/2
+            args: --shard=1/3
             artifact_suffix: server-1
-          - shard: server 2/2
+          - shard: server 2/3
             filters: --filter t3
-            args: --shard=2/2
+            args: --shard=2/3
             artifact_suffix: server-2
+          - shard: server 3/3
+            filters: --filter t3
+            args: --shard=3/3
+            artifact_suffix: server-3
           - shard: web
             filters: --filter @t3tools/web
           - shard: mobile
