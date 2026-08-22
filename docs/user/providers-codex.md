@@ -40,6 +40,24 @@ When a Codex tool needs access to an app such as Safari, T3 Code shows the app n
 approval. You can approve, decline, or cancel the request from the desktop app, web app, or mobile
 app. Some tools also offer approval for the current session or permanent approval.
 
+## Manage A Codex Goal
+
+After starting a Codex thread, use `/goal` in the composer to manage that thread's native Codex
+Goal:
+
+```text
+/goal create <objective>
+/goal status
+/goal steer <updated objective>
+/goal pause
+/goal resume
+/goal clear
+```
+
+`/goal <objective>` is shorthand for create, and `/goal reset` is an alias for clear. Goal status
+and usage come directly from Codex and stay synchronized when Codex updates them in the background.
+Goal commands are only available on Codex threads.
+
 ## I Want Work And Personal Codex Accounts
 
 Use one real Codex home and one shadow home.
