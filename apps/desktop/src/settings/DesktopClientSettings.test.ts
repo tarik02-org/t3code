@@ -36,6 +36,7 @@ const clientSettings: ClientSettings = {
   fontSmoothing: true,
   glassOpacity: 80,
   progressiveThreadHistoryEnabled: false,
+  webRtcUpgradeEnabled: true,
   planModeEnabled: false,
   providerModelPreferences: {},
   sidebarAutoSettleAfterDays: 3,
