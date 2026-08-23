@@ -1507,6 +1507,7 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
   const feedbackUploadsInFlightRef = useRef(new Set<string>());
+  const goalCommandsInFlightRef = useRef(new Set<string>());
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -5287,7 +5288,8 @@ function ChatViewContent(props: ChatViewProps) {
       isConnecting ||
       threadDetailLoading ||
       sendInFlightRef.current ||
-      feedbackUploadsInFlightRef.current.has(routeThreadKey)
+      feedbackUploadsInFlightRef.current.has(routeThreadKey) ||
+      goalCommandsInFlightRef.current.has(routeThreadKey)
     ) {
       notifyDirectAnnotationAttached();
       return;
@@ -5496,6 +5498,7 @@ function ChatViewContent(props: ChatViewProps) {
 
       const target = { environmentId, input: { threadId: activeThreadId } };
       const submittedThreadKey = activeThreadKey;
+      const submittedGoalCommandThreadKey = routeThreadKey;
       const stillOnSubmittedThread = () => activeThreadKeyRef.current === submittedThreadKey;
       const clearSubmittedGoalCommandDraft = () => {
         if (!stillOnSubmittedThread() || promptRef.current !== promptForSend) return;
@@ -5503,7 +5506,7 @@ function ChatViewContent(props: ChatViewProps) {
         clearComposerDraftContent(composerDraftTarget);
         composerRef.current?.resetCursorState();
       };
-      sendInFlightRef.current = true;
+      goalCommandsInFlightRef.current.add(submittedGoalCommandThreadKey);
       try {
         if (codexGoalCommand.action === "status") {
           const result = await getCodexGoal(target);
@@ -5565,7 +5568,7 @@ function ChatViewContent(props: ChatViewProps) {
         clearSubmittedGoalCommandDraft();
         return;
       } finally {
-        sendInFlightRef.current = false;
+        goalCommandsInFlightRef.current.delete(submittedGoalCommandThreadKey);
       }
     }
     if (!directAnnotation && showPlanFollowUpPrompt && activeProposedPlan) {
