@@ -127,6 +127,8 @@ function LocalSettingsRouteScreen() {
 
         <GeneralSettingsSection />
 
+        <ExperimentalSettingsSection />
+
         <SettingsSection title="Appearance">
           <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
         </SettingsSection>
@@ -513,6 +515,8 @@ function ConfiguredSettingsRouteScreen() {
 
         <GeneralSettingsSection />
 
+        <ExperimentalSettingsSection />
+
         <SettingsSection title="Appearance">
           <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
         </SettingsSection>
@@ -544,6 +548,26 @@ function GeneralSettingsSection() {
         onValueChange={(value) => savePreferences({ autoSettleOnMerge: value })}
       />
       <SettingsRow icon="chart.bar.xaxis" label="Usage" target="SettingsUsage" />
+    </SettingsSection>
+  );
+}
+
+function ExperimentalSettingsSection() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const webRtcUpgradeEnabled =
+    !AsyncResult.isSuccess(preferencesResult) ||
+    preferencesResult.value.webRtcUpgradeEnabled !== false;
+
+  return (
+    <SettingsSection title="Experimental">
+      <SettingsSwitchRow
+        icon="antenna.radiowaves.left.and.right"
+        label="WebRTC transport"
+        subtitle="Attempts to upgrade RPC from WebSocket and reconnects environments when changed."
+        value={webRtcUpgradeEnabled}
+        onValueChange={(value) => savePreferences({ webRtcUpgradeEnabled: value })}
+      />
     </SettingsSection>
   );
 }

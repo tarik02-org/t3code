@@ -24,6 +24,18 @@ import {
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
+import {
+  makeClientWebRtcPeerFactory,
+  type PlatformWebRtcPeerConnection,
+  type WebRtcSessionDescription,
+} from "@t3tools/websocket-webrtc/client";
+import {
+  type WebRtcDataChannelPort,
+  type WebRtcIceServer,
+  WebRtcClientPlatform,
+  WebRtcPeerError,
+  WebRtcUpgradePreference,
+} from "@t3tools/websocket-webrtc/peer";
 import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
 import {
   AuthStandardClientScopes,
@@ -41,6 +53,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/unstable/http";
+import { AtomRegistry } from "effect/unstable/reactivity";
 
 import { APP_VERSION } from "../branding";
 import { readDesktopPrimaryBearerToken } from "../environments/primary/desktopAuth";
@@ -53,6 +66,7 @@ import { clearComposerDraftsEnvironment } from "../composerDraftStore";
 import { isHostedStaticApp } from "../hostedPairing";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { acknowledgeRpcRequest, trackRpcRequestSent } from "../rpc/requestLatencyState";
+import { webRtcUpgradeEnabledAtom } from "../state/clientSettings";
 import {
   desktopLocalConnectionId,
   readDesktopSecondaryBootstrapsResult,
@@ -61,6 +75,94 @@ import {
 import { connectionStorageLayer } from "./storage";
 
 let nextObservedRpcRequestId = 0;
+
+function webDataChannelPort(channel: RTCDataChannel): WebRtcDataChannelPort {
+  channel.binaryType = "arraybuffer";
+  return {
+    label: channel.label,
+    ordered: channel.ordered,
+    isOpen: () => channel.readyState === "open",
+    bufferedAmount: () => channel.bufferedAmount,
+    send: (data) => channel.send(Uint8Array.from(data)),
+    close: () => channel.close(),
+    onOpen: (listener) => {
+      channel.addEventListener("open", listener);
+      return () => channel.removeEventListener("open", listener);
+    },
+    onMessage: (listener) => {
+      const onMessage = (event: MessageEvent<ArrayBuffer>) => {
+        listener(new Uint8Array(event.data));
+      };
+      channel.addEventListener("message", onMessage);
+      return () => channel.removeEventListener("message", onMessage);
+    },
+    onClose: (listener) => {
+      channel.addEventListener("close", listener);
+      return () => channel.removeEventListener("close", listener);
+    },
+    onError: (listener) => {
+      const onError = () => listener(new Error("Browser WebRTC DataChannel error."));
+      channel.addEventListener("error", onError);
+      return () => channel.removeEventListener("error", onError);
+    },
+  };
+}
+
+function webSessionDescription(
+  description: RTCSessionDescription | RTCSessionDescriptionInit,
+): WebRtcSessionDescription | null {
+  if (
+    (description.type !== "offer" && description.type !== "answer") ||
+    description.sdp === undefined
+  ) {
+    return null;
+  }
+  return { type: description.type, sdp: description.sdp };
+}
+
+function createWebRtcPeerConnection(
+  iceServers: ReadonlyArray<WebRtcIceServer>,
+): PlatformWebRtcPeerConnection {
+  const peer = new RTCPeerConnection({
+    iceServers: iceServers.map((server) => ({
+      urls: [...server.urls],
+      ...(server.username === undefined ? {} : { username: server.username }),
+      ...(server.credential === undefined ? {} : { credential: server.credential }),
+    })),
+  });
+  return {
+    createDataChannel: (label) =>
+      webDataChannelPort(peer.createDataChannel(label, { ordered: true })),
+    createOffer: () => peer.createOffer().then(webSessionDescription),
+    setLocalDescription: (description) => peer.setLocalDescription(description),
+    localDescription: () =>
+      peer.localDescription === null ? null : webSessionDescription(peer.localDescription),
+    setRemoteDescription: (description) => peer.setRemoteDescription(description),
+    iceGatheringState: () => peer.iceGatheringState,
+    onIceGatheringStateChange: (listener) => {
+      peer.addEventListener("icegatheringstatechange", listener);
+      return () => peer.removeEventListener("icegatheringstatechange", listener);
+    },
+    onConnectionStateChange: (listener) => {
+      const onStateChange = () => listener(peer.connectionState);
+      peer.addEventListener("connectionstatechange", onStateChange);
+      return () => peer.removeEventListener("connectionstatechange", onStateChange);
+    },
+    close: () => peer.close(),
+  };
+}
+
+const webRtcClientPlatform =
+  typeof RTCPeerConnection === "undefined"
+    ? null
+    : makeClientWebRtcPeerFactory({
+        createPeerConnection: createWebRtcPeerConnection,
+        randomBytes: (size) =>
+          Effect.try({
+            try: () => globalThis.crypto.getRandomValues(new Uint8Array(size)),
+            catch: (cause) => new WebRtcPeerError({ stage: "create", cause }),
+          }),
+      });
 
 function currentNetworkStatus(): "unknown" | "offline" | "online" {
   if (typeof navigator === "undefined") {
@@ -108,8 +210,15 @@ const wakeupsLayer = Wakeups.layer({
           }),
       ).pipe(Effect.asVoid),
     ),
-    managedRelayAccountChanges(appAtomRegistry).pipe(
-      Stream.map(() => "credentials-changed" as const),
+    Stream.merge(
+      managedRelayAccountChanges(appAtomRegistry).pipe(
+        Stream.map(() => "credentials-changed" as const),
+      ),
+      AtomRegistry.toStream(appAtomRegistry, webRtcUpgradeEnabledAtom).pipe(
+        Stream.changes,
+        Stream.drop(1),
+        Stream.map(() => "webrtc-preference-changed" as const),
+      ),
     ),
   ),
 });
@@ -282,6 +391,10 @@ const capabilitiesLayer = Layer.effectContext(
       Context.add(RelayDeviceIdentity, identity),
       Context.add(ClientPresentation, presentation),
       Context.add(SshEnvironmentGateway, ssh),
+      Context.add(WebRtcClientPlatform, webRtcClientPlatform),
+      Context.add(WebRtcUpgradePreference, {
+        isEnabled: Effect.sync(() => appAtomRegistry.get(webRtcUpgradeEnabledAtom)),
+      }),
     );
   }),
 );

@@ -159,6 +159,7 @@
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
+    "@t3tools/websocket-webrtc": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

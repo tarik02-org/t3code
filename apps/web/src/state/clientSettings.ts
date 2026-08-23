@@ -4,3 +4,8 @@ export const progressiveThreadHistoryEnabledAtom = Atom.make(false).pipe(
   Atom.keepAlive,
   Atom.withLabel("web-progressive-thread-history-enabled"),
 );
+
+export const webRtcUpgradeEnabledAtom = Atom.make(true).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("web-webrtc-upgrade-enabled"),
+);

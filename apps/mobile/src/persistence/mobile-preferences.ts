@@ -43,6 +43,7 @@ export interface Preferences {
   readonly legacyThreadListEnabled?: boolean;
   /** Device-local counterpart of desktop's `planModeEnabled` legacy flag. */
   readonly planModeEnabled?: boolean;
+  readonly webRtcUpgradeEnabled?: boolean;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -102,6 +103,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     progressiveThreadHistoryEnabled?: boolean;
     legacyThreadListEnabled?: boolean;
     planModeEnabled?: boolean;
+    webRtcUpgradeEnabled?: boolean;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -174,6 +176,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.planModeEnabled === "boolean") {
     preferences.planModeEnabled = parsed.planModeEnabled;
+  }
+  if (typeof parsed.webRtcUpgradeEnabled === "boolean") {
+    preferences.webRtcUpgradeEnabled = parsed.webRtcUpgradeEnabled;
   }
   return preferences;
 }

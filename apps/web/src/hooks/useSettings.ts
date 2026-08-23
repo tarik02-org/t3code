@@ -27,7 +27,10 @@ import {
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { ensureLocalApi } from "~/localApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
-import { progressiveThreadHistoryEnabledAtom } from "~/state/clientSettings";
+import {
+  progressiveThreadHistoryEnabledAtom,
+  webRtcUpgradeEnabledAtom,
+} from "~/state/clientSettings";
 import {
   getThemeDefinition,
   getThemePreviewSidebarArtwork,
@@ -74,6 +77,7 @@ function replaceClientSettingsSnapshot(settings: ClientSettings): void {
     progressiveThreadHistoryEnabledAtom,
     settings.progressiveThreadHistoryEnabled,
   );
+  appAtomRegistry.set(webRtcUpgradeEnabledAtom, settings.webRtcUpgradeEnabled);
   emitClientSettingsChange();
 }
 
@@ -371,6 +375,7 @@ export function __resetClientSettingsPersistenceForTests(): void {
     progressiveThreadHistoryEnabledAtom,
     DEFAULT_CLIENT_SETTINGS.progressiveThreadHistoryEnabled,
   );
+  appAtomRegistry.set(webRtcUpgradeEnabledAtom, DEFAULT_CLIENT_SETTINGS.webRtcUpgradeEnabled);
   clientSettingsHydrated = false;
   clientSettingsHydrationPromise = null;
   clientSettingsListeners.clear();
@@ -384,6 +389,7 @@ export function __setClientSettingsForTests(settings: ClientSettings): void {
     progressiveThreadHistoryEnabledAtom,
     settings.progressiveThreadHistoryEnabled,
   );
+  appAtomRegistry.set(webRtcUpgradeEnabledAtom, settings.webRtcUpgradeEnabled);
   clientSettingsHydrated = true;
   clientSettingsHydrationPromise = null;
 }

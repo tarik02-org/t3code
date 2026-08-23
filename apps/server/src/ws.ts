@@ -62,6 +62,10 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { mapSocketUpgrade } from "@t3tools/websocket-webrtc/effect-http";
+import { makeServerLogicalSocket } from "@t3tools/websocket-webrtc/server";
+import { loadWeriftServerPeerFactory } from "@t3tools/websocket-webrtc/werift";
+import { readUpgradeNonce } from "@t3tools/websocket-webrtc/wire";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -127,6 +131,7 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import * as WebRtcIceServers from "./webrtc/WebRtcIceServerProvider.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
@@ -2389,6 +2394,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const webRtcIceServers = yield* WebRtcIceServers.WebRtcIceServerProvider;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2408,6 +2414,22 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const clientOrigin = readClientConnectionOrigin(request);
         yield* sessions.recordClientConnection(session.sessionId, clientOrigin);
         yield* analytics.record("client.connected", clientOriginAnalyticsProps(clientOrigin));
+        const upgradeNonce = readUpgradeNonce(new URL(request.url, "http://localhost"));
+        let rpcRequest = request;
+        if (upgradeNonce !== null) {
+          const peerFactory = yield* loadWeriftServerPeerFactory;
+          if (Option.isSome(peerFactory)) {
+            const iceServers = yield* webRtcIceServers.getIceServers;
+            rpcRequest = mapSocketUpgrade(request, (socket) =>
+              makeServerLogicalSocket({
+                socket,
+                nonce: upgradeNonce,
+                peerFactory: peerFactory.value,
+                iceServers,
+              }),
+            );
+          }
+        }
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
@@ -2445,7 +2467,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         );
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
+          () =>
+            rpcWebSocketHttpEffect.pipe(
+              Effect.provideService(HttpServerRequest.HttpServerRequest, rpcRequest),
+            ),
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(

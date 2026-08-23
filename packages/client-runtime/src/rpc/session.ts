@@ -1,10 +1,19 @@
 import { type ServerConfig, WS_METHODS } from "@t3tools/contracts";
+import { makeClientLogicalSocket } from "@t3tools/websocket-webrtc/client";
+import {
+  WebRtcClientPlatform,
+  type WebRtcTransportKind,
+  WebRtcUpgradePreference,
+} from "@t3tools/websocket-webrtc/peer";
+import { prepareUpgradeUrl } from "@t3tools/websocket-webrtc/wire";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
@@ -22,12 +31,16 @@ import {
 
 const SOCKET_OPEN_TIMEOUT = "15 seconds";
 
+export type RpcTransport = WebRtcTransportKind;
+
 export interface RpcSession {
   readonly client: WsRpcProtocolClient;
   readonly initialConfig: Effect.Effect<ServerConfig, ConnectionAttemptError>;
   readonly ready: Effect.Effect<void, ConnectionAttemptError>;
   readonly probe: Effect.Effect<void, ConnectionAttemptError>;
   readonly closed: Effect.Effect<never, ConnectionTransientError>;
+  readonly transport?: RpcTransport;
+  readonly transportChanges?: Stream.Stream<RpcTransport>;
 }
 
 export class RpcSessionFactory extends Context.Service<
@@ -67,6 +80,8 @@ function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionA
 
 export const make = Effect.gen(function* () {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
+  const webRtcPlatform = yield* WebRtcClientPlatform;
+  const webRtcUpgradePreference = yield* WebRtcUpgradePreference;
 
   const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {
     yield* Effect.annotateCurrentSpan({
@@ -75,6 +90,9 @@ export const make = Effect.gen(function* () {
 
     const connected = yield* Deferred.make<void>();
     const disconnected = yield* Deferred.make<never, ConnectionTransientError>();
+    const transport = yield* SubscriptionRef.make<RpcTransport>("websocket");
+    const webRtcUpgradeEnabled =
+      webRtcPlatform === null ? false : yield* webRtcUpgradePreference.isEnabled;
     const hooks = RpcClient.ConnectionHooks.of({
       onConnect: Deferred.succeed(connected, undefined).pipe(Effect.asVoid),
       onDisconnect: Deferred.isDone(connected).pipe(
@@ -92,9 +110,44 @@ export const make = Effect.gen(function* () {
         Effect.asVoid,
       ),
     });
-    const socketLayer = Socket.layerWebSocket(connection.socketUrl, {
-      openTimeout: SOCKET_OPEN_TIMEOUT,
-    }).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, webSocketConstructor)));
+    const preparedUpgrade =
+      !webRtcUpgradeEnabled || webRtcPlatform === null
+        ? null
+        : yield* prepareUpgradeUrl(connection.socketUrl, webRtcPlatform).pipe(
+            Effect.catchTags({
+              WebRtcPeerError: (error) =>
+                Effect.logDebug("Could not prepare WebRTC upgrade capability.", { error }).pipe(
+                  Effect.as(null),
+                ),
+              WebRtcWireError: (error) =>
+                Effect.logDebug("Could not mark the WebSocket URL for WebRTC upgrade.", {
+                  error,
+                }).pipe(Effect.as(null)),
+            }),
+          );
+    const rawSocketLayer = Socket.layerWebSocket(
+      preparedUpgrade === null ? connection.socketUrl : preparedUpgrade.url,
+      {
+        openTimeout: SOCKET_OPEN_TIMEOUT,
+      },
+    ).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, webSocketConstructor)));
+    const socketLayer =
+      preparedUpgrade === null || webRtcPlatform === null
+        ? rawSocketLayer
+        : Layer.effect(
+            Socket.Socket,
+            Socket.Socket.pipe(
+              Effect.map((socket) =>
+                makeClientLogicalSocket({
+                  socket,
+                  nonce: preparedUpgrade.nonce,
+                  peerFactory: webRtcPlatform,
+                  onTransportChange: (nextTransport) =>
+                    SubscriptionRef.set(transport, nextTransport),
+                }),
+              ),
+            ),
+          ).pipe(Layer.provide(rawSocketLayer));
     const protocolLayer = Layer.effect(
       RpcClient.Protocol,
       RpcClient.makeProtocolSocket({
@@ -141,6 +194,10 @@ export const make = Effect.gen(function* () {
       ),
       probe,
       closed: Deferred.await(disconnected),
+      get transport() {
+        return SubscriptionRef.getUnsafe(transport);
+      },
+      transportChanges: SubscriptionRef.changes(transport),
     } satisfies RpcSession;
   });
 

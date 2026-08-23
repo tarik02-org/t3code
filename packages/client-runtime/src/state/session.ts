@@ -1,6 +1,8 @@
 import type { AuthSessionState, EnvironmentId, ServerConfig } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { HttpClient } from "effect/unstable/http";
@@ -13,6 +15,7 @@ import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeEnvironmentHttpRequest, makeEnvironmentHttpApiClient } from "../rpc/http.ts";
+import type { RpcTransport } from "../rpc/session.ts";
 import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 
@@ -122,6 +125,75 @@ export function createEnvironmentSessionAtoms<R, E>(
     ).pipe(Atom.withLabel(`environment-prepared-connection:${environmentId}`)),
   );
 
+  const rpcTransportAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(
+      followStreamInEnvironment(
+        environmentId,
+        Stream.unwrap(
+          EnvironmentSupervisor.pipe(
+            Effect.map((supervisor) =>
+              SubscriptionRef.changes(supervisor.session).pipe(
+                Stream.switchMap(
+                  Option.match({
+                    onNone: () => Stream.succeed<RpcTransport | null>(null),
+                    onSome: (session) =>
+                      session.transportChanges ??
+                      Stream.succeed<RpcTransport>(session.transport ?? "websocket"),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      { initialValue: null as RpcTransport | null },
+    ),
+  );
+
+  const rpcTransportValueAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get): RpcTransport | null =>
+        Option.getOrNull(AsyncResult.value(get(rpcTransportAtom(environmentId)))) ?? null,
+    ).pipe(Atom.withLabel(`environment-rpc-transport:${environmentId}`)),
+  );
+
+  const rpcRoundTripTimeAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(
+      followStreamInEnvironment(
+        environmentId,
+        Stream.unwrap(
+          EnvironmentSupervisor.pipe(
+            Effect.map((supervisor) =>
+              SubscriptionRef.changes(supervisor.session).pipe(
+                Stream.switchMap(
+                  Option.match({
+                    onNone: () => Stream.succeed<number | null>(null),
+                    onSome: (session) =>
+                      Stream.fromEffect(
+                        Effect.timed(session.probe).pipe(
+                          Effect.map(([duration]) => Duration.toMillis(duration)),
+                          Effect.option,
+                          Effect.map(Option.getOrNull),
+                        ),
+                      ).pipe(Stream.repeat(Schedule.spaced("2 seconds"))),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      { initialValue: null as number | null },
+    ),
+  );
+
+  const rpcRoundTripTimeValueAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get): number | null =>
+        Option.getOrNull(AsyncResult.value(get(rpcRoundTripTimeAtom(environmentId)))) ?? null,
+    ).pipe(Atom.withLabel(`environment-rpc-round-trip-time:${environmentId}`)),
+  );
+
   // Keyed on the prepared connection's identity: a reconnect (new credential,
   // new base URL) swaps the prepared value, which re-runs the fetch, so scope
   // changes from re-pairing are picked up without an explicit refresh.
@@ -156,6 +228,10 @@ export function createEnvironmentSessionAtoms<R, E>(
     initialConfigValueAtom,
     preparedConnectionAtom,
     preparedConnectionValueAtom,
+    rpcTransportAtom,
+    rpcTransportValueAtom,
+    rpcRoundTripTimeAtom,
+    rpcRoundTripTimeValueAtom,
     sessionStateAtom,
     sessionStateValueAtom,
   };

@@ -1,0 +1,46 @@
+{
+  "name": "@t3tools/websocket-webrtc",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./client": {
+      "types": "./src/client.ts",
+      "import": "./src/client.ts"
+    },
+    "./effect-http": {
+      "types": "./src/effectHttp.ts",
+      "import": "./src/effectHttp.ts"
+    },
+    "./peer": {
+      "types": "./src/peer.ts",
+      "import": "./src/peer.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    },
+    "./werift": {
+      "types": "./src/werift.ts",
+      "import": "./src/werift.ts"
+    },
+    "./wire": {
+      "types": "./src/wire.ts",
+      "import": "./src/wire.ts"
+    }
+  },
+  "scripts": {
+    "test": "vp test run",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "optionalDependencies": {
+    "werift": "^0.24.4"
+  }
+}

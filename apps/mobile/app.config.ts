@@ -235,6 +235,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-asset",
+    "@config-plugins/react-native-webrtc",
     [
       "expo-font",
       {
