@@ -17,6 +17,7 @@ import {
 const EARLY_MESSAGE_LIMIT = 4;
 const EARLY_MESSAGE_BYTES_LIMIT = 64 * 1024;
 const MAX_MESSAGE_SIZE = 16 * 1024;
+const ICE_PORT_RANGE: [number, number] = [60_000, 61_000];
 
 type WeriftDataChannel = Pick<
   RTCDataChannel,
@@ -202,6 +203,7 @@ export const loadWeriftServerPeerFactory: Effect.Effect<Option.Option<ServerWebR
                     ...(server.username === undefined ? {} : { username: server.username }),
                     ...(server.credential === undefined ? {} : { credential: server.credential }),
                   })),
+                  icePortRange: ICE_PORT_RANGE,
                   maxMessageSize: MAX_MESSAGE_SIZE,
                 }),
               catch: (cause) => new WebRtcPeerError({ stage: "create", cause }),

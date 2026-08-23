@@ -87,7 +87,7 @@ export interface MakeLogicalSocketOptions {
   readonly makeDriver: (
     session: LogicalSocketSession,
   ) => Effect.Effect<LogicalSocketDriver, never, Scope.Scope>;
-  readonly onTransportChange?: (transport: WebRtcTransportKind) => void;
+  readonly onTransportChange?: (transport: WebRtcTransportKind) => Effect.Effect<void>;
 }
 
 function readFailure(cause: unknown): Socket.SocketError {
@@ -171,12 +171,12 @@ export function makeLogicalSocket(options: MakeLogicalSocketOptions): Socket.Soc
         );
 
         const setTransport = (transport: WebRtcTransportKind) =>
-          Effect.sync(() => {
+          Effect.suspend(() => {
             if (route === transport) {
-              return;
+              return Effect.void;
             }
             route = transport;
-            options.onTransportChange?.(transport);
+            return options.onTransportChange?.(transport) ?? Effect.void;
           });
 
         const fallbackLocked = Effect.fn("LogicalWebSocket.fallbackLocked")(function* (

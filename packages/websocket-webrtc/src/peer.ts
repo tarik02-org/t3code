@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
@@ -65,6 +65,12 @@ export class WebRtcClientPlatform extends Context.Reference<ClientWebRtcPeerFact
     defaultValue: () => null,
   },
 ) {}
+
+export class WebRtcUpgradePreference extends Context.Reference<{
+  readonly isEnabled: Effect.Effect<boolean>;
+}>("@t3tools/websocket-webrtc/WebRtcUpgradePreference", {
+  defaultValue: () => ({ isEnabled: Effect.succeed(true) }),
+}) {}
 
 export interface ServerWebRtcPeer {
   readonly acceptOffer: (offerSdp: string) => Effect.Effect<string, WebRtcPeerError>;

@@ -131,6 +131,7 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import * as WebRtcIceServers from "./webrtc/WebRtcIceServerProvider.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
@@ -2393,6 +2394,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const webRtcIceServers = yield* WebRtcIceServers.WebRtcIceServerProvider;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2417,11 +2419,13 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         if (upgradeNonce !== null) {
           const peerFactory = yield* loadWeriftServerPeerFactory;
           if (Option.isSome(peerFactory)) {
+            const iceServers = yield* webRtcIceServers.getIceServers;
             rpcRequest = mapSocketUpgrade(request, (socket) =>
               makeServerLogicalSocket({
                 socket,
                 nonce: upgradeNonce,
                 peerFactory: peerFactory.value,
+                iceServers,
               }),
             );
           }

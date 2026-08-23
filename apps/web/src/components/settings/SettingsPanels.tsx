@@ -2457,6 +2457,31 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection title="Experimental">
         <SettingsRow
+          {...searchableSetting("webrtc-transport")}
+          description="Attempt to upgrade RPC connections from WebSocket to a WebRTC DataChannel. Changing this reconnects every environment."
+          resetAction={
+            settings.webRtcUpgradeEnabled !== DEFAULT_UNIFIED_SETTINGS.webRtcUpgradeEnabled ? (
+              <SettingResetButton
+                label="WebRTC transport"
+                onClick={() =>
+                  updateSettings({
+                    webRtcUpgradeEnabled: DEFAULT_UNIFIED_SETTINGS.webRtcUpgradeEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.webRtcUpgradeEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ webRtcUpgradeEnabled: Boolean(checked) })
+              }
+              aria-label="Enable WebRTC transport"
+            />
+          }
+        />
+        <SettingsRow
           {...searchableSetting("progressive-thread-history")}
           description="Load large thread histories in pages and navigate them with a timeline minimap."
           resetAction={

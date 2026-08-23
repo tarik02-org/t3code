@@ -25,6 +25,7 @@ import {
   type WebRtcIceServer,
   WebRtcClientPlatform,
   WebRtcPeerError,
+  WebRtcUpgradePreference,
 } from "@t3tools/websocket-webrtc/peer";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -33,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import { AsyncResult, AtomRegistry } from "effect/unstable/reactivity";
 import Constants from "expo-constants";
 import * as ExpoCrypto from "expo-crypto";
 import * as Network from "expo-network";
@@ -43,6 +45,7 @@ import { authClientMetadata } from "../lib/authClientMetadata";
 import * as Runtime from "../lib/runtime";
 import * as MobileStorage from "../persistence/mobile-storage";
 import { appAtomRegistry } from "../state/atom-registry";
+import { mobilePreferencesAtom } from "../state/preferences";
 import { clearThreadOutboxEnvironment } from "../state/thread-outbox";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
@@ -239,8 +242,19 @@ const wakeupsLayer = Wakeups.layer({
         (subscription) => Effect.sync(() => subscription.remove()),
       ).pipe(Effect.asVoid),
     ),
-    managedRelayAccountChanges(appAtomRegistry).pipe(
-      Stream.map(() => "credentials-changed" as const),
+    Stream.merge(
+      managedRelayAccountChanges(appAtomRegistry).pipe(
+        Stream.map(() => "credentials-changed" as const),
+      ),
+      AtomRegistry.toStream(appAtomRegistry, mobilePreferencesAtom).pipe(
+        Stream.map(
+          (preferences) =>
+            !AsyncResult.isSuccess(preferences) || preferences.value.webRtcUpgradeEnabled !== false,
+        ),
+        Stream.changes,
+        Stream.drop(1),
+        Stream.map(() => "webrtc-preference-changed" as const),
+      ),
     ),
   ),
 });
@@ -325,6 +339,14 @@ const capabilitiesLayer = Layer.effectContext(
         }),
       ),
       Context.add(WebRtcClientPlatform, mobileWebRtcClientPlatform),
+      Context.add(WebRtcUpgradePreference, {
+        isEnabled: Effect.sync(() => {
+          const preferences = appAtomRegistry.get(mobilePreferencesAtom);
+          return (
+            !AsyncResult.isSuccess(preferences) || preferences.value.webRtcUpgradeEnabled !== false
+          );
+        }),
+      }),
     );
   }),
 );

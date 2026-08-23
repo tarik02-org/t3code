@@ -34,6 +34,7 @@ import {
   type WebRtcIceServer,
   WebRtcClientPlatform,
   WebRtcPeerError,
+  WebRtcUpgradePreference,
 } from "@t3tools/websocket-webrtc/peer";
 import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
 import {
@@ -52,6 +53,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/unstable/http";
+import { AtomRegistry } from "effect/unstable/reactivity";
 
 import { APP_VERSION } from "../branding";
 import { readDesktopPrimaryBearerToken } from "../environments/primary/desktopAuth";
@@ -64,6 +66,7 @@ import { clearComposerDraftsEnvironment } from "../composerDraftStore";
 import { isHostedStaticApp } from "../hostedPairing";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { acknowledgeRpcRequest, trackRpcRequestSent } from "../rpc/requestLatencyState";
+import { webRtcUpgradeEnabledAtom } from "../state/clientSettings";
 import {
   desktopLocalConnectionId,
   readDesktopSecondaryBootstrapsResult,
@@ -207,8 +210,15 @@ const wakeupsLayer = Wakeups.layer({
           }),
       ).pipe(Effect.asVoid),
     ),
-    managedRelayAccountChanges(appAtomRegistry).pipe(
-      Stream.map(() => "credentials-changed" as const),
+    Stream.merge(
+      managedRelayAccountChanges(appAtomRegistry).pipe(
+        Stream.map(() => "credentials-changed" as const),
+      ),
+      AtomRegistry.toStream(appAtomRegistry, webRtcUpgradeEnabledAtom).pipe(
+        Stream.changes,
+        Stream.drop(1),
+        Stream.map(() => "webrtc-preference-changed" as const),
+      ),
     ),
   ),
 });
@@ -382,6 +392,9 @@ const capabilitiesLayer = Layer.effectContext(
       Context.add(ClientPresentation, presentation),
       Context.add(SshEnvironmentGateway, ssh),
       Context.add(WebRtcClientPlatform, webRtcClientPlatform),
+      Context.add(WebRtcUpgradePreference, {
+        isEnabled: Effect.sync(() => appAtomRegistry.get(webRtcUpgradeEnabledAtom)),
+      }),
     );
   }),
 );

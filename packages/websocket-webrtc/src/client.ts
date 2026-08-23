@@ -10,6 +10,7 @@ import {
   type WebRtcDataChannelPort,
   type WebRtcIceServer,
   WebRtcPeerError,
+  type WebRtcTransportKind,
 } from "./peer.ts";
 import { makeLogicalSocket, type LogicalSocketSession } from "./socket.ts";
 import { DATA_CHANNEL_LABEL, type ControlMessage, wireIceServers } from "./wire.ts";
@@ -307,11 +308,15 @@ export function makeClientLogicalSocket(options: {
   readonly socket: Socket.Socket;
   readonly nonce: string;
   readonly peerFactory: ClientWebRtcPeerFactory;
+  readonly onTransportChange?: (transport: WebRtcTransportKind) => Effect.Effect<void>;
 }): Socket.Socket {
   return makeLogicalSocket({
     socket: options.socket,
     nonce: options.nonce,
     makeDriver: (session) => makeClientDriver(session, options.peerFactory),
+    ...(options.onTransportChange === undefined
+      ? {}
+      : { onTransportChange: options.onTransportChange }),
   });
 }
 

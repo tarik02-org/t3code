@@ -238,6 +238,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/connections",
   },
   {
+    id: "webrtc-transport",
+    title: "WebRTC transport",
+    to: "/settings/general",
+  },
+  {
     id: "progressive-thread-history",
     title: "Progressive thread history",
     to: "/settings/general",

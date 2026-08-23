@@ -381,7 +381,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         case "ConnectRequested":
           break;
         case "Wakeup":
-          if (next.reason === "application-active-reconnect") {
+          if (ConnectionWakeups.shouldRestartConnectionAfterWakeup(next.reason)) {
             return true;
           }
           if (next.reason === "credentials-changed" && target._tag === "RelayConnectionTarget") {
@@ -412,10 +412,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             yield* logManagedRelayAccountChange;
             return false;
           }
-          if (next.reason === "application-active-reconnect") {
-            // Mobile operating systems commonly suspend sockets without
-            // delivering a close event. A long background resume deliberately
-            // replaces that lease and starts a fresh attempt without backoff.
+          if (ConnectionWakeups.shouldRestartConnectionAfterWakeup(next.reason)) {
+            // Resume recovery and client transport preference changes both
+            // replace the lease immediately without entering backoff.
             return true;
           }
           if (next.reason === "application-active" || next.reason === "application-active-probe") {
@@ -463,7 +462,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                   }
                   break;
                 case "Wakeup":
-                  if (probeEvent.signal.reason === "application-active-reconnect") {
+                  if (
+                    ConnectionWakeups.shouldRestartConnectionAfterWakeup(probeEvent.signal.reason)
+                  ) {
                     yield* Fiber.interrupt(probe);
                     return true;
                   }
@@ -622,7 +623,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           const next = yield* Queue.take(signals);
           switch (next._tag) {
             case "Wakeup":
-              return ConnectionWakeups.isApplicationActiveWakeup(next.reason);
+              return ConnectionWakeups.shouldResetRetryAfterWakeup(next.reason);
             case "ConnectRequested":
             case "DisconnectRequested":
             case "RetryRequested":
@@ -636,7 +637,8 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
 
   const waitForSignal = Queue.take(signals).pipe(
     Effect.map(
-      (next) => next._tag === "Wakeup" && ConnectionWakeups.isApplicationActiveWakeup(next.reason),
+      (next) =>
+        next._tag === "Wakeup" && ConnectionWakeups.shouldResetRetryAfterWakeup(next.reason),
     ),
   );
 

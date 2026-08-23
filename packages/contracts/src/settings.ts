@@ -220,6 +220,7 @@ export const ClientSettingsSchema = Schema.Struct({
   progressiveThreadHistoryEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  webRtcUpgradeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // Legacy plan mode. The composer's Build/Plan toggle was removed from the
   // default UI; this beta flag restores it (plus the /plan and /default slash
   // commands) for users who still rely on the old workflow.
@@ -912,6 +913,7 @@ export const ClientSettingsPatch = Schema.Struct({
     ),
   ),
   progressiveThreadHistoryEnabled: Schema.optionalKey(Schema.Boolean),
+  webRtcUpgradeEnabled: Schema.optionalKey(Schema.Boolean),
   planModeEnabled: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),

@@ -45,3 +45,37 @@ close still ends the whole logical connection.
 
 There is no NACK in version 1. Both physical transports are reliable, so cumulative ACK and replay
 cover the path-switch case without another recovery mechanism.
+
+## ICE configuration
+
+Werift binds direct ICE candidates to UDP ports `60000-61000`. A server host must allow inbound UDP
+traffic on that range. Direct connections, including LAN connections, fall back to WebSocket when
+the host firewall blocks it.
+
+The server defaults to `stun:stun.cloudflare.com:3478`. When
+`T3CODE_WEBRTC_CLOUDFLARE_TURN_KEY_ID` and
+`T3CODE_WEBRTC_CLOUDFLARE_TURN_API_TOKEN` are set, each authenticated WebRTC upgrade gets a fresh
+Cloudflare TURN credential. The credential expires after 48 hours. Credential generation stays on
+the server; clients only receive the short-lived ICE configuration over their authenticated
+WebSocket.
+
+Custom TURN configuration takes precedence over Cloudflare:
+
+- `T3CODE_WEBRTC_STUN_URLS` sets a comma-separated STUN URL list.
+- `T3CODE_WEBRTC_TURN_URLS` sets a comma-separated TURN URL list.
+- `T3CODE_WEBRTC_TURN_USERNAME` and `T3CODE_WEBRTC_TURN_CREDENTIAL` set optional custom TURN
+  authentication. Set both or neither.
+
+If Cloudflare credential generation fails or takes longer than five seconds, the server advertises
+STUN only. WebRTC can still connect directly; otherwise the logical socket stays on WebSocket.
+
+## Client controls and diagnostics
+
+Web and mobile clients enable the upgrade by default. Their Experimental settings include a
+client-local `WebRTC transport` switch. Changing it restarts active environment connections so the
+next RPC session either attempts the upgrade or stays on WebSocket.
+
+The web environment connection tooltip shows the selected RPC transport and application-level
+round-trip time. Opening the tooltip starts a connection health RPC every two seconds; closing it
+stops the probes. The same measurement runs over WebSocket and the WebRTC DataChannel, so the values
+are directly comparable.

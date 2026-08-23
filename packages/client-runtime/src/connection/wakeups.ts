@@ -6,7 +6,8 @@ export type ConnectionWakeup =
   | "application-active"
   | "application-active-probe"
   | "application-active-reconnect"
-  | "credentials-changed";
+  | "credentials-changed"
+  | "webrtc-preference-changed";
 
 export function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {
   return (
@@ -18,6 +19,14 @@ export function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {
 
 export function shouldResubscribeAfterWakeup(reason: ConnectionWakeup): boolean {
   return reason === "application-active" || reason === "application-active-probe";
+}
+
+export function shouldRestartConnectionAfterWakeup(reason: ConnectionWakeup): boolean {
+  return reason === "application-active-reconnect" || reason === "webrtc-preference-changed";
+}
+
+export function shouldResetRetryAfterWakeup(reason: ConnectionWakeup): boolean {
+  return isApplicationActiveWakeup(reason) || reason === "webrtc-preference-changed";
 }
 
 export class ConnectionWakeups extends Context.Service<
