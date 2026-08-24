@@ -24,16 +24,13 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-build-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/canary' }}
-
 jobs:
   metadata:
     name: Resolve release metadata
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      channel: ${{ steps.release_meta.outputs.channel }}
       version: ${{ steps.release_meta.outputs.version }}
       tag: ${{ steps.release_meta.outputs.tag }}
       release_name: ${{ steps.release_meta.outputs.name }}
@@ -93,6 +90,7 @@ jobs:
             ! git rev-parse -q --verify "refs/tags/v$package_version" >/dev/null; then
             channel=stable
           fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
           release_date="$(date -u +%Y%m%d)"
           if [[ "$channel" == stable ]]; then
@@ -170,6 +168,9 @@ jobs:
     needs: metadata
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.channel }}-common-nix
+      cancel-in-progress: ${{ needs.metadata.outputs.channel != 'stable' }}
     permissions:
       contents: read
       id-token: write
@@ -233,6 +234,9 @@ jobs:
       - common_nix
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    concurrency:
+      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.channel }}-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+      cancel-in-progress: ${{ needs.metadata.outputs.channel != 'stable' }}
     strategy:
       fail-fast: false
       matrix:
@@ -378,6 +382,9 @@ jobs:
     needs: metadata
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.channel }}-web
+      cancel-in-progress: ${{ needs.metadata.outputs.channel != 'stable' }}
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ""
       T3CODE_CLERK_JWT_TEMPLATE: ""
