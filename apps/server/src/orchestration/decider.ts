@@ -1,8 +1,11 @@
 import {
   EventId,
+  type CommandId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationThread,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -177,6 +180,59 @@ type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
+
+type ThreadCategoryCleanup = "pinned" | "settled" | "snoozed";
+
+const planThreadCategoryCleanup = Effect.fn("planThreadCategoryCleanup")(function* (input: {
+  thread: Pick<OrchestrationThread, "pinnedAt" | "settledOverride" | "snoozedUntil">;
+  threadId: ThreadId;
+  commandId: CommandId;
+  occurredAt: string;
+  clear: readonly ThreadCategoryCleanup[];
+}): Effect.fn.Return<
+  ReadonlyArray<PlannedOrchestrationEvent>,
+  PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  const events: PlannedOrchestrationEvent[] = [];
+  const eventBase = () =>
+    withEventBase({
+      aggregateKind: "thread",
+      aggregateId: input.threadId,
+      occurredAt: input.occurredAt,
+      commandId: input.commandId,
+    });
+  if (
+    input.clear.includes("pinned") &&
+    input.thread.pinnedAt !== null &&
+    input.thread.pinnedAt !== undefined
+  ) {
+    events.push({
+      ...(yield* eventBase()),
+      type: "thread.unpinned",
+      payload: { threadId: input.threadId, updatedAt: input.occurredAt },
+    });
+  }
+  if (input.clear.includes("settled") && input.thread.settledOverride !== "active") {
+    events.push({
+      ...(yield* eventBase()),
+      type: "thread.unsettled",
+      payload: { threadId: input.threadId, reason: "user", updatedAt: input.occurredAt },
+    });
+  }
+  if (
+    input.clear.includes("snoozed") &&
+    input.thread.snoozedUntil !== null &&
+    input.thread.snoozedUntil !== undefined
+  ) {
+    events.push({
+      ...(yield* eventBase()),
+      type: "thread.unsnoozed",
+      payload: { threadId: input.threadId, reason: "user", updatedAt: input.occurredAt },
+    });
+  }
+  return events;
+});
 
 const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
   commands,
@@ -505,38 +561,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
       // Settling is "I'm done with this": clear states that would keep the
       // row pinned or snoozed instead of showing the new settled state.
-      const companionEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
-      if (thread.pinnedAt != null) {
-        companionEvents.push({
-          ...(yield* withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt,
-            commandId: command.commandId,
-          })),
-          type: "thread.unpinned" as const,
-          payload: {
-            threadId: command.threadId,
-            updatedAt: occurredAt,
-          },
-        });
-      }
-      if (thread.snoozedUntil != null) {
-        companionEvents.push({
-          ...(yield* withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt,
-            commandId: command.commandId,
-          })),
-          type: "thread.unsnoozed",
-          payload: {
-            threadId: command.threadId,
-            reason: "user",
-            updatedAt: occurredAt,
-          },
-        });
-      }
+      const companionEvents = yield* planThreadCategoryCleanup({
+        thread,
+        threadId: command.threadId,
+        commandId: command.commandId,
+        occurredAt,
+        clear: ["pinned", "snoozed"],
+      });
       return companionEvents.length > 0 ? [settledEvent, ...companionEvents] : settledEvent;
     }
 
@@ -546,25 +577,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // Idempotent by re-emission (see thread.settle): reducing the event a
-      // second time lands on the same override state. A re-emission keeps
-      // the existing updatedAt so duplicates do not churn ordering.
-      const alreadyPinnedActive = thread.settledOverride === "active";
       const occurredAt = yield* nowIso;
-      return {
+      // The user command moves the thread to Regular, which also clears the
+      // other category fields. Activity-driven events are emitted elsewhere
+      // and keep their neutral-reset behavior.
+      const alreadyActive = thread.settledOverride === "active";
+      const unsettledEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.unsettled",
+        type: "thread.unsettled" as const,
         payload: {
           threadId: command.threadId,
           reason: command.reason,
-          updatedAt: alreadyPinnedActive ? thread.updatedAt : occurredAt,
+          updatedAt: alreadyActive ? thread.updatedAt : occurredAt,
         },
       };
+      const cleanupEvents = yield* planThreadCategoryCleanup({
+        thread,
+        threadId: command.threadId,
+        commandId: command.commandId,
+        occurredAt,
+        clear: ["pinned", "snoozed"],
+      });
+      return cleanupEvents.length > 0 ? [unsettledEvent, ...cleanupEvents] : unsettledEvent;
     }
 
     case "thread.snooze": {
@@ -620,14 +659,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.snoozedUntil === command.snoozedUntil && thread.snoozedAt != null
           ? thread.snoozedAt
           : null;
-      return {
+      const snoozedEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.snoozed",
+        type: "thread.snoozed" as const,
         payload: {
           threadId: command.threadId,
           snoozedUntil: command.snoozedUntil,
@@ -635,6 +674,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: existingSnoozedAt !== null ? thread.updatedAt : occurredAt,
         },
       };
+      // Snooze is a destination, not a deferred restoration marker. Clearing
+      // the other exclusive categories keeps Wake's meaning unambiguous.
+      const cleanupEvents = yield* planThreadCategoryCleanup({
+        thread,
+        threadId: command.threadId,
+        commandId: command.commandId,
+        occurredAt,
+        clear: ["pinned", "settled"],
+      });
+      return cleanupEvents.length > 0 ? [snoozedEvent, ...cleanupEvents] : snoozedEvent;
     }
 
     case "thread.unsnooze": {
@@ -643,25 +692,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // Idempotent by re-emission (see thread.settle): waking a thread that
-      // is not snoozed lands on the same null state without churning
-      // updatedAt.
       const alreadyAwake = thread.snoozedUntil == null;
       const occurredAt = yield* nowIso;
-      return {
+      const unsnoozedEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.unsnoozed",
+        type: "thread.unsnoozed" as const,
         payload: {
           threadId: command.threadId,
           reason: command.reason,
           updatedAt: alreadyAwake ? thread.updatedAt : occurredAt,
         },
       };
+      // Activity-driven wakes are emitted elsewhere. This user command
+      // reaches Regular, including its explicit active override.
+      const cleanupEvents = yield* planThreadCategoryCleanup({
+        thread,
+        threadId: command.threadId,
+        commandId: command.commandId,
+        occurredAt,
+        clear: ["pinned", "settled"],
+      });
+      return cleanupEvents.length > 0 ? [unsnoozedEvent, ...cleanupEvents] : unsnoozedEvent;
     }
 
     case "thread.pin": {
@@ -671,10 +727,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      // Re-pinning an already-pinned thread is a duplicate (double-click,
-      // raced clients): re-emit with the original timestamps so the
-      // projection is a no-op. Pinning has no lifecycle invariants — a pin
-      // only ever promotes visibility, so it can never hide pending work.
+      // Re-pinning preserves the original timestamp.
       const existingPinnedAt = thread.pinnedAt ?? null;
       const pinnedEvent = {
         ...(yield* withEventBase({
@@ -687,53 +740,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           pinnedAt: existingPinnedAt ?? occurredAt,
-          // A fresh pin takes the client's slot in the arranged order; on a
-          // re-pin the existing key wins so raced duplicates cannot move a
-          // thread the user already placed.
-          ...(existingPinnedAt === null && command.orderKey !== undefined
-            ? { pinOrderKey: command.orderKey }
-            : {}),
+          // Supplying a key explicitly places the thread. Omitting it
+          // preserves an existing pin's slot.
+          ...(command.orderKey !== undefined ? { pinOrderKey: command.orderKey } : {}),
           updatedAt: existingPinnedAt !== null ? thread.updatedAt : occurredAt,
         },
       };
-      // Pinning is a promotion: it clears the parked states rather than
-      // silently outranking them. An explicit settle un-settles (reason
-      // "user", same override the un-settle button stamps), and a snooze's
-      // return ticket is spent — the thread is on top NOW, not on Tuesday.
-      const promotionEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
-      if (thread.settledOverride === "settled") {
-        promotionEvents.push({
-          ...(yield* withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt,
-            commandId: command.commandId,
-          })),
-          type: "thread.unsettled",
-          payload: {
-            threadId: command.threadId,
-            reason: "user",
-            updatedAt: occurredAt,
-          },
-        });
-      }
-      if (thread.snoozedUntil != null) {
-        promotionEvents.push({
-          ...(yield* withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt,
-            commandId: command.commandId,
-          })),
-          type: "thread.unsnoozed",
-          payload: {
-            threadId: command.threadId,
-            reason: "user",
-            updatedAt: occurredAt,
-          },
-        });
-      }
-      return promotionEvents.length > 0 ? [pinnedEvent, ...promotionEvents] : pinnedEvent;
+      // Pinning clears settled and snoozed state.
+      const cleanupEvents = yield* planThreadCategoryCleanup({
+        thread,
+        threadId: command.threadId,
+        commandId: command.commandId,
+        occurredAt,
+        clear: ["settled", "snoozed"],
+      });
+      return cleanupEvents.length > 0 ? [pinnedEvent, ...cleanupEvents] : pinnedEvent;
     }
 
     case "thread.unpin": {
@@ -742,24 +763,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // Idempotent by re-emission (see thread.settle): unpinning a thread
-      // that is not pinned lands on the same null state without churning
-      // updatedAt.
       const alreadyUnpinned = thread.pinnedAt == null;
       const occurredAt = yield* nowIso;
-      return {
+      const unpinnedEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.unpinned",
+        type: "thread.unpinned" as const,
         payload: {
           threadId: command.threadId,
           updatedAt: alreadyUnpinned ? thread.updatedAt : occurredAt,
         },
       };
+      // Unpin is an explicit move to Regular. It spends a snooze and stamps
+      // the active override so automatic settlement cannot immediately move
+      // the thread away again.
+      const cleanupEvents = yield* planThreadCategoryCleanup({
+        thread,
+        threadId: command.threadId,
+        commandId: command.commandId,
+        occurredAt,
+        clear: ["settled", "snoozed"],
+      });
+      return cleanupEvents.length > 0 ? [unpinnedEvent, ...cleanupEvents] : unpinnedEvent;
     }
 
     case "thread.pin.reorder": {

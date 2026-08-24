@@ -461,9 +461,8 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   settledAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  // Snooze is an overlay on the active lifecycle, not a fourth destination:
-  // a snoozed thread stays "active" in the model and is only suppressed from
-  // the inbox until snoozedUntil passes (or the thread raises its hand).
+  // Snooze parks a thread until snoozedUntil passes or the thread raises its
+  // hand. User lifecycle commands clear the other sidebar category fields.
   // Optional so payloads from pre-snooze servers still decode.
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
@@ -821,9 +820,9 @@ const ThreadPinCommand = Schema.Struct({
   type: Schema.Literal("thread.pin"),
   commandId: CommandId,
   threadId: ThreadId,
-  // Initial slot in the user-arranged pinned order (see ThreadPinReorderCommand).
-  // Optional: clients on pre-reorder servers omit it, and the pinned block
-  // falls back to creation order for keyless threads.
+  // Requested slot in the user-arranged pinned order (see ThreadPinReorderCommand).
+  // Omitting it preserves an existing pin's slot, while keyless new pins fall
+  // back to creation order.
   orderKey: Schema.optional(TrimmedNonEmptyString),
 });
 

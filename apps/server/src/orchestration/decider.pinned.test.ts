@@ -71,7 +71,7 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
         readModel: makeReadModel({}),
       });
       const events = Array.isArray(event) ? event : [event];
-      expect(events).toHaveLength(1);
+      expect(events.map((entry) => entry.type)).toEqual(["thread.pinned", "thread.unsettled"]);
       expect(events[0]?.type).toBe("thread.pinned");
       if (events[0]?.type === "thread.pinned") {
         expect(events[0].payload.pinnedAt).toBe(events[0].payload.updatedAt);
@@ -79,7 +79,7 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
     }),
   );
 
-  it.effect("re-pinning preserves the original pinnedAt and updatedAt", () =>
+  it.effect("re-pinning without an order key preserves the existing pin", () =>
     Effect.gen(function* () {
       const event = yield* decideOrchestrationCommand({
         command: {
@@ -87,12 +87,17 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
           commandId: CommandId.make("cmd-pin-again"),
           threadId: ThreadId.make("thread-1"),
         },
-        readModel: makeReadModel({ pinnedAt: PINNED_AT }),
+        readModel: makeReadModel({
+          pinnedAt: PINNED_AT,
+          pinOrderKey: "g",
+          settledOverride: "active",
+        }),
       });
       const events = Array.isArray(event) ? event : [event];
       expect(events[0]?.type).toBe("thread.pinned");
       if (events[0]?.type === "thread.pinned") {
         expect(events[0].payload.pinnedAt).toBe(PINNED_AT);
+        expect(events[0].payload.pinOrderKey).toBeUndefined();
         expect(events[0].payload.updatedAt).toBe(NOW);
       }
     }),
@@ -106,7 +111,7 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
           commandId: CommandId.make("cmd-unpin"),
           threadId: ThreadId.make("thread-1"),
         },
-        readModel: makeReadModel({ pinnedAt: PINNED_AT }),
+        readModel: makeReadModel({ pinnedAt: PINNED_AT, settledOverride: "active" }),
       });
       const events = Array.isArray(event) ? event : [event];
       expect(events[0]?.type).toBe("thread.unpinned");
@@ -141,11 +146,20 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
           type: "thread.pin",
           commandId: CommandId.make("cmd-pin-settled"),
           threadId: ThreadId.make("thread-1"),
+          orderKey: "t",
         },
-        readModel: makeReadModel({ settledOverride: "settled" }),
+        readModel: makeReadModel({
+          pinnedAt: PINNED_AT,
+          pinOrderKey: "g",
+          settledOverride: "settled",
+        }),
       });
       const events = Array.isArray(event) ? event : [event];
       expect(events.map((entry) => entry.type)).toEqual(["thread.pinned", "thread.unsettled"]);
+      expect(events[0]?.type).toBe("thread.pinned");
+      if (events[0]?.type === "thread.pinned") {
+        expect(events[0].payload.pinOrderKey).toBe("t");
+      }
       const unsettled = events.find((entry) => entry.type === "thread.unsettled");
       if (unsettled?.type === "thread.unsettled") {
         expect(unsettled.payload.reason).toBe("user");
@@ -160,15 +174,25 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
           type: "thread.pin",
           commandId: CommandId.make("cmd-pin-snoozed"),
           threadId: ThreadId.make("thread-1"),
+          orderKey: "t",
         },
-        readModel: makeReadModel({ snoozedUntil: "1970-01-02T09:00:00.000Z" }),
+        readModel: makeReadModel({
+          pinnedAt: PINNED_AT,
+          pinOrderKey: "g",
+          settledOverride: "active",
+          snoozedUntil: "1970-01-02T09:00:00.000Z",
+        }),
       });
       const events = Array.isArray(event) ? event : [event];
       expect(events.map((entry) => entry.type)).toEqual(["thread.pinned", "thread.unsnoozed"]);
+      expect(events[0]?.type).toBe("thread.pinned");
+      if (events[0]?.type === "thread.pinned") {
+        expect(events[0].payload.pinOrderKey).toBe("t");
+      }
     }),
   );
 
-  it.effect("pinning an unparked thread emits only thread.pinned", () =>
+  it.effect("pinning a neutral thread explicitly keeps it active", () =>
     Effect.gen(function* () {
       const event = yield* decideOrchestrationCommand({
         command: {
@@ -179,7 +203,7 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
         readModel: makeReadModel({}),
       });
       const events = Array.isArray(event) ? event : [event];
-      expect(events.map((entry) => entry.type)).toEqual(["thread.pinned"]);
+      expect(events.map((entry) => entry.type)).toEqual(["thread.pinned", "thread.unsettled"]);
     }),
   );
 
@@ -191,7 +215,7 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
           commandId: CommandId.make("cmd-settle-pinned"),
           threadId: ThreadId.make("thread-1"),
         },
-        readModel: makeReadModel({ pinnedAt: PINNED_AT }),
+        readModel: makeReadModel({ pinnedAt: PINNED_AT, settledOverride: "active" }),
       });
       const events = Array.isArray(event) ? event : [event];
       expect(events.map((entry) => entry.type)).toEqual(["thread.settled", "thread.unpinned"]);
@@ -246,25 +270,27 @@ it.layer(NodeServices.layer)("pinned thread decider", (it) => {
     }),
   );
 
-  it.effect(
-    "re-pinning ignores the incoming order key so raced pins cannot move a placed thread",
-    () =>
-      Effect.gen(function* () {
-        const event = yield* decideOrchestrationCommand({
-          command: {
-            type: "thread.pin",
-            commandId: CommandId.make("cmd-pin-keyed-again"),
-            threadId: ThreadId.make("thread-1"),
-            orderKey: "t",
-          },
-          readModel: makeReadModel({ pinnedAt: PINNED_AT, pinOrderKey: "g" }),
-        });
-        const events = Array.isArray(event) ? event : [event];
-        expect(events[0]?.type).toBe("thread.pinned");
-        if (events[0]?.type === "thread.pinned") {
-          expect(events[0].payload.pinOrderKey).toBeUndefined();
-        }
-      }),
+  it.effect("re-pinning with an order key applies the requested placement", () =>
+    Effect.gen(function* () {
+      const event = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.pin",
+          commandId: CommandId.make("cmd-pin-keyed-again"),
+          threadId: ThreadId.make("thread-1"),
+          orderKey: "t",
+        },
+        readModel: makeReadModel({
+          pinnedAt: PINNED_AT,
+          pinOrderKey: "g",
+          settledOverride: "active",
+        }),
+      });
+      const events = Array.isArray(event) ? event : [event];
+      expect(events[0]?.type).toBe("thread.pinned");
+      if (events[0]?.type === "thread.pinned") {
+        expect(events[0].payload.pinOrderKey).toBe("t");
+      }
+    }),
   );
 
   it.effect("reorders a pinned thread, stamping the new key", () =>
