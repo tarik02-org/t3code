@@ -53,7 +53,7 @@ jobs:
       - name: Typecheck
         run: vpr typecheck
 
-      # Release Build performs this exact build on branch pushes. PRs still
+      # Release Build Jobs performs this exact build on branch pushes. PRs still
       # exercise it here so broken build inputs never reach main.
       - name: Build desktop pipeline
         if: github.event_name == 'pull_request'
