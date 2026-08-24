@@ -31,6 +31,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       channel: ${{ steps.release_meta.outputs.channel }}
+      build_group: ${{ steps.release_meta.outputs.build_group }}
+      is_current: ${{ steps.freshness.outputs.is_current }}
       version: ${{ steps.release_meta.outputs.version }}
       tag: ${{ steps.release_meta.outputs.tag }}
       release_name: ${{ steps.release_meta.outputs.name }}
@@ -90,7 +92,15 @@ jobs:
             ! git rev-parse -q --verify "refs/tags/v$package_version" >/dev/null; then
             channel=stable
           fi
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+          build_group="$channel"
+          if [[ "$channel" == stable || "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            build_group="$channel-$GITHUB_RUN_ID"
+          fi
+          {
+            echo "channel=$channel"
+            echo "build_group=$build_group"
+          } >> "$GITHUB_OUTPUT"
 
           release_date="$(date -u +%Y%m%d)"
           if [[ "$channel" == stable ]]; then
@@ -163,14 +173,49 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - id: freshness
+        name: Check branch freshness
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ steps.release_meta.outputs.channel }}
+          RELEASE_REF: ${{ github.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != push || "$RELEASE_CHANNEL" == stable ]]; then
+            echo "is_current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          branch_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)"
+          if [[ "$branch_sha" == "$RELEASE_REF" ]]; then
+            echo "is_current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  cancel_stale:
+    name: Cancel stale prerelease build
+    needs: metadata
+    if: needs.metadata.outputs.is_current == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
+
   common_nix:
     name: Build shared release files with Nix
     needs: metadata
+    if: needs.metadata.outputs.is_current == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
-      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.channel }}-common-nix
-      cancel-in-progress: ${{ needs.metadata.outputs.channel != 'stable' }}
+      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.build_group }}-common-nix
+      cancel-in-progress: ${{ github.event_name == 'push' && needs.metadata.outputs.channel != 'stable' }}
     permissions:
       contents: read
       id-token: write
@@ -232,11 +277,12 @@ jobs:
     needs:
       - metadata
       - common_nix
+    if: needs.metadata.outputs.is_current == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     concurrency:
-      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.channel }}-desktop-${{ matrix.platform }}-${{ matrix.arch }}
-      cancel-in-progress: ${{ needs.metadata.outputs.channel != 'stable' }}
+      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.build_group }}-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+      cancel-in-progress: ${{ github.event_name == 'push' && needs.metadata.outputs.channel != 'stable' }}
     strategy:
       fail-fast: false
       matrix:
@@ -380,11 +426,12 @@ jobs:
   web:
     name: Package web
     needs: metadata
+    if: needs.metadata.outputs.is_current == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.channel }}-web
-      cancel-in-progress: ${{ needs.metadata.outputs.channel != 'stable' }}
+      group: release-build-${{ github.ref }}-${{ needs.metadata.outputs.build_group }}-web
+      cancel-in-progress: ${{ github.event_name == 'push' && needs.metadata.outputs.channel != 'stable' }}
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ""
       T3CODE_CLERK_JWT_TEMPLATE: ""
