@@ -224,7 +224,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     serverRoot,
     backendEntryPath: path.join(serverRoot, "apps/server/dist/bin.mjs"),
     backendCwd: input.isPackaged ? homeDirectory : appRoot,
-    rendererRootPath: path.join(appRoot, "apps/server/dist/client"),
+    rendererRootPath: path.join(serverRoot, "apps/server/dist/client"),
     preloadPath: path.join(input.dirname, "preload.cjs"),
     appUpdateYmlPath: input.isPackaged
       ? path.join(resourcesPath, "app-update.yml")
