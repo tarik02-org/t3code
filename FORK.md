@@ -88,8 +88,9 @@ This repository is the `tarik02-org/t3code` fork of `pingdotgg/t3code`. This fil
 ### Releases
 
 - The stable release workflow maintains a release PR from `release/stable` to `main`. It refreshes after relevant main changes, after a stable publish, on a daily schedule, and on manual dispatch.
-- Merging a stable release PR commits the next date-based `YYYY.M.DDSS` version. The matching main build publishes it as stable.
-- Other main pushes publish immutable nightly versions. Canary branch pushes publish immutable `X.Y.Z-canary.YYYYMMDD.RUN` versions.
+- Merging a stable release PR commits the next date-based `YYYY.M.DDSS` version. The stable build workflow packages that commit without sharing cancellation state with prerelease builds.
+- Other main pushes publish immutable nightly versions. Canary branch pushes publish immutable `X.Y.Z-canary.YYYYMMDD.RUN` versions. A newer branch push cancels the older prerelease build at the workflow level.
+- Stable and prerelease entry workflows share the same reusable packaging workflow, so channel routing does not duplicate build steps.
 - Stable release notes include every commit since the previous stable tag, including commits introduced by upstream merges.
 - Shared server and desktop build output is produced once with Nix and reused by the macOS, Linux, and Windows packaging jobs. GitHub Actions caches the Nix store paths.
 - Releases contain unsigned macOS DMGs, a Linux AppImage, a Windows NSIS installer, updater metadata, and a hosted-static web archive.
