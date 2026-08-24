@@ -30,7 +30,12 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ResolvedKeybindingsConfig, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ResolvedKeybindingsConfig,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
@@ -44,6 +49,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  Globe2Icon,
   MessageSquareIcon,
   PinIcon,
   PlusIcon,
@@ -178,7 +184,15 @@ import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "./ui/menu";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
@@ -198,6 +212,87 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 // Keep the v2 key so existing preferences survive the v2-to-default rename.
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:snoozed-expanded";
+
+interface SidebarEnvironmentVisibilityOption {
+  environmentId: EnvironmentId;
+  label: string;
+  visible: boolean;
+  projectCount: number;
+}
+
+function EnvironmentVisibilityMenu(props: {
+  environments: readonly SidebarEnvironmentVisibilityOption[];
+  hiddenCount: number;
+  onVisibilityChange: (environmentId: EnvironmentId, visible: boolean) => void;
+}) {
+  if (props.environments.length <= 1) {
+    return null;
+  }
+
+  const visibleEnvironmentCount = props.environments.filter(
+    (environment) => environment.visible,
+  ).length;
+
+  return (
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={
+                <SidebarMenuButton
+                  size="icon"
+                  type="button"
+                  aria-label="Choose sidebar environments"
+                  className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                />
+              }
+            />
+          }
+        >
+          <Globe2Icon />
+          <span
+            className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+        </TooltipTrigger>
+        <TooltipPopup side="right">
+          {props.hiddenCount > 0
+            ? `${props.hiddenCount} hidden environment${props.hiddenCount === 1 ? "" : "s"}`
+            : "Sidebar environments"}
+        </TooltipPopup>
+      </Tooltip>
+      <MenuPopup align="end" side="bottom" className="min-w-56">
+        <MenuGroup>
+          {props.environments.map((environment) => {
+            const isLastVisibleEnvironment = environment.visible && visibleEnvironmentCount === 1;
+            return (
+              <MenuCheckboxItem
+                key={environment.environmentId}
+                checked={environment.visible}
+                disabled={isLastVisibleEnvironment}
+                variant="switch"
+                onCheckedChange={(checked) => {
+                  if (isLastVisibleEnvironment && checked !== true) {
+                    return;
+                  }
+                  props.onVisibilityChange(environment.environmentId, checked === true);
+                }}
+              >
+                <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                  <span className="truncate">{environment.label}</span>
+                  <span className="text-muted-foreground/60">
+                    {environment.projectCount} project{environment.projectCount === 1 ? "" : "s"}
+                  </span>
+                </span>
+              </MenuCheckboxItem>
+            );
+          })}
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
 
 function compactSidebarTimeLabel(label: string): string {
   if (label === "just now") return "now";
@@ -584,6 +679,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectCwdByKey: ReadonlyMap<string, string>;
   projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
   scopedProjectKeys: ReadonlySet<string> | null;
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId>;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
 }) {
@@ -623,6 +719,9 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       if (session.promotedTo != null) {
         continue;
       }
+      if (props.hiddenEnvironmentIds.has(session.environmentId)) {
+        continue;
+      }
       if (
         props.scopedProjectKeys !== null &&
         !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -652,6 +751,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenActive,
     props.routeDraftId,
     props.scopedProjectKeys,
+    props.hiddenEnvironmentIds,
   ]);
   const handleDiscard = useCallback(
     (draftId: DraftId) => {
@@ -1741,9 +1841,15 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 });
 
 export default function Sidebar() {
-  const projects = useProjects();
+  const allProjects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const threads = useThreadShells();
+  const allThreads = useThreadShells();
+  const sidebarEnvironmentHiddenById = useUiStateStore(
+    (store) => store.sidebarEnvironmentHiddenById,
+  );
+  const setSidebarEnvironmentVisible = useUiStateStore(
+    (store) => store.setSidebarEnvironmentVisible,
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -1831,6 +1937,52 @@ export default function Sidebar() {
   );
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environmentVisibilityOptions = useMemo<SidebarEnvironmentVisibilityOption[]>(() => {
+    const projectCountsByEnvironmentId = new Map<EnvironmentId, number>();
+    for (const project of allProjects) {
+      projectCountsByEnvironmentId.set(
+        project.environmentId,
+        (projectCountsByEnvironmentId.get(project.environmentId) ?? 0) + 1,
+      );
+    }
+    const canHideSidebarEnvironments = environments.length > 1;
+    return environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      visible:
+        !canHideSidebarEnvironments ||
+        sidebarEnvironmentHiddenById[environment.environmentId] !== true,
+      projectCount: projectCountsByEnvironmentId.get(environment.environmentId) ?? 0,
+    }));
+  }, [allProjects, environments, sidebarEnvironmentHiddenById]);
+  const hiddenEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        environmentVisibilityOptions
+          .filter((environment) => !environment.visible)
+          .map((environment) => environment.environmentId),
+      ),
+    [environmentVisibilityOptions],
+  );
+  const visibleEnvironmentKey = environmentVisibilityOptions
+    .filter((environment) => environment.visible)
+    .map((environment) => environment.environmentId)
+    .join("\0");
+  const hiddenEnvironmentCount = hiddenEnvironmentIds.size;
+  const projects = useMemo(
+    () =>
+      environments.length <= 1
+        ? allProjects
+        : allProjects.filter((project) => !hiddenEnvironmentIds.has(project.environmentId)),
+    [allProjects, environments.length, hiddenEnvironmentIds],
+  );
+  const threads = useMemo(
+    () =>
+      environments.length <= 1
+        ? allThreads
+        : allThreads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId)),
+    [allThreads, environments.length, hiddenEnvironmentIds],
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -1999,6 +2151,9 @@ export default function Sidebar() {
       if (session.promotedTo != null) {
         continue;
       }
+      if (hiddenEnvironmentIds.has(session.environmentId)) {
+        continue;
+      }
       if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {
         continue;
       }
@@ -2016,7 +2171,7 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, projectScopeKey, visibleEnvironmentKey]);
 
   const handleProjectSettings = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>, projectGroup: SidebarProjectSnapshot) => {
@@ -2184,7 +2339,7 @@ export default function Sidebar() {
   // filter context changes so a scope/search flip never inherits a deep
   // page state.
   const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_TAIL_INITIAL_COUNT);
-  const settledResetKey = projectScopeKey ?? "all";
+  const settledResetKey = `${projectScopeKey ?? "all"}\0${visibleEnvironmentKey}`;
   const lastSettledResetKeyRef = useRef(settledResetKey);
   if (lastSettledResetKeyRef.current !== settledResetKey) {
     lastSettledResetKeyRef.current = settledResetKey;
@@ -3513,102 +3668,115 @@ export default function Sidebar() {
                 </Tooltip>
               </div>
             </div>
-            {projectGroups.length > 0 ? (
+            {projectGroups.length > 0 || environmentVisibilityOptions.length > 1 ? (
               <div className="flex items-center gap-1">
-                <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
-                  <MenuTrigger
-                    render={
-                      <SidebarMenuButton
-                        aria-label="Filter threads by project"
-                        className="min-w-0 flex-1 ps-[calc(var(--sidebar-row-content-inset)-1px)] focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                      />
-                    }
-                  >
-                    {scopedProjectGroup ? (
-                      <ProjectFavicon
-                        environmentId={scopedProjectGroup.environmentId}
-                        cwd={scopedProjectGroup.workspaceRoot}
-                        faviconPath={scopedProjectGroup.faviconPath}
-                        className="size-4 shrink-0"
-                      />
-                    ) : (
-                      <FolderIcon className="size-4 shrink-0" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">
-                      {scopedProjectGroup?.displayName ?? "All projects"}
-                    </span>
-                    <ChevronDownIcon className="-mr-px size-4 shrink-0" />
-                  </MenuTrigger>
-                  <MenuPopup align="start" className="w-(--anchor-width)">
-                    <MenuRadioGroup
-                      value={projectScopeKey ?? "all"}
-                      onValueChange={(value) =>
-                        setProjectScopeKey(value === "all" ? null : (value as string))
+                {projectGroups.length > 0 ? (
+                  <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
+                    <MenuTrigger
+                      render={
+                        <SidebarMenuButton
+                          aria-label="Filter threads by project"
+                          className="min-w-0 flex-1 ps-[calc(var(--sidebar-row-content-inset)-1px)] focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                        />
                       }
                     >
-                      <MenuRadioItem
-                        value="all"
-                        closeOnClick
-                        className="h-8 min-h-8 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
-                      >
+                      {scopedProjectGroup ? (
+                        <ProjectFavicon
+                          environmentId={scopedProjectGroup.environmentId}
+                          cwd={scopedProjectGroup.workspaceRoot}
+                          faviconPath={scopedProjectGroup.faviconPath}
+                          className="size-4 shrink-0"
+                        />
+                      ) : (
                         <FolderIcon className="size-4 shrink-0" />
-                        <span className="min-w-0 truncate text-sm">All projects</span>
-                      </MenuRadioItem>
-                      {projectGroups.map((project) => {
-                        const scopeKey = project.projectKey;
-                        return (
-                          <MenuRadioItem
-                            key={scopeKey}
-                            value={scopeKey}
-                            closeOnClick
-                            className="h-8 min-h-8 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
-                          >
-                            <ProjectFavicon
-                              environmentId={project.environmentId}
-                              cwd={project.workspaceRoot}
-                              faviconPath={project.faviconPath}
-                              className="size-4 shrink-0"
-                            />
-                            <span className="min-w-0 truncate text-sm">{project.displayName}</span>
-                            <Button
-                              size="icon-xs"
-                              variant="ghost-muted"
-                              aria-label={`Project settings for ${project.displayName}`}
-                              title={`Project settings for ${project.displayName}`}
-                              className="ml-auto size-6 [--control-icon-color:currentColor] text-icon-muted focus-visible:bg-accent focus-visible:text-foreground"
-                              onPointerDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                void handleProjectSettings(event, project);
-                              }}
+                      )}
+                      <span className="min-w-0 flex-1 truncate">
+                        {scopedProjectGroup?.displayName ?? "All projects"}
+                      </span>
+                      <ChevronDownIcon className="-mr-px size-4 shrink-0" />
+                    </MenuTrigger>
+                    <MenuPopup align="start" className="w-(--anchor-width)">
+                      <MenuRadioGroup
+                        value={projectScopeKey ?? "all"}
+                        onValueChange={(value) =>
+                          setProjectScopeKey(value === "all" ? null : (value as string))
+                        }
+                      >
+                        <MenuRadioItem
+                          value="all"
+                          closeOnClick
+                          className="h-8 min-h-8 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
+                        >
+                          <FolderIcon className="size-4 shrink-0" />
+                          <span className="min-w-0 truncate text-sm">All projects</span>
+                        </MenuRadioItem>
+                        {projectGroups.map((project) => {
+                          const scopeKey = project.projectKey;
+                          return (
+                            <MenuRadioItem
+                              key={scopeKey}
+                              value={scopeKey}
+                              closeOnClick
+                              className="h-8 min-h-8 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
                             >
-                              <SettingsIcon className="size-3.5" />
-                            </Button>
-                          </MenuRadioItem>
-                        );
-                      })}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <SidebarMenuButton
-                        size="icon"
-                        className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                        onClick={openAddProjectCommandPalette}
-                        type="button"
-                        aria-label="New project"
+                              <ProjectFavicon
+                                environmentId={project.environmentId}
+                                cwd={project.workspaceRoot}
+                                faviconPath={project.faviconPath}
+                                className="size-4 shrink-0"
+                              />
+                              <span className="min-w-0 truncate text-sm">
+                                {project.displayName}
+                              </span>
+                              <Button
+                                size="icon-xs"
+                                variant="ghost-muted"
+                                aria-label={`Project settings for ${project.displayName}`}
+                                title={`Project settings for ${project.displayName}`}
+                                className="ml-auto size-6 [--control-icon-color:currentColor] text-icon-muted focus-visible:bg-accent focus-visible:text-foreground"
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  void handleProjectSettings(event, project);
+                                }}
+                              >
+                                <SettingsIcon className="size-3.5" />
+                              </Button>
+                            </MenuRadioItem>
+                          );
+                        })}
+                      </MenuRadioGroup>
+                    </MenuPopup>
+                  </Menu>
+                ) : (
+                  <span className="flex-1" />
+                )}
+                <EnvironmentVisibilityMenu
+                  environments={environmentVisibilityOptions}
+                  hiddenCount={hiddenEnvironmentCount}
+                  onVisibilityChange={setSidebarEnvironmentVisible}
+                />
+                {projectGroups.length > 0 ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <SidebarMenuButton
+                          size="icon"
+                          className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                          onClick={openAddProjectCommandPalette}
+                          type="button"
+                          aria-label="New project"
+                        />
+                      }
+                    >
+                      <FolderPlusIcon />
+                      <span
+                        className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                        aria-hidden="true"
                       />
-                    }
-                  >
-                    <FolderPlusIcon />
-                    <span
-                      className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                      aria-hidden="true"
-                    />
-                  </TooltipTrigger>
-                  <TooltipPopup side="right">New project</TooltipPopup>
-                </Tooltip>
+                    </TooltipTrigger>
+                    <TooltipPopup side="right">New project</TooltipPopup>
+                  </Tooltip>
+                ) : null}
               </div>
             ) : null}
           </SidebarGroup>
@@ -3804,6 +3972,7 @@ export default function Sidebar() {
                       projectCwdByKey={projectCwdByKey}
                       projectFaviconPathByKey={projectFaviconPathByKey}
                       scopedProjectKeys={scopedProjectKeys}
+                      hiddenEnvironmentIds={hiddenEnvironmentIds}
                       routeDraftId={routeDraftIdForRows}
                       onNavigateToDraft={navigateToDraft}
                     />,
@@ -3960,7 +4129,11 @@ export default function Sidebar() {
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
               {projects.length === 0 ? (
                 <>
-                  <span>No projects yet</span>
+                  <span>
+                    {allProjects.length === 0
+                      ? "No projects yet"
+                      : "No projects in visible environments"}
+                  </span>
                   <button
                     type="button"
                     onClick={openAddProjectCommandPalette}
