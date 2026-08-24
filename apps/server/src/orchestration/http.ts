@@ -11,7 +11,7 @@ import {
   projectThreadDetailSnapshot,
   projectThreadHistoryPage,
 } from "./ActivityPayloadProjection.ts";
-import { normalizeDispatchCommand } from "./Normalizer.ts";
+import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
   failEnvironmentInternal,
@@ -207,13 +207,14 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
-          return yield* orchestrationEngine
-            .dispatch(normalizedCommand)
-            .pipe(
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_dispatch_failed", cause),
-              ),
-            );
+          return yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+            Effect.tapError(() =>
+              cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
+            ),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            ),
+          );
         }),
       );
   }),
