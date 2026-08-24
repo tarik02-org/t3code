@@ -188,7 +188,6 @@ import {
   Menu,
   MenuCheckboxItem,
   MenuGroup,
-  MenuGroupLabel,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -265,7 +264,6 @@ function EnvironmentVisibilityMenu(props: {
       </Tooltip>
       <MenuPopup align="end" side="bottom" className="min-w-56">
         <MenuGroup>
-          <MenuGroupLabel>Sidebar environments</MenuGroupLabel>
           {props.environments.map((environment) => {
             const isLastVisibleEnvironment = environment.visible && visibleEnvironmentCount === 1;
             return (
