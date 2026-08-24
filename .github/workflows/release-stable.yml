@@ -1,0 +1,28 @@
+name: Stable Release Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional stable version
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Package stable release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'prepare stable release ')
+    uses: ./.github/workflows/release-build.yml
+    with:
+      channel: stable
+      release_ref: ${{ github.sha }}
+      version: ${{ inputs.version }}
