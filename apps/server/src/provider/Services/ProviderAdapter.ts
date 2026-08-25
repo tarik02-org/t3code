@@ -9,9 +9,6 @@
  */
 import type {
   ApprovalRequestId,
-  CodexGoal,
-  CodexGoalClearResult,
-  CodexGoalSetInput,
   ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderUserInputAnswers,
@@ -127,13 +124,6 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     numTurns: number,
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
-
-  /** Native Codex Goal operations. Absent for providers that do not support them. */
-  readonly codexGoal?: {
-    readonly get: (threadId: ThreadId) => Effect.Effect<CodexGoal | null, TError>;
-    readonly set: (input: CodexGoalSetInput) => Effect.Effect<CodexGoal, TError>;
-    readonly clear: (threadId: ThreadId) => Effect.Effect<CodexGoalClearResult, TError>;
-  };
 
   /**
    * Upload a thread to the provider when the adapter supports feedback.

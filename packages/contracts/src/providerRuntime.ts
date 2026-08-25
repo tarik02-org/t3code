@@ -15,7 +15,6 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderApprovalOption } from "./orchestration.ts";
-import { CodexGoal } from "./codexGoal.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -337,8 +336,24 @@ const ThreadTokenUsageUpdatedPayload = Schema.Struct({
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
 
+export const ProviderRuntimeThreadGoalStatus = Schema.Literals([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+export type ProviderRuntimeThreadGoalStatus = typeof ProviderRuntimeThreadGoalStatus.Type;
+
 const ProviderRuntimeThreadGoalUpdatedPayload = Schema.Struct({
-  goal: CodexGoal,
+  objective: TrimmedNonEmptyStringSchema,
+  status: ProviderRuntimeThreadGoalStatus,
+  tokensUsed: NonNegativeInt,
+  tokenBudget: Schema.NullOr(NonNegativeInt),
+  timeUsedSeconds: NonNegativeInt,
+  createdAtEpochMsOrSeconds: Schema.Number,
+  updatedAtEpochMsOrSeconds: Schema.Number,
 });
 export type ProviderRuntimeThreadGoalUpdatedPayload =
   typeof ProviderRuntimeThreadGoalUpdatedPayload.Type;

@@ -93,6 +93,7 @@ import {
   type ComposerSubmissionIntent,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
+import { parseCodexGoalCommand } from "@t3tools/client-runtime/state/threads";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -136,6 +137,7 @@ import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { formatGoalStatusToastDescription, goalStatusToastTitle } from "../goalPresentation";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
@@ -257,18 +259,7 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
-import {
-  environmentThreads,
-  threadEnvironment,
-  useCodexGoal,
-  useEnvironmentThread,
-} from "../state/threads";
-import {
-  formatCodexGoalDescription,
-  formatCodexGoalError,
-  formatCodexGoalStatus,
-  parseCodexGoalCommand,
-} from "@t3tools/client-runtime/state/threads";
+import { environmentThreads, threadEnvironment, useEnvironmentThread } from "../state/threads";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
@@ -523,6 +514,21 @@ function eventPathContainsSelector(event: Event, selector: string): boolean {
     path.push(event.target);
   }
   return path.some((target) => target instanceof Element && target.closest(selector));
+}
+
+function showGoalStatusToast(goal: Thread["goal"]): void {
+  if (!goal) {
+    toastManager.add({
+      type: "info",
+      title: "No active goal",
+    });
+    return;
+  }
+  toastManager.add({
+    type: "info",
+    title: goalStatusToastTitle(goal),
+    description: formatGoalStatusToastDescription(goal),
+  });
 }
 
 function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
@@ -1263,6 +1269,7 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
   const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
     reportFailure: false,
   });
@@ -1291,11 +1298,6 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
-    reportFailure: false,
-  });
-  const getCodexGoal = useAtomCommand(threadEnvironment.getCodexGoal, { reportFailure: false });
-  const setCodexGoal = useAtomCommand(threadEnvironment.setCodexGoal, { reportFailure: false });
-  const clearCodexGoal = useAtomCommand(threadEnvironment.clearCodexGoal, {
     reportFailure: false,
   });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
@@ -1425,10 +1427,6 @@ function ChatViewContent(props: ChatViewProps) {
   const feedbackUploading = feedbackSubmissions.some(
     (submission) => submission.status === "uploading",
   );
-  const [goalCommandThreadKeysInFlight, setGoalCommandThreadKeysInFlight] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
-  const goalCommandRunning = goalCommandThreadKeysInFlight.has(routeThreadKey);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
@@ -1491,7 +1489,6 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
   const feedbackUploadsInFlightRef = useRef(new Set<string>());
-  const goalCommandsInFlightRef = useRef(new Set<string>());
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -1727,10 +1724,6 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
-  const activeThreadKeyRef = useRef(activeThreadKey);
-  useLayoutEffect(() => {
-    activeThreadKeyRef.current = activeThreadKey;
-  }, [activeThreadKey]);
   const changeRequestSnapshotByKey = useAtomValue(threadChangeRequestSnapshotsAtom);
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -2360,20 +2353,6 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProviderByThreadId ?? threadProvider,
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
-  const hasActiveCodexGoalSession =
-    isServerThread &&
-    selectedProvider === "codex" &&
-    activeThread !== null &&
-    activeThread !== undefined &&
-    activeThread.session !== null &&
-    activeThread.session.status !== "stopped";
-  const codexGoal = useCodexGoal(
-    hasActiveCodexGoalSession ? environmentId : null,
-    hasActiveCodexGoalSession ? activeThreadId : null,
-    hasActiveCodexGoalSession
-      ? (activeThread.session?.providerInstanceId ?? activeThread.modelSelection.instanceId)
-      : null,
-  );
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const operationalActivities = operationalThread?.activities ?? EMPTY_ACTIVITIES;
@@ -4847,24 +4826,25 @@ function ChatViewContent(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
-  const codexGoalBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    if (codexGoal === null) return null;
-    const goalDescription = formatCodexGoalDescription(codexGoal);
+  const goalBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    const goal = activeThread?.goal;
+    if (!goal) return null;
+    const description = formatGoalStatusToastDescription(goal);
     return {
-      id: `codex-goal:${activeThread?.id ?? "unknown"}`,
+      id: `goal:${activeThread.id}`,
       variant: "info",
       icon: <TargetIcon />,
-      title: `Goal ${formatCodexGoalStatus(codexGoal.status)}`,
+      title: goalStatusToastTitle(goal),
       description: (
         <Tooltip>
-          <TooltipTrigger render={<span className="line-clamp-2">{goalDescription}</span>} />
+          <TooltipTrigger render={<span className="line-clamp-2">{description}</span>} />
           <TooltipPopup side="top" className="max-w-96">
-            {goalDescription}
+            {description}
           </TooltipPopup>
         </Tooltip>
       ),
     };
-  }, [activeThread?.id, codexGoal]);
+  }, [activeThread?.goal, activeThread?.id]);
   const handleRestoreThreadBranch = useCallback(() => {
     if (gitStatusQuery.data?.hasWorkingTreeChanges) {
       setBranchRestoreConfirmOpen(true);
@@ -4881,7 +4861,7 @@ function ChatViewContent(props: ChatViewProps) {
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
-    const codexGoalItems = codexGoalBannerItem === null ? [] : [codexGoalBannerItem];
+    const goalItems = goalBannerItem === null ? [] : [goalBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...urgentSystemItems,
@@ -4889,7 +4869,7 @@ function ChatViewContent(props: ChatViewProps) {
         ...calmSystemItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
-        ...codexGoalItems,
+        ...goalItems,
       ];
     }
     return [
@@ -4937,12 +4917,12 @@ function ChatViewContent(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
-      ...codexGoalItems,
+      ...goalItems,
     ];
   }, [
     activeBranchMismatchKey,
     backgroundLivenessBannerItem,
-    codexGoalBannerItem,
+    goalBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
@@ -5278,8 +5258,7 @@ function ChatViewContent(props: ChatViewProps) {
       isConnecting ||
       threadDetailLoading ||
       sendInFlightRef.current ||
-      feedbackUploadsInFlightRef.current.has(routeThreadKey) ||
-      goalCommandsInFlightRef.current.has(routeThreadKey)
+      feedbackUploadsInFlightRef.current.has(routeThreadKey)
     ) {
       notifyDirectAnnotationAttached();
       return;
@@ -5304,21 +5283,6 @@ function ChatViewContent(props: ChatViewProps) {
     }
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx?.providerAvailable) {
-      if (
-        sendCtx !== undefined &&
-        !directAnnotation &&
-        sendCtx.images.length === 0 &&
-        selectedProvider === "codex" &&
-        parseCodexGoalCommand(promptRef.current) !== null
-      ) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "info",
-            title: "Provider still loading",
-            description: "Wait for the thread's provider to load before running a Goal command.",
-          }),
-        );
-      }
       notifyDirectAnnotationAttached();
       return;
     }
@@ -5369,15 +5333,15 @@ function ChatViewContent(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
-    const isUnadornedCodexCommand =
+    const feedbackCommand =
       ctxSelectedProvider === "codex" &&
-      !directAnnotation &&
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
-      composerReviewComments.length === 0;
-    const feedbackCommand = isUnadornedCodexCommand ? parseCodexFeedbackCommand(trimmed) : null;
+      composerReviewComments.length === 0
+        ? parseCodexFeedbackCommand(trimmed)
+        : null;
     if (feedbackCommand) {
       if (!isServerThread || activeThread.session === null) {
         toastManager.add(
@@ -5464,114 +5428,6 @@ function ChatViewContent(props: ChatViewProps) {
       );
       return;
     }
-    const codexGoalCommand = isUnadornedCodexCommand ? parseCodexGoalCommand(trimmed) : null;
-    if (codexGoalCommand !== null) {
-      if (codexGoalCommand.action === "invalid") {
-        toastManager.add(
-          stackedThreadToast({
-            type: "warning",
-            title: "Invalid Goal command",
-            description: codexGoalCommand.message,
-          }),
-        );
-        return;
-      }
-      if (!isServerThread || activeThreadId === null || activeThread.session === null) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "warning",
-            title: "Start the Codex thread first",
-            description: "Send a message before managing its native Goal.",
-          }),
-        );
-        return;
-      }
-
-      const target = { environmentId, input: { threadId: activeThreadId } };
-      const submittedThreadKey = activeThreadKey;
-      const submittedGoalCommandThreadKey = routeThreadKey;
-      const stillOnSubmittedThread = () => activeThreadKeyRef.current === submittedThreadKey;
-      const clearSubmittedGoalCommandDraft = () => {
-        if (!stillOnSubmittedThread() || promptRef.current !== promptForSend) return;
-        promptRef.current = "";
-        clearComposerDraftContent(composerDraftTarget);
-        composerRef.current?.resetCursorState();
-      };
-      goalCommandsInFlightRef.current.add(submittedGoalCommandThreadKey);
-      setGoalCommandThreadKeysInFlight((current) => {
-        const next = new Set(current);
-        next.add(submittedGoalCommandThreadKey);
-        return next;
-      });
-      try {
-        if (codexGoalCommand.action === "status") {
-          const result = await getCodexGoal(target);
-          if (result._tag === "Failure") {
-            if (!isAtomCommandInterrupted(result) && stillOnSubmittedThread()) {
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Codex Goal operation failed",
-                  description: formatCodexGoalError(squashAtomCommandFailure(result)),
-                }),
-              );
-            }
-            return;
-          }
-          clearSubmittedGoalCommandDraft();
-          if (!stillOnSubmittedThread()) return;
-          toastManager.add(
-            stackedThreadToast(
-              result.value === null
-                ? { type: "info", title: "No active Codex Goal" }
-                : {
-                    type: "info",
-                    title: `Goal ${formatCodexGoalStatus(result.value.status)}`,
-                    description: formatCodexGoalDescription(result.value),
-                  },
-            ),
-          );
-          return;
-        }
-        const result =
-          codexGoalCommand.action === "clear"
-            ? await clearCodexGoal(target)
-            : await setCodexGoal({
-                environmentId,
-                input: {
-                  threadId: activeThreadId,
-                  ...(codexGoalCommand.objective === undefined
-                    ? {}
-                    : { objective: codexGoalCommand.objective }),
-                  ...(codexGoalCommand.status === undefined
-                    ? {}
-                    : { status: codexGoalCommand.status }),
-                },
-              });
-        if (result._tag === "Failure") {
-          if (!isAtomCommandInterrupted(result) && stillOnSubmittedThread()) {
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Codex Goal operation failed",
-                description: formatCodexGoalError(squashAtomCommandFailure(result)),
-              }),
-            );
-          }
-          return;
-        }
-
-        clearSubmittedGoalCommandDraft();
-        return;
-      } finally {
-        goalCommandsInFlightRef.current.delete(submittedGoalCommandThreadKey);
-        setGoalCommandThreadKeysInFlight((current) => {
-          const next = new Set(current);
-          next.delete(submittedGoalCommandThreadKey);
-          return next;
-        });
-      }
-    }
     if (!directAnnotation && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -5612,6 +5468,137 @@ function ChatViewContent(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      return;
+    }
+    const goalSlashCommand =
+      ctxSelectedProvider === "codex" &&
+      composerImages.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerElementContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0
+        ? parseCodexGoalCommand(trimmed)
+        : null;
+    if (goalSlashCommand) {
+      if (goalSlashCommand.kind === "invalid") {
+        setThreadError(activeThread.id, goalSlashCommand.message);
+        return;
+      }
+      if (!activeProject) {
+        return;
+      }
+      if (!isServerThread && goalSlashCommand.kind !== "set") {
+        setThreadError(activeThread.id, "Enter a goal objective to start a thread with /goal.");
+        return;
+      }
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      setThreadError(activeThread.id, null);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      const createdAt = new Date().toISOString();
+      const title =
+        goalSlashCommand.kind === "set" ? truncate(goalSlashCommand.objective) : activeThread.title;
+      const threadCreateModelSelection = createModelSelection(
+        ctxSelectedModelSelection.instanceId,
+        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        ctxSelectedModelSelection.options,
+      );
+      let failure: AtomCommandResult<unknown, unknown> | null = null;
+      if (!isServerThread) {
+        const createResult = await createThread({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            projectId: activeProject.id,
+            title,
+            modelSelection: threadCreateModelSelection,
+            runtimeMode,
+            interactionMode,
+            branch: activeThreadBranch,
+            worktreePath: activeThread.worktreePath,
+            createdAt: activeThread.createdAt,
+          },
+        });
+        if (createResult._tag === "Failure") {
+          failure = createResult;
+        }
+      } else {
+        if (activeThread.messages.length === 0 && goalSlashCommand.kind === "set") {
+          const titleResult = await updateThreadMetadata({
+            environmentId,
+            input: {
+              threadId: activeThread.id,
+              title,
+            },
+          });
+          if (titleResult._tag === "Failure") {
+            failure = titleResult;
+          }
+        }
+        if (failure === null) {
+          const settingsResult = await persistThreadSettingsForNextTurn({
+            threadId: activeThread.id,
+            createdAt,
+            ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
+            runtimeMode,
+            interactionMode,
+          });
+          if (settingsResult._tag === "Failure") {
+            failure = settingsResult;
+          }
+        }
+      }
+
+      if (failure === null) {
+        const goalResult = await requestThreadGoal({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            request: goalSlashCommand,
+            createdAt,
+          },
+        });
+        if (goalResult._tag === "Failure") {
+          failure = goalResult;
+        }
+      }
+
+      if (failure === null) {
+        if (goalSlashCommand.kind === "status") {
+          showGoalStatusToast(activeThread.goal);
+        }
+
+        if (!isServerThread) {
+          await waitForStartedServerThread(
+            scopeThreadRef(activeThread.environmentId, activeThread.id),
+          );
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: {
+              environmentId: activeThread.environmentId,
+              threadId: activeThread.id,
+            },
+          });
+        }
+      } else {
+        promptRef.current = promptForSend;
+        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+          prompt: promptForSend,
+          detectTrigger: true,
+        });
+        if (!isAtomCommandInterrupted(failure)) {
+          const error = squashAtomCommandFailure(failure);
+          setThreadError(
+            activeThread.id,
+            error instanceof Error ? error.message : "Failed to send goal command.",
+          );
+        }
+      }
+      sendInFlightRef.current = false;
+      resetLocalDispatch();
       return;
     }
     if (!hasSendableContent) {
@@ -7122,11 +7109,9 @@ function ChatViewContent(props: ChatViewProps) {
                             sendDisabledReason={
                               feedbackUploading
                                 ? "Sending feedback"
-                                : goalCommandRunning
-                                  ? "Running Goal command"
-                                  : threadDetailLoading
-                                    ? "Messages loading"
-                                    : null
+                                : threadDetailLoading
+                                  ? "Messages loading"
+                                  : null
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             externalDrawerAttached={externalComposerDrawerAttached}

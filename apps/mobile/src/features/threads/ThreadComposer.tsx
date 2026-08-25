@@ -394,6 +394,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
     if (composerTrigger.kind === "slash-command") {
       const q = composerTrigger.query.toLowerCase();
+      const hasProviderGoalCommand = (selectedProviderStatus?.slashCommands ?? []).some(
+        (command) => command.name.toLowerCase() === "goal",
+      );
+      const goalCommandItems =
+        selectedProviderStatus?.driver === "codex" && !hasProviderGoalCommand
+          ? [
+              {
+                id: "cmd:goal",
+                type: "slash-command" as const,
+                command: "goal",
+                label: "/goal",
+                description: "Set, view, pause, resume, or clear a task goal",
+              },
+            ]
+          : [];
       const allBuiltIn = [
         {
           id: "cmd:model",
@@ -416,6 +431,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           label: "/default",
           description: "Switch to default mode",
         },
+        ...goalCommandItems,
       ];
       const builtIn = allBuiltIn.filter((item) => item.command.includes(q));
 
@@ -552,8 +568,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
     try {
-      const sentMessageId = await onSendMessage();
-      if (sentMessageId === null) {
+      const messageId = await onSendMessage();
+      if (messageId === null) {
         return;
       }
       // Sending a prompt starts agent work: arm the lock-screen card while the

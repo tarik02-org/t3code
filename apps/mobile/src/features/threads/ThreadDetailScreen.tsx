@@ -1,9 +1,5 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
-  formatCodexGoalDescription,
-  formatCodexGoalError,
-  formatCodexGoalStatus,
-  formatCodexGoalUsage,
   parseCodexGoalCommand,
   type EnvironmentThreadStatus,
 } from "@t3tools/client-runtime/state/threads";
@@ -19,6 +15,8 @@ import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
+  OrchestrationThreadGoal,
+  OrchestrationThreadGoalStatus,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -65,7 +63,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ControlPill } from "../../components/ControlPill";
 import { AppText as Text } from "../../components/AppText";
-import { threadEnvironment, useCodexGoal } from "../../state/threads";
+import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
@@ -95,6 +93,28 @@ import {
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
+
+function goalStatusLabel(status: OrchestrationThreadGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "active";
+    case "paused":
+      return "paused";
+    case "blocked":
+      return "blocked";
+    case "usageLimited":
+      return "usage limited";
+    case "budgetLimited":
+      return "budget limited";
+    case "complete":
+      return "complete";
+  }
+}
+
+function formatGoalUsage(goal: OrchestrationThreadGoal): string {
+  const budget = goal.tokenBudget === null ? "" : ` / ${goal.tokenBudget.toLocaleString()}`;
+  return `${goal.tokensUsed.toLocaleString()} tokens${budget}, ${goal.timeUsedSeconds.toLocaleString()} seconds`;
+}
 
 export interface ThreadDetailScreenProps {
   readonly selectedThread: OrchestrationThreadShell;
@@ -285,11 +305,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const [anchorMessageId, setAnchorMessageId] = useState<MessageId | null>(null);
   const [submittedMessageId, setSubmittedMessageId] = useState<MessageId | null>(null);
   const [endFollowEnabled, setEndFollowEnabled] = useState(true);
-  const getCodexGoal = useAtomCommand(threadEnvironment.getCodexGoal, { reportFailure: false });
-  const setCodexGoal = useAtomCommand(threadEnvironment.setCodexGoal, { reportFailure: false });
-  const clearCodexGoal = useAtomCommand(threadEnvironment.clearCodexGoal, {
-    reportFailure: false,
-  });
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
   // Android keys the safe-area padding on keyboard visibility (#5988): the
   // back gesture closes the keyboard while the editor stays focused, and a
   // focus-keyed inset would leave the toolbar under the gesture bar. iOS must
@@ -476,17 +492,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const selectedProvider = props.serverConfig?.providers.find(
     (provider) => provider.instanceId === selectedInstanceId,
   );
-  const hasActiveCodexGoalSession =
-    selectedProvider?.driver === "codex" &&
-    props.selectedThread.session !== null &&
-    props.selectedThread.session.status !== "stopped";
-  const codexGoal = useCodexGoal(
-    hasActiveCodexGoalSession ? props.environmentId : null,
-    hasActiveCodexGoalSession ? props.selectedThread.id : null,
-    hasActiveCodexGoalSession
-      ? (props.selectedThread.session?.providerInstanceId ?? selectedInstanceId)
-      : null,
-  );
   useStreamingHaptics(props.selectedThread.id, props.selectedThreadFeed);
   const selectedProviderSkills = useMemo(
     () =>
@@ -566,85 +571,61 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   ]);
 
   const handleSendMessage = useCallback(async () => {
-    const draftGoalCommand =
+    const parsedGoalCommand =
       props.draftAttachments.length === 0 ? parseCodexGoalCommand(props.draftMessage) : null;
-    if (draftGoalCommand !== null && selectedProvider === undefined) {
+    if (parsedGoalCommand !== null && selectedProvider === undefined) {
       Alert.alert(
         "Provider still loading",
         "Wait for the thread's provider to load before running a Goal command.",
       );
       return null;
     }
-    const goalCommand = selectedProvider?.driver === "codex" ? draftGoalCommand : null;
+    const goalCommand = selectedProvider?.driver === "codex" ? parsedGoalCommand : null;
     if (goalCommand !== null) {
-      if (goalCommand.action === "invalid") {
+      if (goalCommand.kind === "invalid") {
         Alert.alert("Invalid Goal command", goalCommand.message);
         return null;
       }
-      if (props.selectedThread.session === null) {
-        Alert.alert(
-          "Start the Codex thread first",
-          "Send a message before managing its native Goal.",
-        );
-        return null;
-      }
-      const target = {
-        environmentId: props.environmentId,
-        input: { threadId: props.selectedThread.id },
-      };
+
       const submittedDraft = props.draftMessage;
       const submittedThreadKey = selectedThreadKey;
-      const stillOnSubmittedThread = () => selectedThreadKeyRef.current === submittedThreadKey;
-      const clearSubmittedGoalCommandDraft = () => {
-        if (!stillOnSubmittedThread() || draftMessageRef.current !== submittedDraft) return;
-        props.onChangeDraftMessage("");
-      };
-      if (goalCommand.action === "status") {
-        const result = await getCodexGoal(target);
-        if (result._tag === "Failure") {
-          if (!isAtomCommandInterrupted(result) && stillOnSubmittedThread()) {
-            Alert.alert(
-              "Codex Goal operation failed",
-              formatCodexGoalError(squashAtomCommandFailure(result)),
-            );
-          }
-          return null;
-        }
-        clearSubmittedGoalCommandDraft();
-        if (!stillOnSubmittedThread()) return null;
-        Alert.alert(
-          result.value === null
-            ? "No active Codex Goal"
-            : `Goal ${formatCodexGoalStatus(result.value.status)}`,
-          result.value === null ? undefined : formatCodexGoalDescription(result.value),
-        );
-        return null;
-      }
-      const result =
-        goalCommand.action === "clear"
-          ? await clearCodexGoal(target)
-          : await setCodexGoal({
-              environmentId: props.environmentId,
-              input: {
-                threadId: props.selectedThread.id,
-                ...(goalCommand.objective === undefined
-                  ? {}
-                  : { objective: goalCommand.objective }),
-                ...(goalCommand.status === undefined ? {} : { status: goalCommand.status }),
-              },
-            });
+      const result = await requestThreadGoal({
+        environmentId: props.environmentId,
+        input: {
+          threadId: props.selectedThread.id,
+          request: goalCommand,
+          createdAt: new Date().toISOString(),
+        },
+      });
       if (result._tag === "Failure") {
-        if (!isAtomCommandInterrupted(result) && stillOnSubmittedThread()) {
+        if (
+          !isAtomCommandInterrupted(result) &&
+          selectedThreadKeyRef.current === submittedThreadKey
+        ) {
+          const error = squashAtomCommandFailure(result);
           Alert.alert(
-            "Codex Goal operation failed",
-            formatCodexGoalError(squashAtomCommandFailure(result)),
+            "Goal command failed",
+            error instanceof Error ? error.message : "Failed to send Goal command.",
           );
         }
         return null;
       }
-      clearSubmittedGoalCommandDraft();
+      if (
+        selectedThreadKeyRef.current === submittedThreadKey &&
+        draftMessageRef.current === submittedDraft
+      ) {
+        props.onChangeDraftMessage("");
+      }
+      if (goalCommand.kind === "status" && selectedThreadKeyRef.current === submittedThreadKey) {
+        const goal = props.selectedThread.goal;
+        Alert.alert(
+          goal === null ? "No active Goal" : `Goal ${goalStatusLabel(goal.status)}`,
+          goal === null ? undefined : `${goal.objective} - ${formatGoalUsage(goal)}`,
+        );
+      }
       return null;
     }
+
     const targetThreadKey = selectedThreadKey;
     const hasUserMessage = selectedThreadFeed.some(
       (entry) => entry.type === "message" && entry.message.role === "user",
@@ -668,21 +649,19 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     return messageId;
   }, [
     anchorMessageId,
-    clearCodexGoal,
-    getCodexGoal,
-    props.onSendMessage,
     props.draftAttachments,
     props.draftMessage,
     props.environmentId,
     props.onChangeDraftMessage,
+    props.onSendMessage,
+    props.selectedThread.goal,
     props.selectedThread.id,
     props.selectedThread.latestTurn,
-    props.selectedThread.session,
     props.selectedThreadQueueCount,
+    requestThreadGoal,
     selectedThreadFeed,
     selectedThreadKey,
     selectedProvider?.driver,
-    setCodexGoal,
   ]);
 
   const collapseComposer = useCallback(() => {
@@ -879,16 +858,16 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             {/* Hidden (not unmounted) while a user-input request owns the
                 composer slot, so composer drafts and editor state survive. */}
             <View style={activeUserInputRequestId !== null ? { display: "none" } : undefined}>
-              {codexGoal !== null ? (
+              {props.selectedThread.goal !== null ? (
                 <View className="mx-3 mb-2 rounded-xl border border-blue-500/20 bg-blue-500/10 px-3 py-2">
                   <Text className="text-xs font-t3-bold text-foreground">
-                    Goal {formatCodexGoalStatus(codexGoal.status)}
+                    Goal {goalStatusLabel(props.selectedThread.goal.status)}
                   </Text>
                   <Text className="text-xs text-foreground-muted" numberOfLines={2}>
-                    {codexGoal.objective}
+                    {props.selectedThread.goal.objective}
                   </Text>
                   <Text className="text-xs text-foreground-muted" numberOfLines={1}>
-                    {formatCodexGoalUsage(codexGoal)}
+                    {formatGoalUsage(props.selectedThread.goal)}
                   </Text>
                 </View>
               ) : null}

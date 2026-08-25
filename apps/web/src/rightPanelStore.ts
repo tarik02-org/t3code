@@ -68,7 +68,7 @@ const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
 // v10 keys pull-request surfaces by reference instead of a singleton tab.
 // v11 stops persisting the pull-request list's shared panel, so a restart opens the page fresh.
-// v12 removed the Goal control panel in favor of the composer banner and commands.
+// v12 removes the Goal surface in favor of the composer banner.
 const RIGHT_PANEL_STORAGE_VERSION = 12;
 
 /**
@@ -264,8 +264,9 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    const persistedKind = (surface as { kind?: string }).kind;
-                    if (persistedKind === "plan" || persistedKind === "goal") return [];
+                    // Dropped surface kind: plans now render inline in the
+                    // transcript (v9).
+                    if ((surface as { kind?: string }).kind === "plan") return [];
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&

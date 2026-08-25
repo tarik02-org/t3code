@@ -34,29 +34,25 @@ In an existing Codex thread, send `/feedback` or `/feedback` followed by a descr
 issue. T3 Code uploads the thread and Codex logs to OpenAI and shows a thread ID that you can copy
 and share with OpenAI employees.
 
+## Manage a Goal
+
+Use Goal commands in the composer of a Codex thread:
+
+- `/goal create <objective>` sets a Goal. `/goal <objective>` is shorthand.
+- `/goal status` shows its current status. `/goal` does the same.
+- `/goal steer <objective>` changes the objective.
+- `/goal pause` pauses it.
+- `/goal resume` resumes it.
+- `/goal clear` clears it. `/goal reset` does the same.
+
+While a Goal exists, its status, objective, token usage, and elapsed time appear above the composer
+on web, desktop, and mobile.
+
 ## Approve access to other apps
 
 When a Codex tool needs access to an app such as Safari, T3 Code shows the app name and asks for
 approval. You can approve, decline, or cancel the request from the desktop app, web app, or mobile
 app. Some tools also offer approval for the current session or permanent approval.
-
-## Manage a Codex Goal
-
-After starting a Codex thread, use `/goal` in the composer to manage that thread's native Codex
-Goal:
-
-```text
-/goal create <objective>
-/goal status
-/goal steer <updated objective>
-/goal pause
-/goal resume
-/goal clear
-```
-
-`/goal <objective>` is shorthand for create, and `/goal reset` is an alias for clear. Goal status
-and usage come directly from Codex and stay synchronized when Codex updates them in the background.
-Goal commands are only available on Codex threads.
 
 ## I Want Work And Personal Codex Accounts
 

@@ -42,13 +42,6 @@ const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
 } as const;
-const CODEX_SLASH_COMMANDS = [
-  {
-    name: "goal",
-    description: "Manage the native Codex Goal for this thread",
-    input: { hint: "[status|create|steer|pause|resume|clear|reset] [objective]" },
-  },
-] as const;
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
@@ -457,7 +450,6 @@ const makePendingCodexProvider = (
         enabled: false,
         checkedAt,
         models,
-        slashCommands: CODEX_SLASH_COMMANDS,
         skills: [],
         probe: {
           installed: false,
@@ -474,7 +466,6 @@ const makePendingCodexProvider = (
       enabled: true,
       checkedAt,
       models,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: false,
@@ -545,7 +536,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: false,
       checkedAt,
       models: emptyModels,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: false,
@@ -578,7 +568,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed,
@@ -598,7 +587,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: true,
@@ -620,7 +608,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     models: snapshot.models,
     skills: snapshot.skills,
     slashCommands: [
-      ...CODEX_SLASH_COMMANDS,
       {
         name: "feedback",
         description: "Send this thread and Codex logs to OpenAI",

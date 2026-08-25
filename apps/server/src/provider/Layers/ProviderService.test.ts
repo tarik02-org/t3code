@@ -4,8 +4,6 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import type {
-  CodexGoal,
-  CodexGoalSetInput,
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -16,6 +14,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -94,7 +93,6 @@ type LegacyProviderRuntimeEvent = {
 
 function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const sessions = new Map<ThreadId, ProviderSession>();
-  const goals = new Map<ThreadId, CodexGoal>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
   const startSession = vi.fn((input: ProviderSessionStartInput) =>
@@ -215,29 +213,6 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       }),
   );
 
-  const getCodexGoal = vi.fn((threadId: ThreadId) => Effect.succeed(goals.get(threadId) ?? null));
-  const setCodexGoal = vi.fn((input: CodexGoalSetInput) =>
-    Effect.sync(() => {
-      const { threadId, ...updates } = input;
-      const next: CodexGoal = {
-        objective: "Test Goal",
-        status: "active",
-        tokenBudget: null,
-        tokensUsed: 0,
-        timeUsedSeconds: 0,
-        createdAt: 1_777_000_000,
-        updatedAt: 1_777_000_001,
-        ...goals.get(threadId),
-        ...updates,
-      };
-      goals.set(threadId, next);
-      return next;
-    }),
-  );
-  const clearCodexGoal = vi.fn((threadId: ThreadId) =>
-    Effect.sync(() => ({ cleared: goals.delete(threadId) })),
-  );
-
   const adapter: ProviderAdapterShape<ProviderAdapterError> = {
     provider,
     capabilities: {
@@ -253,16 +228,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     hasSession,
     readThread,
     rollbackThread,
-    ...(provider === CODEX_DRIVER
-      ? {
-          uploadFeedback,
-          codexGoal: {
-            get: getCodexGoal,
-            set: setCodexGoal,
-            clear: clearCodexGoal,
-          },
-        }
-      : {}),
+    ...(provider === CODEX_DRIVER ? { uploadFeedback } : {}),
     stopAll,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
@@ -299,9 +265,6 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     readThread,
     rollbackThread,
     uploadFeedback,
-    getCodexGoal,
-    setCodexGoal,
-    clearCodexGoal,
     stopAll,
   };
 }
@@ -965,117 +928,6 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
-  it.effect("keeps native Codex Goals scoped to their routed threads", () =>
-    Effect.gen(function* () {
-      const provider = yield* ProviderService.ProviderService;
-      const goals = [
-        [asThreadId("goal-thread-1"), "First thread Goal"],
-        [asThreadId("goal-thread-2"), "Second thread Goal"],
-      ] as const;
-      yield* Effect.forEach(
-        goals,
-        ([threadId, objective]) =>
-          Effect.gen(function* () {
-            yield* provider.startSession(threadId, {
-              provider: CODEX_DRIVER,
-              providerInstanceId: codexInstanceId,
-              threadId,
-              cwd: `/tmp/${threadId}`,
-              runtimeMode: "full-access",
-            });
-            yield* provider.setCodexGoal({ threadId, objective, status: "active" });
-            assert.equal((yield* provider.getCodexGoal(threadId))?.objective, objective);
-          }),
-        { discard: true },
-      );
-      assert.deepEqual(
-        routing.codex.setCodexGoal.mock.calls.slice(-2).map(([input]) => input.threadId),
-        goals.map(([threadId]) => threadId),
-      );
-      yield* Effect.forEach(goals, ([threadId]) => provider.stopSession({ threadId }), {
-        discard: true,
-      });
-      routing.codex.startSession.mockClear();
-      routing.codex.stopSession.mockClear();
-    }),
-  );
-
-  it.effect("reads Codex Goal snapshots without recovering inactive sessions", () =>
-    Effect.gen(function* () {
-      const provider = yield* ProviderService.ProviderService;
-      const threadId = asThreadId("inactive-goal-thread");
-      yield* provider.startSession(threadId, {
-        provider: CODEX_DRIVER,
-        providerInstanceId: codexInstanceId,
-        threadId,
-        cwd: "/tmp/inactive-goal-thread",
-        runtimeMode: "full-access",
-      });
-      yield* provider.setCodexGoal({ threadId, objective: "Resume only on demand" });
-      yield* provider.stopSession({ threadId });
-      routing.codex.startSession.mockClear();
-      routing.codex.getCodexGoal.mockClear();
-
-      const snapshot = yield* provider.getCodexGoal(threadId, { allowRecovery: false });
-      assert.equal(snapshot, null);
-      assert.equal(routing.codex.startSession.mock.calls.length, 0);
-      assert.equal(routing.codex.getCodexGoal.mock.calls.length, 0);
-
-      const inactiveFailure = yield* provider
-        .getCodexGoal(threadId, { allowRecovery: false, failIfInactive: true })
-        .pipe(Effect.result);
-      assert.equal(inactiveFailure._tag, "Failure");
-      if (inactiveFailure._tag === "Failure") {
-        assert.equal(inactiveFailure.failure._tag, "ProviderValidationError");
-      }
-      assert.equal(routing.codex.startSession.mock.calls.length, 0);
-      assert.equal(routing.codex.getCodexGoal.mock.calls.length, 0);
-
-      const recovered = yield* provider.getCodexGoal(threadId);
-      assert.equal(recovered?.objective, "Resume only on demand");
-      assert.equal(routing.codex.startSession.mock.calls.length, 1);
-      assert.equal(routing.codex.getCodexGoal.mock.calls.length, 1);
-
-      yield* provider.stopSession({ threadId });
-      routing.codex.startSession.mockClear();
-      routing.codex.stopSession.mockClear();
-    }),
-  );
-
-  it.effect("rejects native Codex Goal operations for unsupported providers", () =>
-    Effect.gen(function* () {
-      const provider = yield* ProviderService.ProviderService;
-      const threadId = asThreadId("claude-goal-thread");
-      yield* provider.startSession(threadId, {
-        provider: CLAUDE_AGENT_DRIVER,
-        providerInstanceId: claudeAgentInstanceId,
-        threadId,
-        cwd: "/tmp/claude-goal-thread",
-        runtimeMode: "full-access",
-      });
-      yield* provider.stopSession({ threadId });
-      routing.claude.startSession.mockClear();
-      routing.claude.stopSession.mockClear();
-
-      const results = yield* Effect.all([
-        provider.getCodexGoal(threadId).pipe(Effect.result),
-        provider
-          .setCodexGoal({ threadId, objective: "Unsupported Goal", status: "active" })
-          .pipe(Effect.result),
-        provider.clearCodexGoal(threadId).pipe(Effect.result),
-      ]);
-      for (const result of results) {
-        assert.equal(result._tag, "Failure");
-        if (result._tag === "Failure") {
-          assert.equal(result.failure._tag, "ProviderValidationError");
-        }
-      }
-      assert.equal(routing.claude.startSession.mock.calls.length, 0);
-      routing.claude.startSession.mockClear();
-      routing.claude.stopSession.mockClear();
-    }),
-  );
-
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

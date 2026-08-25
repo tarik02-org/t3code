@@ -135,8 +135,6 @@ describe("routeCodexChildNotification", () => {
       "item/commandExecution/outputDelta",
       "turn/plan/updated",
       "thread/name/updated",
-      "thread/goal/updated",
-      "thread/goal/cleared",
     ]) {
       assert.equal(routeCodexChildNotification(method), "drop", method);
     }
@@ -157,8 +155,6 @@ describe("routeCodexChildNotification", () => {
       "thread/compacted",
       "thread/name/updated",
       "thread/tokenUsage/updated",
-      "thread/goal/updated",
-      "thread/goal/cleared",
       "turn/started",
       "turn/completed",
       "turn/plan/updated",
