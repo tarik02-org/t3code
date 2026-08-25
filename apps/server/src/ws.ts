@@ -2255,7 +2255,10 @@ const makeWsRpcLayer = (
               const liveGoalEvents = yield* Stream.toQueue(
                 providerService.streamEvents.pipe(
                   Stream.filterMap((event) => {
-                    if (event.threadId !== input.threadId) {
+                    if (
+                      event.threadId !== input.threadId ||
+                      event.providerInstanceId !== input.providerInstanceId
+                    ) {
                       return Result.failVoid;
                     }
                     if (event.type === "thread.goal.updated") {
