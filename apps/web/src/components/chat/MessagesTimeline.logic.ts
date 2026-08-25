@@ -234,13 +234,6 @@ export type MessagesTimelineRow =
       proposedPlan: ProposedPlan;
     }
   | {
-      kind: "goal";
-      id: string;
-      createdAt: string;
-      label: string;
-      detail?: string | undefined;
-    }
-  | {
       kind: "turn-plan";
       id: string;
       createdAt: string;
@@ -994,17 +987,6 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
-    if (timelineEntry.kind === "goal") {
-      nextRows.push({
-        kind: "goal",
-        id: timelineEntry.id,
-        createdAt: timelineEntry.createdAt,
-        label: timelineEntry.label,
-        ...(timelineEntry.detail ? { detail: timelineEntry.detail } : {}),
-      });
-      continue;
-    }
-
     if (timelineEntry.kind === "turn-plan") {
       nextRows.push({
         kind: "turn-plan",
@@ -1095,11 +1077,6 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
-
-    case "goal": {
-      const bg = b as typeof a;
-      return a.label === bg.label && a.detail === bg.detail && a.createdAt === bg.createdAt;
-    }
 
     case "turn-plan": {
       const bp = b as typeof a;

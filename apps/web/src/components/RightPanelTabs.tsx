@@ -7,7 +7,6 @@ import {
   GitPullRequest,
   Globe2,
   Plus,
-  Target,
   TerminalSquare,
   Volume2,
   VolumeOff,
@@ -75,12 +74,10 @@ interface RightPanelTabsProps {
   onAddFiles: () => void;
   onAddPullRequest: () => void;
   onAddAgents: () => void;
-  onAddGoal: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
-  goalAvailable: boolean;
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
   pullRequestStatuses?: Readonly<Record<string, PullRequestTabStatus>>;
@@ -255,12 +252,10 @@ function RightPanelEmptyState(props: {
   onAddFiles: () => void;
   onAddPullRequest: () => void;
   onAddAgents: () => void;
-  onAddGoal: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
-  goalAvailable: boolean;
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
   liveAgentCount: number;
@@ -328,16 +323,6 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
-    },
-    {
-      label: "Goal",
-      description: "Inspect and control the active goal.",
-      icon: Target,
-      shortcut: "G",
-      available: props.goalAvailable,
-      disabledReason: "Goal controls are available while this thread has a goal.",
-      onClick: props.onAddGoal,
-      badgeCount: 0,
     },
   ] as const;
 
@@ -523,8 +508,6 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "agents":
       return "Agents";
-    case "goal":
-      return "Goal";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -610,8 +593,6 @@ function SurfaceIcon({
     }
     case "agents":
       return <Bot className="size-3 shrink-0" />;
-    case "goal":
-      return <Target className="size-3 shrink-0" />;
   }
 }
 
@@ -669,14 +650,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
       onClick: props.onAddAgents,
-    },
-    {
-      label: "Goal",
-      icon: Target,
-      shortcut: "G",
-      available: props.goalAvailable,
-      disabledReason: "Goal controls are available while this thread has a goal.",
-      onClick: props.onAddGoal,
     },
   ] as const;
 
@@ -965,12 +938,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddFiles={props.onAddFiles}
             onAddPullRequest={props.onAddPullRequest}
             onAddAgents={props.onAddAgents}
-            onAddGoal={props.onAddGoal}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
-            goalAvailable={props.goalAvailable}
             pullRequestAvailable={props.pullRequestAvailable}
             agentsAvailable={props.agentsAvailable}
             liveAgentCount={props.liveAgentCount}

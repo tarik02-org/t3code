@@ -180,13 +180,6 @@ export type TimelineEntry =
       kind: "work";
       createdAt: string;
       entry: WorkLogEntry;
-    }
-  | {
-      id: string;
-      kind: "goal";
-      createdAt: string;
-      label: string;
-      detail?: string;
     };
 
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
@@ -1853,26 +1846,17 @@ export function deriveTimelineEntries(
     createdAt: turnPlan.createdAt,
     turnPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => {
-    if (
-      entry.sourceActivityKind === "goal.updated" ||
-      entry.sourceActivityKind === "goal.cleared"
-    ) {
-      return {
-        id: entry.id,
-        kind: "goal",
-        createdAt: entry.createdAt,
-        label: entry.label,
-        ...(entry.detail ? { detail: entry.detail } : {}),
-      };
-    }
-    return {
+  const workRows: TimelineEntry[] = workEntries
+    .filter(
+      (entry) =>
+        entry.sourceActivityKind !== "goal.updated" && entry.sourceActivityKind !== "goal.cleared",
+    )
+    .map((entry) => ({
       id: entry.id,
       kind: "work",
       createdAt: entry.createdAt,
       entry,
-    };
-  });
+    }));
   return [...messageRows, ...proposedPlanRows, ...turnPlanRows, ...workRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );

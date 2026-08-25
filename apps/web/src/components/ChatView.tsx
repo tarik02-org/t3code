@@ -91,10 +91,9 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
   type ComposerSubmissionIntent,
-  parseComposerGoalSlashCommand,
   parseStandaloneComposerSlashCommand,
-  validateComposerGoalSlashCommand,
 } from "../composer-logic";
+import { parseCodexGoalCommand } from "@t3tools/client-runtime/state/threads";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -165,7 +164,6 @@ import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
-import { GoalPanel } from "./GoalPanel";
 import { isThreadOwnPullRequest } from "./pullRequest/pullRequestDetail.logic";
 import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
@@ -186,7 +184,11 @@ import {
   ChevronDownIcon,
   GitBranchIcon,
   PaperclipIcon,
+  PauseIcon,
+  PlayIcon,
+  TargetIcon,
   WifiOffIcon,
+  XIcon,
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -1438,6 +1440,9 @@ function ChatViewContent(props: ChatViewProps) {
   >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
+  );
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
     null,
   );
@@ -3449,10 +3454,6 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "agents");
   }, [activeThreadRef]);
-  const addGoalSurface = useCallback(() => {
-    if (!activeThreadRef || !activeThread?.goal) return;
-    useRightPanelStore.getState().open(activeThreadRef, "goal");
-  }, [activeThread?.goal, activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -4788,8 +4789,8 @@ function ChatViewContent(props: ChatViewProps) {
   // calm-styled live states flagged `urgent`, like update progress), then
   // background liveness — its Stop button is the only stop affordance for
   // settled turns, so a passive "update available" notice must not cover it —
-  // then calm system banners, the woke and branch-mismatch notices, and the
-  // informational parked-thread banner last — it must never cover another.
+  // then calm system banners, the woke and branch-mismatch notices, the parked
+  // banner, and the Goal banner last — it must never cover another.
   const parkedThreadBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (!activeThreadSnoozed && !activeThreadSettled) {
       return null;
@@ -4831,6 +4832,133 @@ function ChatViewContent(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (
+        !activeThreadId ||
+        pendingGoalAction !== null ||
+        isSendBusy ||
+        isConnecting ||
+        threadDetailLoading ||
+        activeEnvironmentUnavailable ||
+        sendInFlightRef.current
+      ) {
+        return;
+      }
+
+      const targetThreadId = activeThreadId;
+      setPendingGoalAction(action);
+      setThreadError(targetThreadId, null);
+      const result = await requestThreadGoal({
+        environmentId,
+        input: {
+          threadId: targetThreadId,
+          request: { kind: "control", action },
+          createdAt: new Date().toISOString(),
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          targetThreadId,
+          error instanceof Error ? error.message : `Failed to ${action} Goal.`,
+        );
+      }
+      setPendingGoalAction(null);
+    },
+    [
+      activeEnvironmentUnavailable,
+      activeThreadId,
+      environmentId,
+      isConnecting,
+      isSendBusy,
+      pendingGoalAction,
+      requestThreadGoal,
+      setThreadError,
+      threadDetailLoading,
+    ],
+  );
+  const goalBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    const goal = activeThread?.goal;
+    if (!goal) return null;
+    const description = formatGoalStatusToastDescription(goal);
+    const primaryAction = goal.status === "active" ? "pause" : "resume";
+    const controlsDisabled =
+      pendingGoalAction !== null ||
+      isSendBusy ||
+      isConnecting ||
+      threadDetailLoading ||
+      activeEnvironmentUnavailable;
+    return {
+      id: `goal:${activeThread.id}`,
+      variant: "info",
+      icon: <TargetIcon />,
+      title: goalStatusToastTitle(goal),
+      description: (
+        <Tooltip>
+          <TooltipTrigger render={<span className="line-clamp-2">{description}</span>} />
+          <TooltipPopup side="top" className="max-w-96">
+            {description}
+          </TooltipPopup>
+        </Tooltip>
+      ),
+      actions: (
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="outline"
+                  aria-label={`${primaryAction === "pause" ? "Pause" : "Resume"} Goal`}
+                  disabled={controlsDisabled}
+                  onClick={() => void handleGoalControl(primaryAction)}
+                />
+              }
+            >
+              {primaryAction === "pause" ? <PauseIcon /> : <PlayIcon />}
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {pendingGoalAction === primaryAction
+                ? primaryAction === "pause"
+                  ? "Pausing Goal..."
+                  : "Resuming Goal..."
+                : primaryAction === "pause"
+                  ? "Pause Goal"
+                  : "Resume Goal"}
+            </TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Clear Goal"
+                  disabled={controlsDisabled}
+                  onClick={() => void handleGoalControl("clear")}
+                />
+              }
+            >
+              <XIcon />
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {pendingGoalAction === "clear" ? "Clearing Goal..." : "Clear Goal"}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
+      ),
+    };
+  }, [
+    activeEnvironmentUnavailable,
+    activeThread?.goal,
+    activeThread?.id,
+    handleGoalControl,
+    isConnecting,
+    isSendBusy,
+    pendingGoalAction,
+    threadDetailLoading,
+  ]);
   const handleRestoreThreadBranch = useCallback(() => {
     if (gitStatusQuery.data?.hasWorkingTreeChanges) {
       setBranchRestoreConfirmOpen(true);
@@ -4847,6 +4975,7 @@ function ChatViewContent(props: ChatViewProps) {
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
+    const goalItems = goalBannerItem === null ? [] : [goalBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...urgentSystemItems,
@@ -4854,6 +4983,7 @@ function ChatViewContent(props: ChatViewProps) {
         ...calmSystemItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
+        ...goalItems,
       ];
     }
     return [
@@ -4901,10 +5031,12 @@ function ChatViewContent(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
+      ...goalItems,
     ];
   }, [
     activeBranchMismatchKey,
     backgroundLivenessBannerItem,
+    goalBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
@@ -5458,12 +5590,11 @@ function ChatViewContent(props: ChatViewProps) {
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0
-        ? parseComposerGoalSlashCommand(trimmed)
+        ? parseCodexGoalCommand(trimmed)
         : null;
     if (goalSlashCommand) {
-      const goalValidationError = validateComposerGoalSlashCommand(trimmed);
-      if (goalValidationError) {
-        setThreadError(activeThread.id, goalValidationError);
+      if (goalSlashCommand.kind === "invalid") {
+        setThreadError(activeThread.id, goalSlashCommand.message);
         return;
       }
       if (!activeProject) {
@@ -6027,57 +6158,6 @@ function ChatViewContent(props: ChatViewProps) {
       resetLocalDispatch();
     }
   };
-
-  const onSubmitGoalCommand = useCallback(
-    async (commandText: "/goal pause" | "/goal resume" | "/goal clear") => {
-      if (
-        !activeThread ||
-        isSendBusy ||
-        isConnecting ||
-        activeEnvironmentUnavailable ||
-        sendInFlightRef.current
-      ) {
-        return;
-      }
-      const goalSlashCommand = parseComposerGoalSlashCommand(commandText);
-      if (!goalSlashCommand) return;
-      const messageCreatedAt = new Date().toISOString();
-
-      sendInFlightRef.current = true;
-      beginLocalDispatch({ preparingWorktree: false });
-      setThreadError(activeThread.id, null);
-
-      const result = await requestThreadGoal({
-        environmentId,
-        input: {
-          threadId: activeThread.id,
-          request: goalSlashCommand,
-          createdAt: messageCreatedAt,
-        },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          activeThread.id,
-          error instanceof Error ? error.message : "Failed to send goal command.",
-        );
-      }
-
-      sendInFlightRef.current = false;
-      resetLocalDispatch();
-    },
-    [
-      activeEnvironmentUnavailable,
-      activeThread,
-      beginLocalDispatch,
-      environmentId,
-      isConnecting,
-      isSendBusy,
-      requestThreadGoal,
-      resetLocalDispatch,
-      setThreadError,
-    ],
-  );
 
   const onInterrupt = async () => {
     if (!activeThread) return;
@@ -6818,12 +6898,6 @@ function ChatViewContent(props: ChatViewProps) {
           initialGitScope={initialDiffPanelGitScope}
         />
       </Suspense>
-    ) : activeRightPanelSurface?.kind === "goal" ? (
-      <GoalPanel
-        activeGoal={activeThread?.goal ?? null}
-        commandDisabled={isSendBusy || isConnecting || Boolean(activeEnvironmentUnavailable)}
-        onSubmitGoalCommand={onSubmitGoalCommand}
-      />
     ) : activeRightPanelSurface?.kind === "pull-request" && !pullRequestsCapabilityKnown ? (
       <PullRequestDetailGhost />
     ) : activeRightPanelSurface?.kind === "pull-request" && !supportsPullRequests ? (
@@ -7363,12 +7437,10 @@ function ChatViewContent(props: ChatViewProps) {
           onAddFiles={addFilesSurface}
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
-          onAddGoal={addGoalSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
-          goalAvailable={activeThread.goal !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           agentsAvailable
           pullRequestStatuses={pullRequestTabStatuses}
@@ -7405,12 +7477,10 @@ function ChatViewContent(props: ChatViewProps) {
             onAddFiles={addFilesSurface}
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
-            onAddGoal={addGoalSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
-            goalAvailable={activeThread.goal !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             agentsAvailable
             pullRequestStatuses={pullRequestTabStatuses}

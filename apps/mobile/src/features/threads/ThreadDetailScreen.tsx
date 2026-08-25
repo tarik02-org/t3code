@@ -1,5 +1,12 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
-import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
+import {
+  parseCodexGoalCommand,
+  type EnvironmentThreadStatus,
+} from "@t3tools/client-runtime/state/threads";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
@@ -8,6 +15,8 @@ import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
+  OrchestrationThreadGoal,
+  OrchestrationThreadGoalStatus,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -30,6 +39,7 @@ import {
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import {
   AppState,
+  Alert,
   Keyboard,
   Platform,
   useWindowDimensions,
@@ -52,6 +62,9 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ControlPill } from "../../components/ControlPill";
+import { AppText as Text } from "../../components/AppText";
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
@@ -80,6 +93,36 @@ import {
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
+
+function goalStatusLabel(status: OrchestrationThreadGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "active";
+    case "paused":
+      return "paused";
+    case "blocked":
+      return "blocked";
+    case "usageLimited":
+      return "usage limited";
+    case "budgetLimited":
+      return "budget limited";
+    case "complete":
+      return "complete";
+  }
+}
+
+function formatGoalUsage(goal: OrchestrationThreadGoal): string {
+  const seconds = Math.max(0, Math.floor(goal.timeUsedSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const duration =
+    hours > 0 ? `${hours}h ${minutes}m` : minutes > 0 ? `${minutes}m` : `${seconds}s`;
+  const tokens =
+    goal.tokenBudget === null
+      ? `${goal.tokensUsed.toLocaleString()} tokens`
+      : `${goal.tokensUsed.toLocaleString()} / ${goal.tokenBudget.toLocaleString()} tokens`;
+  return `${duration} · ${tokens}`;
+}
 
 export interface ThreadDetailScreenProps {
   readonly selectedThread: OrchestrationThreadShell;
@@ -264,11 +307,16 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const listRef = useRef<LegendListRef>(null);
   const feedTouchStartRef = useRef<{ pageX: number; pageY: number } | null>(null);
   const selectedThreadKeyRef = useRef(selectedThreadKey);
+  const draftMessageRef = useRef(props.draftMessage);
   const lastScrolledSubmittedMessageIdRef = useRef<MessageId | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [anchorMessageId, setAnchorMessageId] = useState<MessageId | null>(null);
   const [submittedMessageId, setSubmittedMessageId] = useState<MessageId | null>(null);
   const [endFollowEnabled, setEndFollowEnabled] = useState(true);
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
+  );
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
   // Android keys the safe-area padding on keyboard visibility (#5988): the
   // back gesture closes the keyboard while the editor stays focused, and a
   // focus-keyed inset would leave the toolbar under the gesture bar. iOS must
@@ -297,6 +345,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
   })();
   const selectedThreadFeed = props.selectedThreadFeed;
+  const selectedGoal = props.selectedThread.goal;
+  const goalPrimaryAction = selectedGoal?.status === "active" ? "pause" : "resume";
+  const goalControlsDisabled =
+    pendingGoalAction !== null || props.connectionStateLabel !== "connected";
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
   // While a user-input request is pending, the questionnaire owns the
@@ -452,6 +504,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const isSplitLayout = layoutVariant === "split";
   const contentMaxWidth = isSplitLayout ? CHAT_CONTENT_MAX_WIDTH : undefined;
   const selectedInstanceId = props.selectedThread.modelSelection.instanceId;
+  const selectedProvider = props.serverConfig?.providers.find(
+    (provider) => provider.instanceId === selectedInstanceId,
+  );
   useStreamingHaptics(props.selectedThread.id, props.selectedThreadFeed);
   const selectedProviderSkills = useMemo(
     () =>
@@ -463,6 +518,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   useLayoutEffect(() => {
     selectedThreadKeyRef.current = selectedThreadKey;
   }, [selectedThreadKey]);
+
+  useLayoutEffect(() => {
+    draftMessageRef.current = props.draftMessage;
+  }, [props.draftMessage]);
 
   useEffect(() => {
     setAnchorMessageId(null);
@@ -527,6 +586,61 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   ]);
 
   const handleSendMessage = useCallback(async () => {
+    const parsedGoalCommand =
+      props.draftAttachments.length === 0 ? parseCodexGoalCommand(props.draftMessage) : null;
+    if (parsedGoalCommand !== null && selectedProvider === undefined) {
+      Alert.alert(
+        "Provider still loading",
+        "Wait for the thread's provider to load before running a Goal command.",
+      );
+      return null;
+    }
+    const goalCommand = selectedProvider?.driver === "codex" ? parsedGoalCommand : null;
+    if (goalCommand !== null) {
+      if (goalCommand.kind === "invalid") {
+        Alert.alert("Invalid Goal command", goalCommand.message);
+        return null;
+      }
+
+      const submittedDraft = props.draftMessage;
+      const submittedThreadKey = selectedThreadKey;
+      const result = await requestThreadGoal({
+        environmentId: props.environmentId,
+        input: {
+          threadId: props.selectedThread.id,
+          request: goalCommand,
+          createdAt: new Date().toISOString(),
+        },
+      });
+      if (result._tag === "Failure") {
+        if (
+          !isAtomCommandInterrupted(result) &&
+          selectedThreadKeyRef.current === submittedThreadKey
+        ) {
+          const error = squashAtomCommandFailure(result);
+          Alert.alert(
+            "Goal command failed",
+            error instanceof Error ? error.message : "Failed to send Goal command.",
+          );
+        }
+        return null;
+      }
+      if (
+        selectedThreadKeyRef.current === submittedThreadKey &&
+        draftMessageRef.current === submittedDraft
+      ) {
+        props.onChangeDraftMessage("");
+      }
+      if (goalCommand.kind === "status" && selectedThreadKeyRef.current === submittedThreadKey) {
+        const goal = props.selectedThread.goal;
+        Alert.alert(
+          goal === null ? "No active Goal" : `Goal ${goalStatusLabel(goal.status)}`,
+          goal === null ? undefined : `${goal.objective} - ${formatGoalUsage(goal)}`,
+        );
+      }
+      return null;
+    }
+
     const targetThreadKey = selectedThreadKey;
     const hasUserMessage = selectedThreadFeed.some(
       (entry) => entry.type === "message" && entry.message.role === "user",
@@ -550,12 +664,59 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     return messageId;
   }, [
     anchorMessageId,
+    props.draftAttachments,
+    props.draftMessage,
+    props.environmentId,
+    props.onChangeDraftMessage,
     props.onSendMessage,
+    props.selectedThread.goal,
+    props.selectedThread.id,
     props.selectedThread.latestTurn,
     props.selectedThreadQueueCount,
+    requestThreadGoal,
     selectedThreadFeed,
     selectedThreadKey,
+    selectedProvider?.driver,
   ]);
+
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (pendingGoalAction !== null || props.connectionStateLabel !== "connected") {
+        return;
+      }
+
+      const targetThreadKey = selectedThreadKey;
+      setPendingGoalAction(action);
+      const result = await requestThreadGoal({
+        environmentId: props.environmentId,
+        input: {
+          threadId: props.selectedThread.id,
+          request: { kind: "control", action },
+          createdAt: new Date().toISOString(),
+        },
+      });
+      if (
+        result._tag === "Failure" &&
+        !isAtomCommandInterrupted(result) &&
+        selectedThreadKeyRef.current === targetThreadKey
+      ) {
+        const error = squashAtomCommandFailure(result);
+        Alert.alert(
+          "Goal command failed",
+          error instanceof Error ? error.message : `Failed to ${action} Goal.`,
+        );
+      }
+      setPendingGoalAction(null);
+    },
+    [
+      pendingGoalAction,
+      props.connectionStateLabel,
+      props.environmentId,
+      props.selectedThread.id,
+      requestThreadGoal,
+      selectedThreadKey,
+    ],
+  );
 
   const collapseComposer = useCallback(() => {
     composerEditorRef.current?.blur();
@@ -751,6 +912,45 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             {/* Hidden (not unmounted) while a user-input request owns the
                 composer slot, so composer drafts and editor state survive. */}
             <View style={activeUserInputRequestId !== null ? { display: "none" } : undefined}>
+              {selectedGoal !== null ? (
+                <View className="mx-3 mb-2 rounded-xl border border-blue-500/20 bg-blue-500/10 px-3 py-2">
+                  <Text className="text-xs font-t3-bold text-foreground">
+                    Goal {goalStatusLabel(selectedGoal.status)}
+                  </Text>
+                  <Text className="text-xs text-foreground-muted" numberOfLines={2}>
+                    {selectedGoal.objective}
+                  </Text>
+                  <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+                    {formatGoalUsage(selectedGoal)}
+                  </Text>
+                  <View className="mt-2 flex-row items-center gap-2">
+                    <ControlPill
+                      accessibilityLabel={
+                        pendingGoalAction === goalPrimaryAction
+                          ? goalPrimaryAction === "pause"
+                            ? "Pausing Goal"
+                            : "Resuming Goal"
+                          : goalPrimaryAction === "pause"
+                            ? "Pause Goal"
+                            : "Resume Goal"
+                      }
+                      className="h-9 w-9"
+                      icon={goalPrimaryAction === "pause" ? "pause.fill" : "play"}
+                      disabled={goalControlsDisabled}
+                      onPress={() => void handleGoalControl(goalPrimaryAction)}
+                    />
+                    <ControlPill
+                      accessibilityLabel={
+                        pendingGoalAction === "clear" ? "Clearing Goal" : "Clear Goal"
+                      }
+                      className="h-9 w-9 bg-transparent"
+                      icon="xmark"
+                      disabled={goalControlsDisabled}
+                      onPress={() => void handleGoalControl("clear")}
+                    />
+                  </View>
+                </View>
+              ) : null}
               <ThreadComposer
                 editorRef={composerEditorRef}
                 draftMessage={props.draftMessage}
