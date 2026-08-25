@@ -98,6 +98,7 @@ const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
+const PROVIDER_INTERRUPT_TIMEOUT = Duration.seconds(10);
 const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
 const FIRST_USER_CONTEXT_TRUNCATION_MARKER = "\n[First user message truncated]";
 
@@ -1329,7 +1330,7 @@ const make = Effect.gen(function* () {
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService
       .interruptTurn({ threadId: event.payload.threadId })
-      .pipe(Effect.catchCause(recoverInterruptFailure));
+      .pipe(Effect.timeout(PROVIDER_INTERRUPT_TIMEOUT), Effect.catchCause(recoverInterruptFailure));
   });
 
   const processGoalRequested = Effect.fn("processGoalRequested")(function* (
@@ -1394,7 +1395,7 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         kind: "provider.approval.respond.failed",
         summary: "Provider approval response failed",
-        detail: "No active provider session is bound to this thread.",
+        detail: stalePendingRequestDetail("approval", event.payload.requestId),
         turnId: null,
         createdAt: event.payload.createdAt,
         requestId: event.payload.requestId,
@@ -1438,7 +1439,7 @@ const make = Effect.gen(function* () {
           threadId: event.payload.threadId,
           kind: "provider.user-input.respond.failed",
           summary: "Provider user input response failed",
-          detail: "No active provider session is bound to this thread.",
+          detail: stalePendingRequestDetail("user-input", event.payload.requestId),
           turnId: null,
           createdAt: event.payload.createdAt,
           requestId: event.payload.requestId,
