@@ -760,7 +760,6 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/closed":
     case "thread/name/updated":
     case "thread/tokenUsage/updated":
-    case "thread/goal/updated":
     case "thread/goal/cleared":
     case "turn/started":
     case "hook/started":

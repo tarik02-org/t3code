@@ -40,7 +40,7 @@ When a Codex tool needs access to an app such as Safari, T3 Code shows the app n
 approval. You can approve, decline, or cancel the request from the desktop app, web app, or mobile
 app. Some tools also offer approval for the current session or permanent approval.
 
-## Manage A Codex Goal
+## Manage a Codex Goal
 
 After starting a Codex thread, use `/goal` in the composer to manage that thread's native Codex
 Goal:

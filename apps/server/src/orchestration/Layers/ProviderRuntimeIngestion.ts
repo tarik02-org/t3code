@@ -230,7 +230,7 @@ function epochMsOrSecondsToIso(value: number, fallbackIso: string): string {
 
 function goalUpdatedActivitySummary(
   previousGoal: GoalActivityState | null | undefined,
-  goal: Extract<ProviderRuntimeEvent, { type: "thread.goal.updated" }>["payload"],
+  goal: Extract<ProviderRuntimeEvent, { type: "thread.goal.updated" }>["payload"]["goal"],
 ): string | null {
   if (previousGoal?.objective === goal.objective && previousGoal.status === goal.status) {
     return null;
@@ -851,7 +851,8 @@ export function runtimeEventToActivities(
     }
 
     case "thread.goal.updated": {
-      const summary = goalUpdatedActivitySummary(context?.previousGoal, event.payload);
+      const goal = event.payload.goal;
+      const summary = goalUpdatedActivitySummary(context?.previousGoal, goal);
       if (summary === null) {
         return [];
       }
@@ -863,12 +864,12 @@ export function runtimeEventToActivities(
           kind: "goal.updated",
           summary,
           payload: {
-            status: event.payload.status,
-            detail: truncateDetail(event.payload.objective),
-            objective: event.payload.objective,
-            tokensUsed: event.payload.tokensUsed,
-            tokenBudget: event.payload.tokenBudget,
-            timeUsedSeconds: event.payload.timeUsedSeconds,
+            status: goal.status,
+            detail: truncateDetail(goal.objective),
+            objective: goal.objective,
+            tokensUsed: goal.tokensUsed,
+            tokenBudget: goal.tokenBudget ?? null,
+            timeUsedSeconds: goal.timeUsedSeconds,
           },
           turnId: null,
           ...maybeSequence,
@@ -2057,18 +2058,19 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.goal.updated") {
+        const goal = event.payload.goal;
         yield* orchestrationEngine.dispatch({
           type: "thread.goal.update",
           commandId: yield* providerCommandId(event, "thread-goal-update"),
           threadId: thread.id,
           goal: {
-            objective: event.payload.objective,
-            status: event.payload.status,
-            tokensUsed: event.payload.tokensUsed,
-            tokenBudget: event.payload.tokenBudget,
-            timeUsedSeconds: event.payload.timeUsedSeconds,
-            createdAt: epochMsOrSecondsToIso(event.payload.createdAtEpochMsOrSeconds, now),
-            updatedAt: epochMsOrSecondsToIso(event.payload.updatedAtEpochMsOrSeconds, now),
+            objective: goal.objective,
+            status: goal.status,
+            tokensUsed: goal.tokensUsed,
+            tokenBudget: goal.tokenBudget ?? null,
+            timeUsedSeconds: goal.timeUsedSeconds,
+            createdAt: epochMsOrSecondsToIso(goal.createdAt, now),
+            updatedAt: epochMsOrSecondsToIso(goal.updatedAt, now),
           },
           createdAt: now,
         });
@@ -2126,8 +2128,8 @@ const make = Effect.gen(function* () {
       );
       if (event.type === "thread.goal.updated") {
         yield* Cache.set(goalActivityStateByThreadId, thread.id, {
-          objective: event.payload.objective,
-          status: event.payload.status,
+          objective: event.payload.goal.objective,
+          status: event.payload.goal.status,
         });
       } else if (event.type === "thread.goal.cleared") {
         yield* Cache.invalidate(goalActivityStateByThreadId, thread.id);

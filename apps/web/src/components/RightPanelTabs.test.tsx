@@ -109,13 +109,11 @@ function renderTabs(
       onAddDiff={() => undefined}
       onAddFiles={() => undefined}
       onAddAgents={() => undefined}
-      onAddGoal={() => undefined}
       liveAgentCount={0}
       browserAvailable
       terminalAvailable={false}
       diffAvailable={false}
       filesAvailable={false}
-      goalAvailable={false}
       pullRequestAvailable={false}
       agentsAvailable={false}
     >

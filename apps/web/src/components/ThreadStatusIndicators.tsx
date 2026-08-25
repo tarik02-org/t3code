@@ -5,13 +5,7 @@ import {
 } from "@t3tools/client-runtime/environment";
 import type { VcsStatusResult } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
-import {
-  CloudIcon,
-  FolderGit2Icon,
-  GitPullRequestIcon,
-  TargetIcon,
-  TerminalIcon,
-} from "lucide-react";
+import { CloudIcon, FolderGit2Icon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
@@ -21,7 +15,6 @@ import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { vcsEnvironment } from "../state/vcs";
 import { useUiStateStore } from "../uiStateStore";
 import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
-import { goalStatusToastTitle } from "../goalPresentation";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import type { SidebarThreadSummary } from "../types";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
@@ -321,23 +314,6 @@ export function terminalStatusFromRunningIds(
   };
 }
 
-function goalStatusColorClass(status: NonNullable<SidebarThreadSummary["goal"]>["status"]): string {
-  switch (status) {
-    case "active":
-      return "text-emerald-600 dark:text-emerald-300/90";
-    case "paused":
-      return "text-amber-600 dark:text-amber-300/90";
-    case "blocked":
-      return "text-red-600 dark:text-red-300/90";
-    case "usageLimited":
-      return "text-orange-600 dark:text-orange-300/90";
-    case "budgetLimited":
-      return "text-orange-600 dark:text-orange-300/90";
-    case "complete":
-      return "text-blue-600 dark:text-blue-300/90";
-  }
-}
-
 export function ThreadWorktreeIndicator({
   thread,
 }: {
@@ -461,7 +437,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
     },
   });
 
-  if (!prStatus && !threadStatus && !thread.goal) {
+  if (!prStatus && !threadStatus) {
     return null;
   }
 
@@ -481,23 +457,6 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
           </TooltipTrigger>
           <TooltipPopup side="top">
             <PrStatusTooltipContent status={prStatus} />
-          </TooltipPopup>
-        </Tooltip>
-      ) : null}
-      {thread.goal ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span
-                aria-label={goalStatusToastTitle(thread.goal)}
-                className={`inline-flex items-center justify-center ${goalStatusColorClass(thread.goal.status)}`}
-              />
-            }
-          >
-            <TargetIcon className="size-3" />
-          </TooltipTrigger>
-          <TooltipPopup side="top">
-            {goalStatusToastTitle(thread.goal)}: {thread.goal.objective}
           </TooltipPopup>
         </Tooltip>
       ) : null}

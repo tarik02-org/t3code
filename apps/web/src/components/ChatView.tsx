@@ -91,9 +91,7 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
   type ComposerSubmissionIntent,
-  parseComposerGoalSlashCommand,
   parseStandaloneComposerSlashCommand,
-  validateComposerGoalSlashCommand,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -138,7 +136,6 @@ import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
-import { formatGoalStatusToastDescription, goalStatusToastTitle } from "../goalPresentation";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
@@ -165,7 +162,6 @@ import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
-import { GoalPanel } from "./GoalPanel";
 import { isThreadOwnPullRequest } from "./pullRequest/pullRequestDetail.logic";
 import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
@@ -527,21 +523,6 @@ function eventPathContainsSelector(event: Event, selector: string): boolean {
     path.push(event.target);
   }
   return path.some((target) => target instanceof Element && target.closest(selector));
-}
-
-function showGoalStatusToast(goal: Thread["goal"]): void {
-  if (!goal) {
-    toastManager.add({
-      type: "info",
-      title: "No active goal",
-    });
-    return;
-  }
-  toastManager.add({
-    type: "info",
-    title: goalStatusToastTitle(goal),
-    description: formatGoalStatusToastDescription(goal),
-  });
 }
 
 function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
@@ -1282,7 +1263,6 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
   const loadMessagesAround = useAtomCommand(environmentThreads.loadMessagesAround, {
     reportFailure: false,
   });
@@ -3489,10 +3469,6 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "agents");
   }, [activeThreadRef]);
-  const addGoalSurface = useCallback(() => {
-    if (!activeThreadRef || !activeThread?.goal) return;
-    useRightPanelStore.getState().open(activeThreadRef, "goal");
-  }, [activeThread?.goal, activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -5638,138 +5614,6 @@ function ChatViewContent(props: ChatViewProps) {
       composerRef.current?.resetCursorState();
       return;
     }
-    const goalSlashCommand =
-      ctxSelectedProvider === "codex" &&
-      composerImages.length === 0 &&
-      sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
-      composerPreviewAnnotations.length === 0
-        ? parseComposerGoalSlashCommand(trimmed)
-        : null;
-    if (goalSlashCommand) {
-      const goalValidationError = validateComposerGoalSlashCommand(trimmed);
-      if (goalValidationError) {
-        setThreadError(activeThread.id, goalValidationError);
-        return;
-      }
-      if (!activeProject) {
-        return;
-      }
-      if (!isServerThread && goalSlashCommand.kind !== "set") {
-        setThreadError(activeThread.id, "Enter a goal objective to start a thread with /goal.");
-        return;
-      }
-      sendInFlightRef.current = true;
-      beginLocalDispatch({ preparingWorktree: false });
-      setThreadError(activeThread.id, null);
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
-      const createdAt = new Date().toISOString();
-      const title =
-        goalSlashCommand.kind === "set" ? truncate(goalSlashCommand.objective) : activeThread.title;
-      const threadCreateModelSelection = createModelSelection(
-        ctxSelectedModelSelection.instanceId,
-        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
-        ctxSelectedModelSelection.options,
-      );
-      let failure: AtomCommandResult<unknown, unknown> | null = null;
-      if (!isServerThread) {
-        const createResult = await createThread({
-          environmentId,
-          input: {
-            threadId: activeThread.id,
-            projectId: activeProject.id,
-            title,
-            modelSelection: threadCreateModelSelection,
-            runtimeMode,
-            interactionMode,
-            branch: activeThreadBranch,
-            worktreePath: activeThread.worktreePath,
-            createdAt: activeThread.createdAt,
-          },
-        });
-        if (createResult._tag === "Failure") {
-          failure = createResult;
-        }
-      } else {
-        if (activeThread.messages.length === 0 && goalSlashCommand.kind === "set") {
-          const titleResult = await updateThreadMetadata({
-            environmentId,
-            input: {
-              threadId: activeThread.id,
-              title,
-            },
-          });
-          if (titleResult._tag === "Failure") {
-            failure = titleResult;
-          }
-        }
-        if (failure === null) {
-          const settingsResult = await persistThreadSettingsForNextTurn({
-            threadId: activeThread.id,
-            createdAt,
-            ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
-            runtimeMode,
-            interactionMode,
-          });
-          if (settingsResult._tag === "Failure") {
-            failure = settingsResult;
-          }
-        }
-      }
-
-      if (failure === null) {
-        const goalResult = await requestThreadGoal({
-          environmentId,
-          input: {
-            threadId: activeThread.id,
-            request: goalSlashCommand,
-            createdAt,
-          },
-        });
-        if (goalResult._tag === "Failure") {
-          failure = goalResult;
-        }
-      }
-
-      if (failure === null) {
-        if (goalSlashCommand.kind === "status") {
-          showGoalStatusToast(activeThread.goal);
-        }
-
-        if (!isServerThread) {
-          await waitForStartedServerThread(
-            scopeThreadRef(activeThread.environmentId, activeThread.id),
-          );
-          await navigate({
-            to: "/$environmentId/$threadId",
-            params: {
-              environmentId: activeThread.environmentId,
-              threadId: activeThread.id,
-            },
-          });
-        }
-      } else {
-        promptRef.current = promptForSend;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
-          prompt: promptForSend,
-          detectTrigger: true,
-        });
-        if (!isAtomCommandInterrupted(failure)) {
-          const error = squashAtomCommandFailure(failure);
-          setThreadError(
-            activeThread.id,
-            error instanceof Error ? error.message : "Failed to send goal command.",
-          );
-        }
-      }
-      sendInFlightRef.current = false;
-      resetLocalDispatch();
-      return;
-    }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -6213,57 +6057,6 @@ function ChatViewContent(props: ChatViewProps) {
       resetLocalDispatch();
     }
   };
-
-  const onSubmitGoalCommand = useCallback(
-    async (commandText: "/goal pause" | "/goal resume" | "/goal clear") => {
-      if (
-        !activeThread ||
-        isSendBusy ||
-        isConnecting ||
-        activeEnvironmentUnavailable ||
-        sendInFlightRef.current
-      ) {
-        return;
-      }
-      const goalSlashCommand = parseComposerGoalSlashCommand(commandText);
-      if (!goalSlashCommand) return;
-      const messageCreatedAt = new Date().toISOString();
-
-      sendInFlightRef.current = true;
-      beginLocalDispatch({ preparingWorktree: false });
-      setThreadError(activeThread.id, null);
-
-      const result = await requestThreadGoal({
-        environmentId,
-        input: {
-          threadId: activeThread.id,
-          request: goalSlashCommand,
-          createdAt: messageCreatedAt,
-        },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          activeThread.id,
-          error instanceof Error ? error.message : "Failed to send goal command.",
-        );
-      }
-
-      sendInFlightRef.current = false;
-      resetLocalDispatch();
-    },
-    [
-      activeEnvironmentUnavailable,
-      activeThread,
-      beginLocalDispatch,
-      environmentId,
-      isConnecting,
-      isSendBusy,
-      requestThreadGoal,
-      resetLocalDispatch,
-      setThreadError,
-    ],
-  );
 
   const onInterrupt = async () => {
     if (!activeThread) return;
@@ -7004,12 +6797,6 @@ function ChatViewContent(props: ChatViewProps) {
           initialGitScope={initialDiffPanelGitScope}
         />
       </Suspense>
-    ) : activeRightPanelSurface?.kind === "goal" ? (
-      <GoalPanel
-        activeGoal={activeThread?.goal ?? null}
-        commandDisabled={isSendBusy || isConnecting || Boolean(activeEnvironmentUnavailable)}
-        onSubmitGoalCommand={onSubmitGoalCommand}
-      />
     ) : activeRightPanelSurface?.kind === "pull-request" && !pullRequestsCapabilityKnown ? (
       <PullRequestDetailGhost />
     ) : activeRightPanelSurface?.kind === "pull-request" && !supportsPullRequests ? (
@@ -7551,12 +7338,10 @@ function ChatViewContent(props: ChatViewProps) {
           onAddFiles={addFilesSurface}
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
-          onAddGoal={addGoalSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
-          goalAvailable={activeThread.goal !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           agentsAvailable
           pullRequestStatuses={pullRequestTabStatuses}
@@ -7593,12 +7378,10 @@ function ChatViewContent(props: ChatViewProps) {
             onAddFiles={addFilesSurface}
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
-            onAddGoal={addGoalSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
-            goalAvailable={activeThread.goal !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             agentsAvailable
             pullRequestStatuses={pullRequestTabStatuses}
