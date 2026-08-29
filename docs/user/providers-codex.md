@@ -48,6 +48,12 @@ Use Goal commands in the composer of a Codex thread:
 While a Goal exists, its status, objective, token usage, and elapsed time appear above the composer
 on web, desktop, and mobile.
 
+## Sub-agent models
+
+The web and desktop Agents panel shows each sub-agent's model and reasoning effort when Codex
+reports them. If Codex does not report either value, T3 Code leaves it out instead of using the
+parent agent's settings.
+
 ## Approve access to other apps
 
 When a Codex tool needs access to an app such as Safari, T3 Code shows the app name and asks for
