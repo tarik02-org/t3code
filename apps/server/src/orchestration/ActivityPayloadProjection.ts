@@ -554,7 +554,7 @@ function projectThreadActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   return dropSupersededToolUpdatedActivities(dropStaleContextWindowActivities(activities))
-    .filter((activity) => activity.kind !== "tool.started" && activity.kind !== "task.started")
+    .filter((activity) => activity.kind !== "tool.started")
     .map(projectActivityPayload);
 }
 
