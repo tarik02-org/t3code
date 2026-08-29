@@ -8,6 +8,8 @@ This repository is the `tarik02-org` fork of [T3 Code](https://github.com/pingdo
 
 - Performance: long conversations should not kill the orchestration or client performance.
 - Self-contained features - small features that are not hard to maintain and keep compatible.
+- Stability: each stable release corresponds to upstream's stable release.
+- Packaging: we provide first-party nix and web dist release artifacts.
 
 ## Fork compatibility
 
