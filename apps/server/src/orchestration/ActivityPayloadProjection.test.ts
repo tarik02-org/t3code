@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
-import { projectActivityPayload } from "./ActivityPayloadProjection.ts";
+import { EventId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import { projectActivityPayload, projectThreadHistoryPage } from "./ActivityPayloadProjection.ts";
 
 function activity(payload: Record<string, unknown>): OrchestrationThreadActivity {
   return {
@@ -205,5 +205,41 @@ describe("projectActivityPayload", () => {
     });
     const projected = projectActivityPayload(source);
     expect(projected.payload).toEqual(source.payload);
+  });
+});
+
+describe("projectThreadHistoryPage", () => {
+  it("preserves task starts needed to rebuild agent progress", () => {
+    const taskStarted: OrchestrationThreadActivity = {
+      id: EventId.make("activity-task-started"),
+      tone: "tool",
+      kind: "task.started",
+      summary: "Agent started",
+      payload: { taskId: "agent-1", taskType: "local_agent" },
+      turnId: null,
+      createdAt: "2026-08-01T10:00:00.000Z",
+    };
+    const toolStarted: OrchestrationThreadActivity = {
+      ...taskStarted,
+      id: EventId.make("activity-tool-started"),
+      kind: "tool.started",
+      summary: "Tool started",
+    };
+
+    const projected = projectThreadHistoryPage({
+      messages: [],
+      proposedPlans: [],
+      activities: [taskStarted, toolStarted],
+      messageHistory: {
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+        startIndex: 0,
+        endIndex: 0,
+        totalMessages: 0,
+        cursor: null,
+      },
+    });
+
+    expect(projected.activities).toEqual([taskStarted]);
   });
 });
