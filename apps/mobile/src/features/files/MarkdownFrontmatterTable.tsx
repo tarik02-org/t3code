@@ -2,18 +2,10 @@ import type { MarkdownFrontmatterEntry } from "@t3tools/client-runtime/markdown-
 import { useState } from "react";
 import { ScrollView, Text as NativeText, View } from "react-native";
 
-import { useThemeColor } from "../../lib/useThemeColor";
-
 const MIN_KEY_COLUMN_WIDTH = 160;
 const MIN_VALUE_COLUMN_WIDTH = 400;
 
-function MarkdownFrontmatterList({
-  items,
-  textColor,
-}: {
-  readonly items: ReadonlyArray<string>;
-  readonly textColor: string;
-}) {
+function MarkdownFrontmatterList({ items }: { readonly items: ReadonlyArray<string> }) {
   const occurrences = new Map<string, number>();
 
   return (
@@ -27,9 +19,7 @@ function MarkdownFrontmatterList({
             key={JSON.stringify([item, occurrence])}
             className="max-w-full rounded-full border border-secondary-border bg-secondary px-2.5 py-1"
           >
-            <NativeText className="font-t3-regular text-sm" style={{ color: textColor }}>
-              {item}
-            </NativeText>
+            <NativeText className="font-t3-regular text-sm text-md-body">{item}</NativeText>
           </View>
         );
       })}
@@ -42,9 +32,6 @@ export function MarkdownFrontmatterTable({
 }: {
   readonly entries: ReadonlyArray<MarkdownFrontmatterEntry>;
 }) {
-  const textColor = String(useThemeColor("--color-md-body"));
-  const strongColor = String(useThemeColor("--color-md-strong"));
-  const codeColor = String(useThemeColor("--color-md-code-text"));
   const [keyWidths, setKeyWidths] = useState<ReadonlyMap<string, number>>(() => new Map());
   let measuredKeyColumnWidth = MIN_KEY_COLUMN_WIDTH;
   let hasEveryKeyWidth = true;
@@ -67,7 +54,9 @@ export function MarkdownFrontmatterTable({
     >
       <View
         className="flex-1 overflow-hidden border border-border"
-        style={{ minWidth: (keyColumnWidth ?? MIN_KEY_COLUMN_WIDTH) + MIN_VALUE_COLUMN_WIDTH }}
+        style={{
+          minWidth: (keyColumnWidth ?? MIN_KEY_COLUMN_WIDTH) + MIN_VALUE_COLUMN_WIDTH,
+        }}
       >
         {entries.map((entry, index) => (
           <View
@@ -93,23 +82,19 @@ export function MarkdownFrontmatterTable({
                   : undefined
               }
             >
-              <NativeText
-                numberOfLines={1}
-                className="font-t3-bold text-sm"
-                style={{ color: strongColor }}
-              >
+              <NativeText numberOfLines={1} className="font-t3-bold text-sm text-md-strong">
                 {entry.key}
               </NativeText>
             </View>
             <View className="min-w-0 flex-1 px-3 py-2">
               {entry.value.kind === "text" ? (
-                <NativeText className="font-t3-regular text-sm" style={{ color: textColor }}>
+                <NativeText className="font-t3-regular text-sm text-md-body">
                   {entry.value.text}
                 </NativeText>
               ) : entry.value.kind === "list" ? (
-                <MarkdownFrontmatterList items={entry.value.items} textColor={textColor} />
+                <MarkdownFrontmatterList items={entry.value.items} />
               ) : (
-                <NativeText className="font-mono text-xs" style={{ color: codeColor }}>
+                <NativeText className="font-mono text-xs text-md-code-text">
                   {entry.value.source}
                 </NativeText>
               )}
