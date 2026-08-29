@@ -1,7 +1,15 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import type {
+  ChatFileAttachment,
+  EnvironmentId,
+  MessageId,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
@@ -28,6 +36,7 @@ import {
 } from "react-native-nitro-markdown";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Platform,
   type LayoutChangeEvent,
@@ -108,7 +117,10 @@ import {
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
-import { useAssetUrl, useAssetUrlState } from "../../state/assets";
+import { assetEnvironment, useAssetUrl, useAssetUrlState } from "../../state/assets";
+import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
+import { usePreparedConnection } from "../../state/session";
+import * as Option from "effect/Option";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
 import { MARKDOWN_IMAGE_MAX_WIDTH, resolveMarkdownImageDisplaySize } from "./markdownImageSize";
 
@@ -205,6 +217,66 @@ function MessageAttachmentImage(props: {
     <TouchableOpacity activeOpacity={0.7} onPress={() => props.onPressImage(uri)}>
       <Image source={{ uri }} className={props.className} resizeMode="cover" />
     </TouchableOpacity>
+  );
+}
+
+function MessageAttachmentFile(props: {
+  readonly environmentId: EnvironmentId;
+  readonly attachment: ChatFileAttachment;
+}) {
+  const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
+    reportFailure: false,
+  });
+  const preparedConnection = usePreparedConnection(props.environmentId);
+  const sizeLabel =
+    props.attachment.sizeBytes >= 1024 * 1024
+      ? `${(props.attachment.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+      : `${Math.max(1, Math.ceil(props.attachment.sizeBytes / 1024))} KB`;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${props.attachment.name}`}
+      disabled={Option.isNone(preparedConnection)}
+      className="flex-row items-center gap-2 py-1"
+      onPress={() => {
+        if (Option.isNone(preparedConnection)) return;
+        void (async () => {
+          const result = await createAssetUrl({
+            environmentId: props.environmentId,
+            input: {
+              resource: {
+                _tag: "attachment",
+                attachmentId: props.attachment.id,
+                fileName: props.attachment.name,
+                mimeType: props.attachment.mimeType,
+              },
+            },
+          });
+          if (result._tag === "Failure") {
+            const error = squashAtomCommandFailure(result);
+            Alert.alert(
+              "Could not open attachment",
+              error instanceof Error ? error.message : "The attachment is unavailable.",
+            );
+            return;
+          }
+          const url = resolveAssetUrl(
+            preparedConnection.value.httpBaseUrl,
+            result.value.relativeUrl,
+          );
+          if (url !== null) {
+            await tryOpenExternalUrl(url, "file-preview");
+          }
+        })();
+      }}
+    >
+      <SymbolView name="doc.text" size={16} tintColor="#a3a3a3" type="monochrome" />
+      <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+        {props.attachment.name}
+      </Text>
+      <Text className="text-xs text-foreground-muted">{sizeLabel}</Text>
+    </Pressable>
   );
 }
 
@@ -1034,8 +1106,11 @@ function renderFeedEntry(
     const isUser = message.role === "user";
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
-    const attachments = (message.attachments ?? []).filter(
+    const imageAttachments = (message.attachments ?? []).filter(
       (attachment) => attachment.type === "image",
+    );
+    const fileAttachments = (message.attachments ?? []).filter(
+      (attachment): attachment is ChatFileAttachment => attachment.type === "file",
     );
     const hasReviewCommentContext = message.text.includes("<review_comment");
     // A bubble that sizes itself from its content cannot lay out a block whose
@@ -1083,7 +1158,7 @@ function renderFeedEntry(
                 renderImage={props.renderMarkdownImage}
               />
             ) : null}
-            {attachments.map((attachment) => {
+            {imageAttachments.map((attachment) => {
               return (
                 <MessageAttachmentImage
                   key={attachment.id}
@@ -1094,6 +1169,13 @@ function renderFeedEntry(
                 />
               );
             })}
+            {fileAttachments.map((attachment) => (
+              <MessageAttachmentFile
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachment={attachment}
+              />
+            ))}
           </View>
           <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
             <Text className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400">
@@ -1115,7 +1197,11 @@ function renderFeedEntry(
 
     // Skip empty assistant messages (no text, no attachments) — they would
     // render as an orphaned timestamp and break adjacent activity-group merging.
-    if (message.text.trim().length === 0 && attachments.length === 0) {
+    if (
+      message.text.trim().length === 0 &&
+      imageAttachments.length === 0 &&
+      fileAttachments.length === 0
+    ) {
       return null;
     }
 
@@ -1145,7 +1231,7 @@ function renderFeedEntry(
             </Markdown>
           )
         ) : null}
-        {attachments.map((attachment) => {
+        {imageAttachments.map((attachment) => {
           return (
             <MessageAttachmentImage
               key={attachment.id}
@@ -1156,6 +1242,13 @@ function renderFeedEntry(
             />
           );
         })}
+        {fileAttachments.map((attachment) => (
+          <MessageAttachmentFile
+            key={attachment.id}
+            environmentId={props.environmentId}
+            attachment={attachment}
+          />
+        ))}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
             <CopyTextButton
