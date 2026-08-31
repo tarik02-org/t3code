@@ -289,8 +289,9 @@ validationLayer("CodexAdapterLive validation", (it) => {
       yield* adapter.startSession({
         provider: ProviderDriverKind.make("codex"),
         threadId: asThreadId("thread-1"),
-        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-sol", [
           { id: "serviceTier", value: "priority" },
+          { id: "contextWindow", value: "258k" },
         ]),
         runtimeMode: "full-access",
       });
@@ -300,12 +301,34 @@ validationLayer("CodexAdapterLive validation", (it) => {
         cwd: process.cwd(),
         environment: mergeProviderSessionEnvironment(undefined, undefined),
         launchArgs: "",
-        model: "gpt-5.3-codex",
+        appServerArgs: [],
+        model: "gpt-5.6-sol",
         providerInstanceId: ProviderInstanceId.make("codex"),
         serviceTier: "priority",
         threadId: asThreadId("thread-1"),
         runtimeMode: "full-access",
       });
+    }),
+  );
+
+  it.effect("ignores 1m context for unsupported codex models", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-unsupported-context"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5", [
+          { id: "contextWindow", value: "1m" },
+        ]),
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.deepStrictEqual(
+        validationRuntimeFactory.factory.mock.calls[0]?.[0]?.appServerArgs,
+        [],
+      );
     }),
   );
 });
@@ -416,7 +439,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
-  it.effect("passes configured launch args into the session runtime", () => {
+  it.effect("passes launch args without an explicit long context", () => {
     const runtimeFactory = makeRuntimeFactory();
     const layer = Layer.effect(
       CodexAdapter,
@@ -438,12 +461,53 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       yield* adapter.startSession({
         provider: ProviderDriverKind.make("codex"),
         threadId: asThreadId("sess-launch-args"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-sol", []),
         runtimeMode: "full-access",
       });
 
       const runtime = runtimeFactory.lastRuntime;
       NodeAssert.ok(runtime);
       NodeAssert.equal(runtime.options.launchArgs, "--strict-config --enable foo");
+      NodeAssert.deepStrictEqual(runtime.options.appServerArgs, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("passes long context settings when 1m is explicitly selected", () => {
+    const runtimeFactory = makeRuntimeFactory();
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({});
+        return yield* makeCodexAdapter(codexConfig, {
+          makeRuntime: runtimeFactory.factory,
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-long-context"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-sol", [
+          { id: "contextWindow", value: "1m" },
+        ]),
+        runtimeMode: "full-access",
+      });
+
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.deepStrictEqual(runtime.options.appServerArgs, [
+        "-c",
+        "model_context_window=1000000",
+        "-c",
+        "model_auto_compact_token_limit=900000",
+      ]);
     }).pipe(Effect.provide(layer));
   });
 

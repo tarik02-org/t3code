@@ -26,6 +26,7 @@ import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/co
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { supportsCodexLongContext } from "../../codexModelOptions.ts";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -174,6 +175,18 @@ export function mapCodexModelCapabilities(
       currentValue: defaultServiceTier,
     });
   }
+  if (supportsCodexLongContext(model.model)) {
+    optionDescriptors.push({
+      id: "contextWindow",
+      label: "Context Window",
+      type: "select",
+      options: [
+        { id: "258k", label: "258k", isDefault: true },
+        { id: "1m", label: "1M" },
+      ],
+      currentValue: "258k",
+    });
+  }
 
   return createModelCapabilities({
     optionDescriptors,
@@ -224,7 +237,7 @@ export function applyPreferredCodexDefaultModel(
   });
 }
 
-function appendCustomCodexModels(
+export function appendCustomCodexModels(
   models: ReadonlyArray<ServerProviderModel>,
   customModels: ReadonlyArray<string>,
 ): ReadonlyArray<ServerProviderModel> {
@@ -234,6 +247,14 @@ function appendCustomCodexModels(
 
   const seen = new Set(models.map((model) => model.slug));
   const fallbackCapabilities = models.find((model) => model.capabilities)?.capabilities ?? null;
+  const customCapabilities = fallbackCapabilities
+    ? {
+        ...fallbackCapabilities,
+        optionDescriptors: fallbackCapabilities.optionDescriptors?.filter(
+          (descriptor) => descriptor.id !== "contextWindow",
+        ),
+      }
+    : null;
   const customEntries: ServerProviderModel[] = [];
   for (const rawModel of customModels) {
     const slug = rawModel.trim();
@@ -245,7 +266,7 @@ function appendCustomCodexModels(
       slug,
       name: slug,
       isCustom: true,
-      capabilities: fallbackCapabilities,
+      capabilities: customCapabilities,
     });
   }
   return customEntries.length === 0 ? models : [...models, ...customEntries];

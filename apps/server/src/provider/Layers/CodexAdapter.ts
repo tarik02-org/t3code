@@ -40,7 +40,10 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  getCodexServiceTierOptionValue,
+  supportsCodexLongContext,
+} from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
@@ -1729,8 +1732,25 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
+        const useLongContext =
+          input.modelSelection?.instanceId === boundInstanceId &&
+          supportsCodexLongContext(input.modelSelection.model) &&
+          getModelSelectionStringOptionValue(input.modelSelection, "contextWindow") === "1m";
         const environment = mergeProviderSessionEnvironment(options?.environment, input.env);
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const appServerArgs = [
+          ...(useLongContext
+            ? ["-c", "model_context_window=1000000", "-c", "model_auto_compact_token_limit=900000"]
+            : []),
+          ...(mcpSession
+            ? [
+                "-c",
+                `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
+                "-c",
+                'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+              ]
+            : []),
+        ];
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -1738,6 +1758,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           binaryPath: codexConfig.binaryPath,
           environment,
           launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+          appServerArgs,
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
@@ -1753,12 +1774,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   ...environment,
                   T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
                 },
-                appServerArgs: [
-                  "-c",
-                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
-                  "-c",
-                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-                ],
               }
             : {}),
         };
