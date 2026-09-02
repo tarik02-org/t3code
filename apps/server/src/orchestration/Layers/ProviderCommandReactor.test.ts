@@ -3398,4 +3398,82 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     }),
   );
+
+  effectIt.effect("restarts a recovered codex session when context window changes", () =>
+    Effect.gen(function* () {
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-1");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          threadModelSelection: createModelSelection(providerInstanceId, "gpt-5-codex", [
+            { id: "contextWindow", value: "258k" },
+          ]),
+        }),
+      );
+
+      harness.runtimeSessions.push({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId,
+        status: "ready",
+        runtimeMode: "approval-required",
+        model: "gpt-5-codex",
+        cwd: "/tmp/provider-project",
+        threadId,
+        resumeCursor: { opaque: "resume-258k" },
+        createdAt: now,
+        updatedAt: now,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-codex-context-recovered"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-meta-update-codex-context-recovered"),
+        threadId,
+        modelSelection: createModelSelection(providerInstanceId, "gpt-5-codex", [
+          { id: "contextWindow", value: "1m" },
+        ]),
+      });
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-codex-context-recovered"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-codex-context-recovered"),
+          role: "user",
+          text: "use the larger context window",
+          attachments: [],
+        },
+        modelSelection: createModelSelection(providerInstanceId, "gpt-5-codex", [
+          { id: "contextWindow", value: "1m" },
+        ]),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 1));
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+        resumeCursor: { opaque: "resume-258k" },
+        modelSelection: createModelSelection(providerInstanceId, "gpt-5-codex", [
+          { id: "contextWindow", value: "1m" },
+        ]),
+      });
+    }),
+  );
 });

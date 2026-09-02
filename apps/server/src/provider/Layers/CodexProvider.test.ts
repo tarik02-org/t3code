@@ -1,6 +1,22 @@
 import { assert, it } from "@effect/vitest";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import { supportsCodexLongContext } from "../../codexModelOptions.ts";
+import {
+  appendCustomCodexModels,
+  applyPreferredCodexDefaultModel,
+  mapCodexModelCapabilities,
+} from "./CodexProvider.ts";
+
+it.each([
+  ["gpt-5.4", true],
+  ["gpt-5.6-luna", true],
+  ["gpt-5.6-terra", true],
+  ["gpt-5.6-sol", true],
+  ["gpt-5.5", false],
+  ["custom-model", false],
+] as const)("maps long context support for %s", (model, expected) => {
+  assert.equal(supportsCodexLongContext(model), expected);
+});
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
@@ -9,9 +25,9 @@ it("maps current Codex model capability fields", () => {
     description: "Test model",
     displayName: "GPT Test",
     hidden: false,
-    id: "gpt-test",
+    id: "gpt-5.6-luna",
     isDefault: true,
-    model: "gpt-test",
+    model: "gpt-5.6-luna",
     defaultServiceTier: "flex",
     serviceTiers: [
       {
@@ -61,6 +77,16 @@ it("maps current Codex model capability fields", () => {
       ],
       currentValue: "flex",
     },
+    {
+      id: "contextWindow",
+      label: "Context Window",
+      type: "select",
+      options: [
+        { id: "258k", label: "258k", isDefault: true },
+        { id: "1m", label: "1M" },
+      ],
+      currentValue: "258k",
+    },
   ]);
 });
 
@@ -72,9 +98,9 @@ it("uses standard routing when the catalog has no default service tier", () => {
     description: "Test model",
     displayName: "GPT Test",
     hidden: false,
-    id: "gpt-test",
+    id: "gpt-5.5",
     isDefault: true,
-    model: "gpt-test",
+    model: "gpt-5.5",
     serviceTiers: [
       {
         id: "priority",
@@ -143,4 +169,33 @@ it("ignores custom models that shadow a preferred slug", () => {
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
+});
+
+it("keeps long context off custom models", () => {
+  const models = appendCustomCodexModels(
+    [
+      {
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6-Sol",
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "contextWindow",
+              label: "Context Window",
+              type: "select",
+              options: [],
+            },
+            { id: "serviceTier", label: "Service Tier", type: "select", options: [] },
+          ],
+        },
+      },
+    ],
+    ["custom-model"],
+  );
+
+  assert.deepStrictEqual(
+    models[1]?.capabilities?.optionDescriptors?.map(({ id }) => id),
+    ["serviceTier"],
+  );
 });
