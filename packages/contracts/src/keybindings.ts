@@ -38,6 +38,7 @@ export const THREAD_KEYBINDING_COMMANDS = [
   "thread.rename",
   "thread.previous",
   "thread.next",
+  "thread.copyReference",
   "thread.settle",
   "thread.pin",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,

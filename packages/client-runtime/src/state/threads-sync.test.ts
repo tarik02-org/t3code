@@ -118,6 +118,7 @@ function testSession(
       ...(options?.completionMarker === true ? { threadResumeCompletionMarker: true } : {}),
       ...(options?.messagePagination === true ? { threadMessagePagination: true } : {}),
     } as never),
+    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
