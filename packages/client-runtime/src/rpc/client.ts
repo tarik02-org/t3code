@@ -216,7 +216,11 @@ export function subscribeDynamicRequest<TTag extends EnvironmentSubscriptionRpcT
                   Stream.unwrap(
                     Effect.gen(function* () {
                       const request = yield* makeRequest(session);
-                      const method = session.client[request.tag] as (
+                      const method = (
+                        request.tag === WS_METHODS.subscribeServerConfig
+                          ? session.subscribeServerConfig
+                          : session.client[request.tag]
+                      ) as (
                         input: EnvironmentRpcInput<TTag>,
                       ) => Stream.Stream<
                         EnvironmentRpcStreamValue<TTag>,

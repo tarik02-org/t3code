@@ -56,7 +56,7 @@ function originFromUrl(value: string): string | null {
   }
 }
 
-export function isHostedStaticApp(url: URL = new URL(window.location.href)): boolean {
+export function isHostedStaticApp(url?: URL): boolean {
   if (isDesktopBackendless()) {
     return true;
   }
@@ -72,8 +72,13 @@ export function isHostedStaticApp(url: URL = new URL(window.location.href)): boo
     return true;
   }
 
+  // No window (tests, static render) means no origin to be hosted at.
+  if (url === undefined && typeof window === "undefined") {
+    return false;
+  }
+
   const hostedOrigin = originFromUrl(configuredHostedAppUrl());
-  return hostedOrigin !== null && url.origin === hostedOrigin;
+  return hostedOrigin !== null && (url ?? new URL(window.location.href)).origin === hostedOrigin;
 }
 
 export function readHostedPairingRequest(url: URL = new URL(window.location.href)) {
