@@ -173,6 +173,7 @@ export interface CodexSessionRuntimeOptions {
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
+  readonly defaultModeRequestUserInput?: boolean | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
 }
@@ -543,6 +544,7 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly defaultModeRequestUserInput?: boolean;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -552,6 +554,13 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.defaultModeRequestUserInput !== undefined
+      ? {
+          config: {
+            "features.default_mode_request_user_input": input.defaultModeRequestUserInput,
+          },
+        }
+      : {}),
   };
 }
 
@@ -707,6 +716,7 @@ export const openCodexThread = (input: {
   readonly cwd: string;
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly defaultModeRequestUserInput?: boolean;
   readonly resumeThreadId: string | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
@@ -715,6 +725,9 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    ...(input.defaultModeRequestUserInput !== undefined
+      ? { defaultModeRequestUserInput: input.defaultModeRequestUserInput }
+      : {}),
   });
 
   if (resumeThreadId === undefined) {
@@ -2259,6 +2272,9 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
+        ...(options.defaultModeRequestUserInput !== undefined
+          ? { defaultModeRequestUserInput: options.defaultModeRequestUserInput }
+          : {}),
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
       });
 

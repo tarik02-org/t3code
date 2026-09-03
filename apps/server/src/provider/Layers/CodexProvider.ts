@@ -26,7 +26,10 @@ import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/co
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { supportsCodexLongContext } from "../../codexModelOptions.ts";
+import {
+  CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_OPTION_ID,
+  supportsCodexLongContext,
+} from "../../codexModelOptions.ts";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -187,6 +190,31 @@ export function mapCodexModelCapabilities(
       currentValue: "258k",
     });
   }
+  optionDescriptors.push({
+    id: CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_OPTION_ID,
+    label: "Default Mode Questions",
+    description: "Control whether Codex can ask questions while working in Default mode.",
+    type: "select",
+    options: [
+      {
+        id: "unset",
+        label: "Unset",
+        description: "Use the configured Codex default.",
+        isDefault: true,
+      },
+      {
+        id: "allow",
+        label: "Allow",
+        description: "Allow request_user_input in Default mode.",
+      },
+      {
+        id: "reject",
+        label: "Reject",
+        description: "Restrict request_user_input to Plan mode.",
+      },
+    ],
+    currentValue: "unset",
+  });
 
   return createModelCapabilities({
     optionDescriptors,

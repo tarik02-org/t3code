@@ -16,6 +16,7 @@ import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitation
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import { ProjectLaunchEnv } from "../../projectLaunchEnv/Services/ProjectLaunchEnv.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { getCodexDefaultModeRequestUserInputConfigValue } from "../../codexModelOptions.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -740,19 +741,21 @@ const make = Effect.gen(function* () {
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
       const previousModelSelection = threadModelSelections.get(threadId);
-      const codexContextWindowChanged =
+      const codexSessionConfigChanged =
         preferredProvider === "codex" &&
         requestedModelSelection !== undefined &&
         (previousModelSelection === undefined ||
           (getModelSelectionStringOptionValue(previousModelSelection, "contextWindow") ??
             "258k") !==
             (getModelSelectionStringOptionValue(requestedModelSelection, "contextWindow") ??
-              "258k"));
+              "258k") ||
+          getCodexDefaultModeRequestUserInputConfigValue(previousModelSelection) !==
+            getCodexDefaultModeRequestUserInputConfigValue(requestedModelSelection));
       const shouldRestartForModelSelectionChange =
         (preferredProvider === "claudeAgent" &&
           requestedModelSelection !== undefined &&
           !Equal.equals(previousModelSelection, requestedModelSelection)) ||
-        codexContextWindowChanged;
+        codexSessionConfigChanged;
 
       if (
         !runtimeModeChanged &&

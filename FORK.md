@@ -74,6 +74,8 @@ This repository is the `tarik02-org/t3code` fork of `pingdotgg/t3code`. This fil
 
 - Provider sessions use one shared launch-environment pipeline.
 - Default-mode Codex instructions allow `request_user_input` when the runtime exposes it.
+- Codex threads can inherit, allow, or reject Default-mode questions through the model options
+  menu. Changing the option recreates that thread's Codex session before its next turn.
 - Served web assets support a base path, and clients normalize remote URLs consistently.
 
 ## CI and releases
