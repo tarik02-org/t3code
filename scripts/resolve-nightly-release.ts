@@ -20,6 +20,8 @@ export interface NightlyReleaseMetadata {
 }
 
 const DateSchema = Schema.String.check(Schema.isPattern(/^\d{8}$/));
+const PrereleaseChannel = Schema.Literals(["nightly", "canary"]);
+type PrereleaseChannel = typeof PrereleaseChannel.Type;
 const RunNumberSchema = Schema.FiniteFromString.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(1),
@@ -96,18 +98,6 @@ export const resolveNightlyTargetVersion = (version: string) => {
   return Effect.succeed(`${major}.${minor}.${Number(patch) + 1}`);
 };
 
-/** Prerelease trains that share nightly's date-and-run versioning. */
-export const PrereleaseChannel = Schema.Literals(["nightly", "preview"]);
-export type PrereleaseChannel = typeof PrereleaseChannel.Type;
-
-// The preview label is deliberately loud: the releases page is the one place
-// a preview build can be found, and its name is the first thing a visitor
-// reads before the warning in the body.
-const CHANNEL_RELEASE_LABELS: Record<PrereleaseChannel, string> = {
-  nightly: "Nightly",
-  preview: "Preview (maintainer test build, do not install)",
-};
-
 export const resolveNightlyReleaseMetadata = (
   baseVersion: string,
   date: string,
@@ -117,11 +107,12 @@ export const resolveNightlyReleaseMetadata = (
 ) => {
   const shortSha = sha.slice(0, 12);
   const version = `${baseVersion}-${channel}.${date}.${runNumber}`;
+  const label = channel === "canary" ? "Canary" : "Nightly";
   return {
     baseVersion,
     version,
     tag: `v${version}`,
-    name: `T3 Code ${CHANNEL_RELEASE_LABELS[channel]} ${version} (${shortSha})`,
+    name: `T3 Code ${label} ${version} (${shortSha})`,
     shortSha,
   };
 };
@@ -199,9 +190,13 @@ export const writeNightlyReleaseOutput = Effect.fn("writeNightlyReleaseOutput")(
 const command = Command.make(
   "resolve-nightly-release",
   {
+    channel: Flag.Literals("channel", PrereleaseChannel.literals).pipe(
+      Flag.withDescription("Prerelease channel whose identifier the version carries."),
+      Flag.withDefault("nightly" as const),
+    ),
     date: Flag.String("date").pipe(
       Flag.withSchema(DateSchema),
-      Flag.withDescription("Nightly build date in YYYYMMDD."),
+      Flag.withDescription("Prerelease build date in YYYYMMDD."),
     ),
     runNumber: Flag.String("run-number").pipe(
       Flag.withSchema(RunNumberSchema),
@@ -210,10 +205,6 @@ const command = Command.make(
     sha: Flag.String("sha").pipe(
       Flag.withSchema(ShaSchema),
       Flag.withDescription("Commit sha for the nightly build."),
-    ),
-    channel: Flag.Literals("channel", PrereleaseChannel.literals).pipe(
-      Flag.withDescription("Prerelease channel whose identifier the version carries."),
-      Flag.withDefault("nightly" as const),
     ),
     githubOutput: Flag.Boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
@@ -224,14 +215,14 @@ const command = Command.make(
       Flag.optional,
     ),
   },
-  ({ date, runNumber, sha, channel, githubOutput, root }) =>
+  ({ channel, date, runNumber, sha, githubOutput, root }) =>
     readDesktopBaseVersion(Option.getOrUndefined(root)).pipe(
       Effect.map((baseVersion) =>
         resolveNightlyReleaseMetadata(baseVersion, date, runNumber, sha, channel),
       ),
       Effect.flatMap((metadata) => writeNightlyReleaseOutput(metadata, githubOutput)),
     ),
-).pipe(Command.withDescription("Resolve nightly release version metadata."));
+).pipe(Command.withDescription("Resolve nightly or canary release version metadata."));
 
 if (import.meta.main) {
   Command.run(command, { version: "0.0.0" }).pipe(
