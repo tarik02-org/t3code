@@ -1,6 +1,6 @@
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
-import { WS_METHODS } from "@t3tools/contracts";
+import { type ThreadGoalRequest, WS_METHODS } from "@t3tools/contracts";
 
 import {
   createAtomCommandScheduler,
@@ -15,6 +15,7 @@ import {
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
   type DismissThreadUserInputInput,
+  type RequestThreadGoalInput,
   type RevertThreadCheckpointInput,
   type SetThreadInteractionModeInput,
   type SetThreadRuntimeModeInput,
@@ -37,6 +38,7 @@ import {
   respondToThreadApproval,
   respondToThreadUserInput,
   dismissThreadUserInput,
+  requestThreadGoal,
   revertThreadCheckpoint,
   setThreadInteractionMode,
   setThreadRuntimeMode,
@@ -63,6 +65,7 @@ export type {
   RespondToThreadApprovalInput,
   RespondToThreadUserInputInput,
   DismissThreadUserInputInput,
+  RequestThreadGoalInput,
   RevertThreadCheckpointInput,
   SetThreadInteractionModeInput,
   SetThreadRuntimeModeInput,
@@ -79,6 +82,65 @@ export type {
   UnsnoozeThreadInput,
   UpdateThreadMetadataInput,
 } from "../operations/commands.ts";
+
+export type CodexGoalCommand =
+  | ThreadGoalRequest
+  | { readonly kind: "invalid"; readonly message: string };
+
+const GOAL_OBJECTIVE_MAX_LENGTH = 4_000;
+const GOAL_COMMAND_USAGE =
+  "Usage: /goal [status | create <objective> | steer <objective> | pause | resume | clear | reset]";
+
+function invalidGoalObjectiveLength(): CodexGoalCommand {
+  return {
+    kind: "invalid",
+    message: `Goal objective must be ${GOAL_OBJECTIVE_MAX_LENGTH.toLocaleString()} characters or fewer.`,
+  };
+}
+
+export function parseCodexGoalCommand(value: string): CodexGoalCommand | null {
+  const match = /^\/goal(?:\s+([\s\S]*))?$/i.exec(value.trim());
+  if (match === null) return null;
+
+  const argument = match[1]?.trim() ?? "";
+  if (argument.length === 0 || argument.toLowerCase() === "status") return { kind: "status" };
+
+  const [rawAction = "", ...rest] = argument.split(/\s+/);
+  const action = rawAction.toLowerCase();
+  const objective = rest.join(" ").trim();
+  if (action === "create" || action === "steer") {
+    if (objective.length === 0) return { kind: "invalid", message: GOAL_COMMAND_USAGE };
+    return objective.length > GOAL_OBJECTIVE_MAX_LENGTH
+      ? invalidGoalObjectiveLength()
+      : { kind: "set", objective };
+  }
+  if (action === "edit") {
+    if (objective.length === 0) {
+      return {
+        kind: "invalid",
+        message: "T3 does not open Codex's Goal editor. Use /goal steer <objective>.",
+      };
+    }
+    return objective.length > GOAL_OBJECTIVE_MAX_LENGTH
+      ? invalidGoalObjectiveLength()
+      : { kind: "set", objective };
+  }
+  if (action === "pause" || action === "resume") {
+    return objective.length === 0
+      ? { kind: "control", action }
+      : { kind: "invalid", message: GOAL_COMMAND_USAGE };
+  }
+  if (action === "clear" || action === "reset") {
+    return objective.length === 0
+      ? { kind: "control", action: "clear" }
+      : { kind: "invalid", message: GOAL_COMMAND_USAGE };
+  }
+  if (action === "status") return { kind: "invalid", message: GOAL_COMMAND_USAGE };
+
+  return argument.length > GOAL_OBJECTIVE_MAX_LENGTH
+    ? invalidGoalObjectiveLength()
+    : { kind: "set", objective: argument };
+}
 
 export function createThreadEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
@@ -207,6 +269,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     dismissUserInput: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:dismiss-user-input",
       execute: (input: DismissThreadUserInputInput) => dismissThreadUserInput(input),
+      scheduler,
+      concurrency,
+    }),
+    requestGoal: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:request-goal",
+      execute: (input: RequestThreadGoalInput) => requestThreadGoal(input),
       scheduler,
       concurrency,
     }),
