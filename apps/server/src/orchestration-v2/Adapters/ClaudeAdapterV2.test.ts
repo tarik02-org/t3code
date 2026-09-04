@@ -2339,6 +2339,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       toolUseId: string,
     ) => Effect.Effect<boolean, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly fileSystem?: FileSystem.FileSystem;
     readonly subagentLaunchToolUseId?: string;
     readonly nativeSessionId?: string;
     readonly settings?: ClaudeSettings;
@@ -2388,7 +2389,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
         environment: options?.environment ?? {},
         attachmentsDir,
-        fileSystem,
+        fileSystem: options?.fileSystem ?? fileSystem,
         path: yield* Path.Path,
         crypto: yield* Crypto.Crypto,
         idAllocator,
@@ -13726,6 +13727,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const calls: Array<string> = [];
           let beforeAnswer: Effect.Effect<void> = Effect.void;
           const harness = yield* makeWakeHarnessWithOptions({
+            // Skill discovery must finish before advancing the virtual steer timeout.
+            fileSystem: FileSystem.makeNoop({}),
             backgroundTasks: (toolUseId) =>
               Effect.sync(() => calls.push(toolUseId)).pipe(
                 Effect.andThen(
