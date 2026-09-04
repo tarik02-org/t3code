@@ -1,0 +1,225 @@
+name: Stable Release PR
+
+on:
+  push:
+    branches:
+      - main
+  workflow_run:
+    workflows:
+      - Release Publish
+      - History validation
+    types:
+      - completed
+    branches:
+      - main
+  release:
+    types:
+      - published
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: stable-release-pr
+  cancel-in-progress: true
+
+jobs:
+  state:
+    name: Check stable release state
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
+      (github.event_name != 'release' || github.event.release.prerelease == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prepare: ${{ steps.release_state.outputs.prepare }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --force --tags origin
+
+      - id: release_state
+        name: Check stable state and validated history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./apps/server/package.json').version")"
+          tag_sha="$(git rev-parse "refs/tags/v${package_version}^{commit}" 2>/dev/null || true)"
+          history_checks="$(gh api "repos/$GITHUB_REPOSITORY/commits/main/check-runs" --jq '[.check_runs[] | select(.name == "History / validate" and .conclusion == "success")] | length')"
+          if [[ -n "$tag_sha" && "$history_checks" -gt 0 ]]; then
+            echo "prepare=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prepare=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  prepare:
+    name: Prepare stable release draft
+    needs: state
+    if: needs.state.outputs.prepare == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: app_token
+        name: Mint release app token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+          persist-credentials: true
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Fetch tags, upstream, and release branch
+        run: |
+          git fetch --force --tags origin
+          git fetch --no-tags origin upstream/main:refs/remotes/upstream/main
+          git fetch origin release/stable || true
+
+      - id: existing
+        name: Preserve existing manual notes
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          number="$(gh pr list --head release/stable --base main --state open --json number --jq '.[0].number // empty')"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          if [[ -n "$number" ]]; then
+            gh pr view "$number" --json body --jq .body > "$RUNNER_TEMP/release-pr-body.md"
+          else
+            : > "$RUNNER_TEMP/release-pr-body.md"
+          fi
+
+      - id: release_meta
+        name: Resolve next stable version
+        run: |
+          node scripts/resolve-fork-stable-release.ts \
+            --date "$(date -u +%Y%m%d)" \
+            --github-output
+
+      - id: update_versions
+        name: Update package versions
+        run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}" --github-output
+
+      - id: previous_tag
+        name: Resolve previous stable release
+        run: |
+          node scripts/resolve-previous-release-tag.ts \
+            --channel stable \
+            --current-tag "${{ steps.release_meta.outputs.tag }}" \
+            --github-output
+
+      - name: Refresh lockfile if manifests require it
+        if: steps.update_versions.outputs.changed == 'true'
+        run: vp install --lockfile-only --ignore-scripts
+
+      - name: Reject dependency drift in release preparation
+        run: |
+          if ! git diff --quiet -- pnpm-lock.yaml; then
+            echo 'Release preparation found dependency lockfile changes.' >&2
+            echo 'Actualize main first, then regenerate the stable draft.' >&2
+            git diff -- pnpm-lock.yaml >&2
+            exit 1
+          fi
+
+      - name: Render upstream changelog
+        run: |
+          node scripts/render-upstream-release-notes.mjs \
+            --previous-tag "${{ steps.previous_tag.outputs.previous_tag }}" \
+            --release-ref HEAD \
+            --upstream-ref refs/remotes/upstream/main \
+            --output "$RUNNER_TEMP/upstream-release-notes.md"
+
+      - name: Write release branch
+        env:
+          RELEASE_VERSION: ${{ steps.release_meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "${{ steps.app_token.outputs.app-slug }}[bot]"
+          git config user.email "release-bot@noreply.github.com"
+          git switch -C release/stable
+          git add apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json pnpm-lock.yaml
+          if git diff --cached --quiet; then
+            git commit --allow-empty -m "prepare stable release $RELEASE_VERSION"
+          else
+            git commit -m "prepare stable release $RELEASE_VERSION"
+          fi
+          git push --force-with-lease="refs/heads/release/stable" origin "HEAD:refs/heads/release/stable"
+
+      - name: Compose draft body
+        env:
+          RELEASE_VERSION: ${{ steps.release_meta.outputs.version }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          manual_notes="$(sed -n '/<!-- fork-changelog:start -->/,/<!-- fork-changelog:end -->/{//!p;}' "$RUNNER_TEMP/release-pr-body.md")"
+          if [[ -z "$manual_notes" ]]; then
+            manual_notes='- Add fork-only changes here before promotion.'
+          fi
+          {
+            echo "## Stable release $RELEASE_VERSION"
+            echo
+            echo 'This draft is promoted with /promote; it must not be merged.'
+            echo
+            echo "Previous stable: ${PREVIOUS_TAG:-none}"
+            echo
+            cat "$RUNNER_TEMP/upstream-release-notes.md"
+            echo
+            echo '## Fork changes'
+            echo
+            echo '<!-- fork-changelog:start -->'
+            printf '%s\n' "$manual_notes"
+            echo '<!-- fork-changelog:end -->'
+          } > "$RUNNER_TEMP/release-pr-body-new.md"
+
+      - name: Create or update draft release PR
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          RELEASE_VERSION: ${{ steps.release_meta.outputs.version }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
+          EXISTING_PR: ${{ steps.existing.outputs.number }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$EXISTING_PR" ]]; then
+            gh pr edit "$EXISTING_PR" \
+              --title "prepare stable release $RELEASE_VERSION" \
+              --body-file "$RUNNER_TEMP/release-pr-body-new.md" \
+              --add-label release
+            gh pr ready "$EXISTING_PR" --undo || true
+          else
+            gh pr create \
+              --base main \
+              --head release/stable \
+              --title "prepare stable release $RELEASE_VERSION" \
+              --body-file "$RUNNER_TEMP/release-pr-body-new.md" \
+              --label release \
+              --draft
+          fi
