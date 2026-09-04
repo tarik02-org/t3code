@@ -7,6 +7,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
+import { ProjectionThreadGoalRepositoryLive } from "../Services/ProjectionThreadGoals.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
 export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -33,20 +34,23 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
   return Layer.provideMerge(
-    setup,
-    NodeSqliteClient.layer({
-      filename: dbPath,
-      spanAttributes: {
-        "db.name": path.basename(dbPath),
-        "service.name": "t3code-server",
-      },
-    }),
+    ProjectionThreadGoalRepositoryLive,
+    Layer.provideMerge(
+      setup,
+      NodeSqliteClient.layer({
+        filename: dbPath,
+        spanAttributes: {
+          "db.name": path.basename(dbPath),
+          "service.name": "t3code-server",
+        },
+      }),
+    ),
   );
 }, Layer.unwrap);
 
 export const SqlitePersistenceMemory = Layer.provideMerge(
-  setup,
-  NodeSqliteClient.layer({ filename: ":memory:" }),
+  ProjectionThreadGoalRepositoryLive,
+  Layer.provideMerge(setup, NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 
 export const layerConfig = Layer.unwrap(
