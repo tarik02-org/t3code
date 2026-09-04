@@ -1,0 +1,77 @@
+name: Prepare actualization
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_branch:
+        description: "Pushed branch containing the rebuilt history"
+        required: true
+        type: string
+      title:
+        description: "Optional pull request title"
+        required: false
+        default: "actualize fork on current upstream"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    name: Create actualization snapshot and PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: app_token
+        name: Mint release app token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - id: refs
+        name: Create immutable upstream snapshot
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          upstream_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/upstream/main" --jq .object.sha)"
+          live_upstream_sha="$(git ls-remote https://github.com/pingdotgg/t3code.git refs/heads/main | awk '{print $1}')"
+          if [[ "$upstream_sha" != "$live_upstream_sha" ]]; then
+            echo "upstream/main is stale at $upstream_sha; sync it before preparing actualization (live: $live_upstream_sha)." >&2
+            exit 1
+          fi
+          base_ref="upstream/main-$main_sha"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$base_ref" >/dev/null 2>&1; then
+            echo "Snapshot $base_ref already exists." >&2
+            exit 1
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/heads/$base_ref" -f sha="$upstream_sha" >/dev/null
+          {
+            echo "base_ref=$base_ref"
+            echo "main_sha=$main_sha"
+            echo "upstream_sha=$upstream_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open draft actualization PR
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          BASE_REF: ${{ steps.refs.outputs.base_ref }}
+          UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
+          TITLE: ${{ inputs.title }}
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --base "$BASE_REF" \
+            --head "$HEAD_BRANCH" \
+            --title "$TITLE" \
+            --label actualization \
+            --body "Actualizes the maintained history on upstream/main at ${UPSTREAM_SHA}. Promote with /promote after the checks pass."
