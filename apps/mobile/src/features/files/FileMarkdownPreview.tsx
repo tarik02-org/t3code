@@ -1,4 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { parseMarkdownFrontmatter } from "@t3tools/client-runtime/markdown-frontmatter";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
 import { useCallback, useMemo, useState } from "react";
@@ -29,6 +30,7 @@ import {
   type NativeMarkdownTextStyle,
 } from "../../native/SelectableMarkdownText";
 import { resolveWorkspaceFilePath } from "./filePath";
+import { MarkdownFrontmatterTable } from "./MarkdownFrontmatterTable";
 
 interface MarkdownPreviewStyles {
   readonly theme: PartialMarkdownTheme;
@@ -239,6 +241,7 @@ export function FileMarkdownPreview(props: {
     [markdownDirectory, props.environmentId, props.threadId],
   );
   const styles = useMarkdownPreviewStyles(renderImage);
+  const frontmatter = useMemo(() => parseMarkdownFrontmatter(props.markdown), [props.markdown]);
   const onLinkPress = useCallback((href: string) => {
     void tryOpenExternalUrl(href, "markdown-link");
   }, []);
@@ -257,9 +260,12 @@ export function FileMarkdownPreview(props: {
       }
     >
       <View className="mx-auto w-full max-w-[760px]">
+        {frontmatter.entries.length > 0 ? (
+          <MarkdownFrontmatterTable entries={frontmatter.entries} />
+        ) : null}
         {hasNativeSelectableMarkdownText() ? (
           <SelectableMarkdownText
-            markdown={props.markdown}
+            markdown={frontmatter.body}
             onLinkPress={onLinkPress}
             renderImage={renderImage}
             textStyle={styles.nativeTextStyle}
@@ -271,7 +277,7 @@ export function FileMarkdownPreview(props: {
             styles={styles.styles}
             theme={styles.theme}
           >
-            {props.markdown}
+            {frontmatter.body}
           </Markdown>
         )}
       </View>
