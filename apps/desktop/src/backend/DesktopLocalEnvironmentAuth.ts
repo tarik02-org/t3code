@@ -1,6 +1,7 @@
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -10,6 +11,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
+
+const BACKEND_READY_TIMEOUT = Duration.minutes(1);
 
 export class DesktopLocalEnvironmentAuthBackendNotConfiguredError extends Schema.TaggedErrorClass<DesktopLocalEnvironmentAuthBackendNotConfiguredError>()(
   "DesktopLocalEnvironmentAuthBackendNotConfiguredError",
@@ -29,8 +32,18 @@ export class DesktopLocalEnvironmentAuthSessionBootstrapError extends Schema.Tag
   }
 }
 
+export class DesktopLocalEnvironmentAuthBackendNotReadyError extends Schema.TaggedErrorClass<DesktopLocalEnvironmentAuthBackendNotReadyError>()(
+  "DesktopLocalEnvironmentAuthBackendNotReadyError",
+  { timeoutMs: Schema.Number },
+) {
+  override get message(): string {
+    return `Local backend did not become ready within ${this.timeoutMs}ms.`;
+  }
+}
+
 export const DesktopLocalEnvironmentAuthError = Schema.Union([
   DesktopLocalEnvironmentAuthBackendNotConfiguredError,
+  DesktopLocalEnvironmentAuthBackendNotReadyError,
   DesktopLocalEnvironmentAuthSessionBootstrapError,
 ]);
 export type DesktopLocalEnvironmentAuthError = typeof DesktopLocalEnvironmentAuthError.Type;
@@ -58,7 +71,10 @@ export const make = Effect.gen(function* () {
 
         const instances = yield* pool.list;
         const primary = instances.find((instance) => instance.id === PRIMARY_LOCAL_ENVIRONMENT_ID);
-        const configOption = primary === undefined ? Option.none() : yield* primary.currentConfig;
+        if (primary === undefined) {
+          return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
+        }
+        const configOption = yield* primary.currentConfig;
         if (Option.isNone(configOption)) {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
         }
@@ -66,6 +82,11 @@ export const make = Effect.gen(function* () {
         const credential = config.bootstrap.desktopBootstrapToken;
         if (!credential) {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
+        }
+        if (!(yield* primary.waitForReady(BACKEND_READY_TIMEOUT))) {
+          return yield* new DesktopLocalEnvironmentAuthBackendNotReadyError({
+            timeoutMs: Duration.toMillis(BACKEND_READY_TIMEOUT),
+          });
         }
         const session = yield* bootstrapRemoteBearerSession({
           httpBaseUrl: config.httpBaseUrl.href,

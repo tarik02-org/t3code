@@ -73,6 +73,7 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { ProjectLaunchEnv } from "../../projectLaunchEnv/Services/ProjectLaunchEnv.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 interface PendingCompaction {
@@ -324,6 +325,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const projectLaunchEnv = yield* Effect.serviceOption(ProjectLaunchEnv);
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
   const revokeMcpCredential =
@@ -1026,6 +1028,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
+      const resolvedProjectLaunchEnv = Option.isSome(projectLaunchEnv)
+        ? yield* projectLaunchEnv.value
+            .resolveForThread({ threadId: input.binding.threadId })
+            .pipe(
+              Effect.mapError((cause) =>
+                toValidationError(
+                  input.operation,
+                  `Cannot resolve launch environment for thread '${input.binding.threadId}': ${cause.message}`,
+                  cause,
+                ),
+              ),
+            )
+        : undefined;
 
       yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
       const resumed = yield* adapter
@@ -1036,6 +1051,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(persistedCwd ? { cwd: persistedCwd } : {}),
           ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+          ...(resolvedProjectLaunchEnv ? { env: resolvedProjectLaunchEnv.env } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
         })
         .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));

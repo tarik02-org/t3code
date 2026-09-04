@@ -142,16 +142,40 @@ const fatalStartupCause = <E>(stage: string, cause: Cause.Cause<E>) =>
   handleFatalStartupError(stage, Cause.pretty(cause)).pipe(Effect.andThen(Effect.failCause(cause)));
 
 const bootstrap = Effect.gen(function* () {
-  const pool = yield* DesktopBackendPool.DesktopBackendPool;
-  const primaryBackend = yield* pool.primary;
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
-  const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-  const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
   yield* logBootstrapInfo("bootstrap start");
+
+  const settings = yield* desktopSettings.get;
+  const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
+  const desktopScheme = ElectronProtocol.getDesktopScheme(environment.isDevelopment);
+  if (!settings.localBackendEnabled) {
+    if (environment.isDevelopment) {
+      const devServerUrl = Option.getOrThrow(environment.devServerUrl);
+      yield* electronProtocol.registerDesktopProtocol({
+        scheme: desktopScheme,
+        targetOrigin: devServerUrl,
+        backendOrigin: devServerUrl,
+        clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+      });
+    } else {
+      yield* electronProtocol.registerDesktopFileProtocol({
+        scheme: desktopScheme,
+        rendererRootPath: environment.rendererRootPath,
+        clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+      });
+    }
+    yield* logBootstrapInfo("bootstrap local backend disabled");
+    yield* installDesktopIpcHandlers();
+    yield* logBootstrapInfo("bootstrap ipc handlers registered");
+    if (!(yield* Ref.get(state.quitting))) {
+      yield* desktopWindow.createMain;
+    }
+    return;
+  }
 
   if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
@@ -169,24 +193,28 @@ const bootstrap = Effect.gen(function* () {
     },
   );
 
-  const settings = yield* desktopSettings.get;
   if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
     yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
       mode: settings.serverExposureMode,
     });
   }
+  const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const serverExposureState = yield* serverExposure.configureFromSettings({ port: backendPort });
   const backendConfig = yield* serverExposure.backendConfig;
-  const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
-  const rendererTarget = environment.isDevelopment
-    ? Option.getOrThrow(environment.devServerUrl)
-    : backendConfig.httpBaseUrl;
-  yield* electronProtocol.registerDesktopProtocol({
-    scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
-    targetOrigin: rendererTarget,
-    backendOrigin: backendConfig.httpBaseUrl,
-    clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
-  });
+  if (environment.isDevelopment) {
+    yield* electronProtocol.registerDesktopProtocol({
+      scheme: desktopScheme,
+      targetOrigin: Option.getOrThrow(environment.devServerUrl),
+      backendOrigin: backendConfig.httpBaseUrl,
+      clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+    });
+  } else {
+    yield* electronProtocol.registerDesktopFileProtocol({
+      scheme: desktopScheme,
+      rendererRootPath: environment.rendererRootPath,
+      clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+    });
+  }
   yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
     baseUrl: backendConfig.httpBaseUrl.href,
   });
@@ -204,6 +232,9 @@ const bootstrap = Effect.gen(function* () {
   yield* logBootstrapInfo("bootstrap ipc handlers registered");
 
   if (!(yield* Ref.get(state.quitting))) {
+    const pool = yield* DesktopBackendPool.DesktopBackendPool;
+    const primaryBackend = yield* pool.primary;
+    const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
     // In wsl-only mode the renderer is served by the WSL backend, which can be
     // slow to cold-boot — show a "Connecting to WSL" splash immediately so the
     // app feels responsive instead of presenting no window until WSL is ready.
@@ -213,6 +244,14 @@ const bootstrap = Effect.gen(function* () {
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
+    const primaryConfig = yield* primaryBackend.currentConfig;
+    if (
+      Option.isSome(primaryConfig) &&
+      Option.isNone(primaryConfig.value.preflightFailure) &&
+      !(yield* Ref.get(state.quitting))
+    ) {
+      yield* desktopWindow.createMain;
+    }
     yield* appActivation.start.pipe(
       Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
       Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
