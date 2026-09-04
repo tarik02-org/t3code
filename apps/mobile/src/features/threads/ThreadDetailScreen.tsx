@@ -13,11 +13,13 @@ import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
+  OrchestrationThreadGoal,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
+  ThreadGoalRequest,
   ThreadId,
   UserInputQuestion,
 } from "@t3tools/contracts";
@@ -36,6 +38,8 @@ import {
   AppState,
   Keyboard,
   Platform,
+  Pressable,
+  Text,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -130,6 +134,7 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onRequestGoal: (request: ThreadGoalRequest) => Promise<unknown>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -227,6 +232,23 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
+function goalStatusLabel(status: OrchestrationThreadGoal["status"]): string {
+  switch (status) {
+    case "active":
+      return "Active";
+    case "paused":
+      return "Paused";
+    case "blocked":
+      return "Blocked";
+    case "usageLimited":
+      return "Usage limited";
+    case "budgetLimited":
+      return "Budget limited";
+    case "complete":
+      return "Complete";
+  }
+}
+
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -276,6 +298,23 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const lastScrolledSubmittedMessageIdRef = useRef<MessageId | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
+  );
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (props.selectedThread.goal === undefined || props.selectedThread.goal === null) {
+        return;
+      }
+      setPendingGoalAction(action);
+      try {
+        await props.onRequestGoal({ kind: "control", action });
+      } finally {
+        setPendingGoalAction(null);
+      }
+    },
+    [props.onRequestGoal, props.selectedThread.goal],
+  );
   const handleComposerFocusChange = useCallback(
     (focused: boolean) => {
       setComposerFocused(focused);
@@ -778,6 +817,54 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {props.selectedThread.goal ? (
+                  <View className="mx-4 mb-3 rounded-xl border border-adaptive-blue-300-a50-blue-400-a28 bg-adaptive-blue-50-blue-400-a14 p-3">
+                    <Text className="font-t3-medium text-sm text-foreground">
+                      Goal {goalStatusLabel(props.selectedThread.goal.status)}
+                    </Text>
+                    <Text numberOfLines={2} className="mt-1 text-sm text-secondary-label">
+                      {props.selectedThread.goal.objective}
+                    </Text>
+                    <View className="mt-2 flex-row gap-2">
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          props.selectedThread.goal.status === "active"
+                            ? "Pause Goal"
+                            : "Resume Goal"
+                        }
+                        disabled={pendingGoalAction !== null}
+                        onPress={() =>
+                          void handleGoalControl(
+                            props.selectedThread.goal?.status === "active" ? "pause" : "resume",
+                          )
+                        }
+                        className="rounded-md bg-secondary px-3 py-1.5"
+                      >
+                        <Text className="text-xs font-medium text-foreground">
+                          {pendingGoalAction === "pause"
+                            ? "Pausing..."
+                            : pendingGoalAction === "resume"
+                              ? "Resuming..."
+                              : props.selectedThread.goal.status === "active"
+                                ? "Pause"
+                                : "Resume"}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Clear Goal"
+                        disabled={pendingGoalAction !== null}
+                        onPress={() => void handleGoalControl("clear")}
+                        className="rounded-md px-3 py-1.5"
+                      >
+                        <Text className="text-xs font-medium text-secondary-label">
+                          {pendingGoalAction === "clear" ? "Clearing..." : "Clear"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
                 {props.activePendingApproval || props.activePendingUserInput ? (
                   <Animated.View
                     className="shrink-0 gap-3 px-4 pb-3"
