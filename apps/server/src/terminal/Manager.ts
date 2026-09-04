@@ -8,6 +8,8 @@
  */
 import {
   DEFAULT_TERMINAL_ID,
+  ProjectId,
+  ThreadId,
   TerminalCwdError,
   TerminalCwdNotDirectoryError,
   TerminalCwdNotFoundError,
@@ -73,6 +75,11 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
+import { ProjectLaunchEnv } from "../projectLaunchEnv/Services/ProjectLaunchEnv.ts";
+import {
+  ProjectLaunchEnvProjectLookupError,
+  ProjectLaunchEnvThreadLookupError,
+} from "../projectLaunchEnv/Services/ProjectLaunchEnvErrors.ts";
 
 export {
   TerminalCwdError,
@@ -1342,6 +1349,7 @@ interface TerminalManagerOptions {
     Record<string, string>,
     TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
   >;
+  projectLaunchEnv?: ProjectLaunchEnv["Service"];
 }
 
 export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
@@ -1402,6 +1410,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
       env,
     }),
   );
+  const projectLaunchEnv = yield* Effect.serviceOption(ProjectLaunchEnv);
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
     ptyAdapter,
@@ -1413,6 +1422,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
     registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
     unregisterTerminal: portDiscovery.unregisterTerminal,
     resolveProviderInstanceEnvironment,
+    ...(Option.isSome(projectLaunchEnv) ? { projectLaunchEnv: projectLaunchEnv.value } : {}),
   });
 });
 
@@ -1423,6 +1433,68 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const path = yield* Path.Path;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
+  const definedEnv = (
+    env: Readonly<Record<string, string | undefined>> | undefined,
+  ): Record<string, string> =>
+    Object.fromEntries(
+      Object.entries(env ?? {}).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    );
+  const projectLaunchEnv =
+    options.projectLaunchEnv ??
+    ProjectLaunchEnv.of({
+      resolve: (input) => Effect.succeed(definedEnv(input.extraEnv)),
+      resolveForThread: (input) =>
+        Effect.succeed({
+          projectId: input.projectId ?? ProjectId.make("test-project"),
+          ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+          env: definedEnv(input.extraEnv),
+        }),
+    });
+
+  const toProjectLaunchEnvInput = (
+    input: Pick<
+      TerminalOpenInput | TerminalRestartInput | TerminalAttachInput,
+      "threadId" | "terminalId" | "projectId" | "worktreePath" | "env"
+    >,
+  ) => ({
+    threadId: ThreadId.make(input.threadId),
+    terminalId: input.terminalId,
+    ...(input.projectId !== undefined ? { projectId: ProjectId.make(input.projectId) } : {}),
+    ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+    ...(input.env !== undefined ? { extraEnv: input.env } : {}),
+  });
+
+  const mapProjectLaunchEnvError = (
+    error: ProjectLaunchEnvProjectLookupError | ProjectLaunchEnvThreadLookupError,
+  ) => {
+    if (error._tag === "ProjectLaunchEnvThreadLookupError") {
+      return new TerminalSessionLookupError({
+        threadId: error.threadId,
+        terminalId: error.terminalId ?? "",
+      });
+    }
+    if (error.reason === "notFound") {
+      return new TerminalCwdNotFoundError({ cwd: error.projectId });
+    }
+    return new TerminalCwdStatError({ cwd: error.projectId, cause: error.cause ?? error });
+  };
+
+  const resolveProjectLaunchEnv = <
+    Input extends TerminalOpenInput | TerminalAttachInput | TerminalRestartInput,
+  >(
+    input: Input,
+  ) =>
+    projectLaunchEnv.resolveForThread(toProjectLaunchEnvInput(input)).pipe(
+      Effect.mapError(mapProjectLaunchEnvError),
+      Effect.map((resolved) => ({
+        ...input,
+        projectId: resolved.projectId,
+        ...(resolved.worktreePath !== undefined ? { worktreePath: resolved.worktreePath } : {}),
+        env: resolved.env,
+      })),
+    );
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
@@ -1438,19 +1510,21 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const resolveLaunchInputEnvironment = Effect.fn("terminal.resolveLaunchInputEnvironment")(
     function* <Input extends TerminalOpenInput | TerminalAttachInput | TerminalRestartInput>(
       input: Input,
-    ): Effect.fn.Return<
-      Input,
-      TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
-    > {
-      if (input.providerInstanceId === undefined) return input;
-      const resolver = options.resolveProviderInstanceEnvironment;
-      if (resolver === undefined) {
-        return yield* new TerminalProviderInstanceNotFoundError({
-          providerInstanceId: ProviderInstanceId.make(input.providerInstanceId),
-        });
+    ) {
+      let resolvedInput = input;
+      if (input.providerInstanceId !== undefined) {
+        const resolver = options.resolveProviderInstanceEnvironment;
+        if (resolver === undefined) {
+          return yield* new TerminalProviderInstanceNotFoundError({
+            providerInstanceId: ProviderInstanceId.make(input.providerInstanceId),
+          });
+        }
+        const env = yield* resolver(input.providerInstanceId, input.env);
+        resolvedInput = { ...input, env };
       }
-      const env = yield* resolver(input.providerInstanceId, input.env);
-      return { ...input, env };
+      return resolvedInput.projectId === undefined
+        ? resolvedInput
+        : yield* resolveProjectLaunchEnv(resolvedInput);
     },
   );
   // One process-table snapshot per poll tick, shared across every terminal.
