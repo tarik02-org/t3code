@@ -1,0 +1,262 @@
+name: Nix pnpm dependency hash
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-pnpm-dependency-hash-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check PR pnpm dependency hash
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - id: update
+        name: Calculate pnpm dependency hash fix
+        shell: bash
+        run: |
+          nix run github:Mic92/nix-update/cf68051e7b7e08de6c707484cdcd1a53feb48e05 -- \
+            t3code-runtime \
+            --flake \
+            --version=skip \
+            --override-filename nix/package.nix \
+            --build
+
+          git reset -- flake.lock
+          git clean -f -- flake.lock
+
+          if git diff --quiet -- nix/package.nix; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'The Nix pnpm dependency hash is stale.'
+              echo
+              echo "The PR author or a maintainer can apply this change by commenting \`/apply-nix-fix\`. Fork pull requests must allow maintainer edits."
+              echo
+              echo '```diff'
+              git diff -- nix/package.nix
+              echo '```'
+            } | tee "$RUNNER_TEMP/nix-pnpm-dependency-hash.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Post proposed hash change
+        if: >-
+          steps.update.outputs.changed == 'true' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: nix-pnpm-dependency-hash
+          path: ${{ runner.temp }}/nix-pnpm-dependency-hash.md
+
+      - name: Remove resolved hash comment
+        if: >-
+          steps.update.outputs.changed == 'false' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: nix-pnpm-dependency-hash
+          delete: true
+
+      - name: Fail on dependency hash drift
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          echo '::error::The Nix pnpm dependency hash is stale. Comment /apply-nix-fix or apply the change from the job summary.'
+          exit 1
+
+  apply:
+    name: Apply PR pnpm dependency hash
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.body == '/apply-nix-fix' &&
+      (github.actor == github.event.issue.user.login ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - id: pull_request
+        name: Authorize command and read pull request
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const headRepository = pullRequest.head.repo.full_name;
+
+            if (headRepository !== context.payload.repository.full_name && !pullRequest.maintainer_can_modify) {
+              throw new Error(`Pull request #${pullRequest.number} does not allow maintainer edits.`);
+            }
+
+            core.setOutput("head-repository", headRepository);
+            core.setOutput("head-ref", pullRequest.head.ref);
+            core.setOutput("head-sha", pullRequest.head.sha);
+
+      - name: Checkout pull request
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.pull_request.outputs.head-repository }}
+          ref: ${{ steps.pull_request.outputs.head-sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - id: update
+        name: Calculate pnpm dependency hash fix
+        shell: bash
+        run: |
+          nix run github:Mic92/nix-update/cf68051e7b7e08de6c707484cdcd1a53feb48e05 -- \
+            t3code-runtime \
+            --flake \
+            --version=skip \
+            --override-filename nix/package.nix \
+            --build
+
+          git reset -- flake.lock
+          git clean -f -- flake.lock
+
+          if git diff --quiet -- nix/package.nix; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo 'The Nix pnpm dependency hash is already current.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git add -- nix/package.nix
+          fi
+
+      # PR-controlled code is inspected above. Mint the write token only after that work finishes.
+      - id: app_token
+        name: Mint release app token
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Commit dependency hash fix
+        if: steps.update.outputs.changed == 'true'
+        env:
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          HEAD_REF: ${{ steps.pull_request.outputs.head-ref }}
+          HEAD_REPOSITORY: ${{ steps.pull_request.outputs.head-repository }}
+        shell: bash
+        run: |
+          bot_name="${APP_SLUG}[bot]"
+          bot_id="$(gh api "/users/${bot_name}" --jq '.id')"
+
+          git config user.name "$bot_name"
+          git config user.email "${bot_id}+${bot_name}@users.noreply.github.com"
+          git -c core.hooksPath=/dev/null -c commit.gpgsign=false \
+            commit -m 'fix(nix): update pnpm dependency hash'
+          git -c core.hooksPath=/dev/null \
+            push "https://x-access-token:${GH_TOKEN}@github.com/${HEAD_REPOSITORY}.git" \
+            "HEAD:refs/heads/${HEAD_REF}"
+
+  update:
+    name: Check pnpm dependency hash
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: app_token
+        name: Mint release app token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout default branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - id: update
+        name: Update pnpm dependency hash
+        shell: bash
+        run: |
+          nix run github:Mic92/nix-update/cf68051e7b7e08de6c707484cdcd1a53feb48e05 -- \
+            t3code-runtime \
+            --flake \
+            --version=skip \
+            --override-filename nix/package.nix \
+            --build
+
+          git reset -- flake.lock
+          git clean -f -- flake.lock
+
+          if git diff --quiet -- nix/package.nix; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: pull_request
+        name: Create or update dependency hash PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app_token.outputs.token }}
+          base: ${{ github.ref_name }}
+          branch: automation/nix-pnpm-dependency-hash-${{ github.ref_name }}
+          delete-branch: true
+          add-paths: nix/package.nix
+          commit-message: update nix pnpm dependency hash
+          title: update nix pnpm dependency hash
+          body: |
+            ## What Changed
+
+            - Updated the Nix pnpm dependency hash for the current lockfile.
+
+            ## Why
+
+            The committed hash did not match the dependency store generated from `pnpm-lock.yaml`.
+
+            ## Checklist
+
+            - [x] This PR is small and focused
+            - [x] I explained what changed and why
+
+      - name: Fail on dependency hash drift
+        if: steps.update.outputs.changed == 'true'
+        env:
+          PULL_REQUEST_URL: ${{ steps.pull_request.outputs.pull-request-url }}
+        run: |
+          echo "::error::The Nix pnpm dependency hash was stale. Repair PR: $PULL_REQUEST_URL"
+          exit 1
