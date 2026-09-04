@@ -10,13 +10,13 @@ permissions:
 jobs:
   prepare-config:
     name: Prepare PR size config
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     outputs:
       labels_json: ${{ steps.config.outputs.labels_json }}
     steps:
       - id: config
         name: Build PR size label config
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           result-encoding: string
           script: |
@@ -58,13 +58,13 @@ jobs:
     name: Sync PR size label definitions
     needs: prepare-config
     if: github.event_name != 'pull_request_target'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     steps:
       - name: Ensure PR size labels exist
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_SIZE_LABELS_JSON: ${{ needs.prepare-config.outputs.labels_json }}
         with:
@@ -115,7 +115,7 @@ jobs:
     name: Label PR size
     needs: prepare-config
     if: github.event_name == 'pull_request_target'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: read
@@ -127,12 +127,14 @@ jobs:
       # This pull_request_target job may fetch untrusted PR commits only as passive
       # git data. Do not add dependency installs, build/test scripts, or cache
       # actions here; use pull_request plus workflow_run for that pattern instead.
-      - name: Checkout base repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # actions/checkout without persisted credentials runs `git submodule foreach`,
+      # which fails on the vendored .repos gitlinks; the sizing script fetches what it needs.
+      - name: Prepare passive git repository
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
       - name: Sync PR size label
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_SIZE_LABELS_JSON: ${{ needs.prepare-config.outputs.labels_json }}
         with:
