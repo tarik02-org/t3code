@@ -35,6 +35,7 @@ import {
   submitCodexFeedback,
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
+import { parseCodexGoalCommand } from "@t3tools/client-runtime/state/threads";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -193,7 +194,11 @@ import {
   GitBranchIcon,
   Minimize2Icon,
   PaperclipIcon,
+  PauseIcon,
+  PlayIcon,
+  TargetIcon,
   WifiOffIcon,
+  XIcon,
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -225,6 +230,7 @@ import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations"
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { formatGoalStatusToastDescription, goalStatusToastTitle } from "../goalPresentation";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { confirmTerminalClose, isTerminalCloseConfirmPending } from "../lib/terminalCloseConfirm";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
@@ -1342,6 +1348,21 @@ function chatActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
 }
 
+function showGoalStatusToast(goal: Thread["goal"]): void {
+  if (!goal) {
+    toastManager.add({
+      type: "info",
+      title: "No active goal",
+    });
+    return;
+  }
+  toastManager.add({
+    type: "info",
+    title: goalStatusToastTitle(goal),
+    description: formatGoalStatusToastDescription(goal),
+  });
+}
+
 const ENVIRONMENT_UNAVAILABLE_SEND_TOAST_TRAIL_SIZE = 3;
 
 /**
@@ -1397,6 +1418,9 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, {
+    reportFailure: false,
+  });
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
     refresh: true,
@@ -1586,6 +1610,9 @@ export default function ChatView(props: ChatViewProps) {
   >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
+  );
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
     null,
   );
@@ -5496,6 +5523,134 @@ export default function ChatView(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (
+        !isServerThread ||
+        !activeThread ||
+        pendingGoalAction !== null ||
+        isSendBusy ||
+        isConnecting ||
+        threadDetailLoading ||
+        activeEnvironmentUnavailable
+      ) {
+        return;
+      }
+      setPendingGoalAction(action);
+      setThreadError(activeThread.id, null);
+      const result = await requestThreadGoal({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          request: { kind: "control", action },
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : `Failed to ${action} Goal.`,
+        );
+      }
+      setPendingGoalAction(null);
+    },
+    [
+      activeEnvironmentUnavailable,
+      activeThread,
+      environmentId,
+      isConnecting,
+      isSendBusy,
+      isServerThread,
+      pendingGoalAction,
+      requestThreadGoal,
+      setThreadError,
+      threadDetailLoading,
+    ],
+  );
+  const goalBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    const goal = activeThread?.goal;
+    if (!goal || !isServerThread) {
+      return null;
+    }
+    const description = formatGoalStatusToastDescription(goal);
+    const primaryAction = goal.status === "active" ? "pause" : "resume";
+    const controlsDisabled =
+      pendingGoalAction !== null ||
+      isSendBusy ||
+      isConnecting ||
+      threadDetailLoading ||
+      activeEnvironmentUnavailable;
+    return {
+      id: `goal:${activeThread.id}`,
+      variant: "info",
+      icon: <TargetIcon />,
+      title: goalStatusToastTitle(goal),
+      description: (
+        <Tooltip>
+          <TooltipTrigger render={<span className="line-clamp-2">{description}</span>} />
+          <TooltipPopup side="top" className="max-w-96">
+            {description}
+          </TooltipPopup>
+        </Tooltip>
+      ),
+      actions: (
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="outline"
+                  aria-label={`${primaryAction === "pause" ? "Pause" : "Resume"} Goal`}
+                  disabled={controlsDisabled}
+                  onClick={() => void handleGoalControl(primaryAction)}
+                />
+              }
+            >
+              {primaryAction === "pause" ? <PauseIcon /> : <PlayIcon />}
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {pendingGoalAction === primaryAction
+                ? primaryAction === "pause"
+                  ? "Pausing Goal..."
+                  : "Resuming Goal..."
+                : primaryAction === "pause"
+                  ? "Pause Goal"
+                  : "Resume Goal"}
+            </TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Clear Goal"
+                  disabled={controlsDisabled}
+                  onClick={() => void handleGoalControl("clear")}
+                />
+              }
+            >
+              <XIcon />
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {pendingGoalAction === "clear" ? "Clearing Goal..." : "Clear Goal"}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
+      ),
+    };
+  }, [
+    activeEnvironmentUnavailable,
+    activeThread?.goal,
+    activeThread?.id,
+    handleGoalControl,
+    isConnecting,
+    isSendBusy,
+    isServerThread,
+    pendingGoalAction,
+    threadDetailLoading,
+  ]);
   // Session-scoped dismissals, one key per (thread, snapshot). A set rather
   // than a single slot so dismissing the banner on one thread does not
   // resurface it on another thread dismissed earlier.
@@ -5615,6 +5770,7 @@ export default function ChatView(props: ChatViewProps) {
       resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
+    const goalItems = goalBannerItem === null ? [] : [goalBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...systemComposerBannerItems,
@@ -5622,6 +5778,7 @@ export default function ChatView(props: ChatViewProps) {
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
+        ...goalItems,
       ];
     }
     return [
@@ -5668,10 +5825,12 @@ export default function ChatView(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
+      ...goalItems,
     ];
   }, [
     activeBranchMismatchKey,
     backgroundLivenessBannerItem,
+    goalBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
@@ -6296,6 +6455,138 @@ export default function ChatView(props: ChatViewProps) {
           },
         }),
       );
+      return;
+    }
+    const goalSlashCommand =
+      ctxSelectedProvider === "codex" &&
+      composerImages.length === 0 &&
+      composerFiles.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerElementContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0
+        ? parseCodexGoalCommand(trimmed)
+        : null;
+    if (goalSlashCommand) {
+      if (goalSlashCommand.kind === "invalid") {
+        setThreadError(activeThread.id, goalSlashCommand.message);
+        return;
+      }
+      if (!activeProject) {
+        setThreadError(activeThread.id, "Choose a project before using /goal.");
+        return;
+      }
+      if (!isServerThread && goalSlashCommand.kind !== "set") {
+        setThreadError(activeThread.id, "Enter a goal objective to start a thread with /goal.");
+        return;
+      }
+
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      setThreadError(activeThread.id, null);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+
+      const createdAt = new Date().toISOString();
+      const title =
+        goalSlashCommand.kind === "set" ? truncate(goalSlashCommand.objective) : activeThread.title;
+      const threadCreateModelSelection = createModelSelection(
+        ctxSelectedModelSelection.instanceId,
+        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        ctxSelectedModelSelection.options,
+      );
+      let failure: AtomCommandResult<unknown, unknown> | null = null;
+
+      if (!isServerThread) {
+        const createResult = await createThread({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            projectId: activeProject.id,
+            title,
+            modelSelection: threadCreateModelSelection,
+            runtimeMode,
+            interactionMode: sendInteractionMode,
+            branch: activeThread.branch,
+            worktreePath: activeThread.worktreePath,
+            createdAt: activeThread.createdAt,
+          },
+        });
+        if (createResult._tag === "Failure") {
+          failure = createResult;
+        }
+      } else if (activeThread.messages.length === 0 && goalSlashCommand.kind === "set") {
+        const titleResult = await updateThreadMetadata({
+          environmentId,
+          input: { threadId: activeThread.id, title },
+        });
+        if (titleResult._tag === "Failure") {
+          failure = titleResult;
+        }
+      }
+
+      if (failure === null && isServerThread) {
+        const settingsResult = await persistThreadSettingsForNextTurn({
+          threadId: activeThread.id,
+          createdAt,
+          ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
+          runtimeMode,
+          interactionMode: sendInteractionMode,
+        });
+        if (settingsResult._tag === "Failure") {
+          failure = settingsResult;
+        }
+      }
+
+      if (failure === null) {
+        const goalResult = await requestThreadGoal({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            request: goalSlashCommand,
+            createdAt,
+          },
+        });
+        if (goalResult._tag === "Failure") {
+          failure = goalResult;
+        }
+      }
+
+      if (failure === null) {
+        if (goalSlashCommand.kind === "status") {
+          showGoalStatusToast(activeThread.goal);
+        }
+        if (!isServerThread) {
+          await waitForStartedServerThread(
+            scopeThreadRef(activeThread.environmentId, activeThread.id),
+          );
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: {
+              environmentId: activeThread.environmentId,
+              threadId: activeThread.id,
+            },
+          });
+        }
+      } else {
+        promptRef.current = promptForSend;
+        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+          prompt: promptForSend,
+          detectTrigger: true,
+        });
+        if (!isAtomCommandInterrupted(failure)) {
+          const error = squashAtomCommandFailure(failure);
+          setThreadError(
+            activeThread.id,
+            error instanceof Error ? error.message : "Failed to send goal command.",
+          );
+        }
+      }
+      sendInFlightRef.current = false;
+      resetLocalDispatch();
       return;
     }
     if (
