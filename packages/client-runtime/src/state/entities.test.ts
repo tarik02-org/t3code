@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type OrchestrationShellSnapshot,
+  type OrchestrationThreadGoal,
   type OrchestrationThread,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -241,6 +242,34 @@ describe("environment entity projections", () => {
       unsettledAt: "2026-03-09T12:00:00.000Z",
     });
     expect(merged?.messages).toBe(messages);
+  });
+
+  it("keeps an active goal from the shell when cached detail has no goal", () => {
+    const goal = {
+      objective: "Keep the migration moving",
+      status: "active",
+      tokensUsed: 12,
+      tokenBudget: null,
+      timeUsedSeconds: 30,
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:30.000Z",
+    } satisfies OrchestrationThreadGoal;
+    const detail = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
+    const shell = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      goal,
+    };
+
+    expect(mergeEnvironmentThread(detail, shell)?.goal).toEqual(goal);
   });
 
   it("preserves untouched project and thread identities across unrelated shell updates", () => {
