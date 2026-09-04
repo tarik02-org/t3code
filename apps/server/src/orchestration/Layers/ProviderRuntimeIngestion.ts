@@ -14,6 +14,7 @@ import {
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationThreadActivity,
+  type OrchestrationThreadGoal,
   type ProviderRuntimeEvent,
   RuntimeRequestId,
 } from "@t3tools/contracts";
@@ -97,12 +98,16 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+type GoalActivityState = Pick<OrchestrationThreadGoal, "objective" | "status">;
+
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const GOAL_ACTIVITY_STATE_BY_THREAD_CACHE_CAPACITY = 10_000;
+const GOAL_ACTIVITY_STATE_BY_THREAD_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
@@ -165,6 +170,48 @@ function maxCheckpointTurnCount(
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function epochMsOrSecondsToIso(value: number, fallbackIso: string): string {
+  const milliseconds = Math.abs(value) < 10_000_000_000 ? value * 1_000 : value;
+  if (!Number.isFinite(milliseconds)) {
+    return fallbackIso;
+  }
+  return Option.match(DateTime.make(milliseconds), {
+    onNone: () => fallbackIso,
+    onSome: DateTime.formatIso,
+  });
+}
+
+function goalUpdatedActivitySummary(
+  previousGoal: GoalActivityState | null | undefined,
+  goal: Extract<ProviderRuntimeEvent, { type: "thread.goal.updated" }>["payload"],
+): string | null {
+  if (previousGoal?.objective === goal.objective && previousGoal.status === goal.status) {
+    return null;
+  }
+  if (!previousGoal || previousGoal.objective !== goal.objective) {
+    return "Goal set";
+  }
+  switch (goal.status) {
+    case "active":
+      return previousGoal.status === "paused" ||
+        previousGoal.status === "budgetLimited" ||
+        previousGoal.status === "blocked" ||
+        previousGoal.status === "usageLimited"
+        ? "Goal resumed"
+        : null;
+    case "paused":
+      return "Goal paused";
+    case "blocked":
+      return "Goal blocked";
+    case "usageLimited":
+      return "Goal usage limited";
+    case "budgetLimited":
+      return "Goal budget limited";
+    case "complete":
+      return "Goal complete";
+  }
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -351,7 +398,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
 
 export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
-  taskTitle?: string,
+  context?: { readonly previousGoal?: GoalActivityState | null; readonly taskTitle?: string },
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
@@ -718,7 +765,7 @@ export function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             status: event.payload.status,
-            ...(taskTitle ? { title: truncateDetail(taskTitle, 120) } : {}),
+            ...(context?.taskTitle ? { title: truncateDetail(context.taskTitle, 120) } : {}),
             // summary + detail mirror task.progress: clients label the row from
             // summary and keep detail for the preview/expanded body.
             ...(event.payload.summary
@@ -782,6 +829,50 @@ export function runtimeEventToActivities(
           summary: "Context window updated",
           payload,
           turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "thread.goal.updated": {
+      const summary = goalUpdatedActivitySummary(context?.previousGoal, event.payload);
+      if (summary === null) {
+        return [];
+      }
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "goal.updated",
+          summary,
+          payload: {
+            status: event.payload.status,
+            detail: truncateDetail(event.payload.objective),
+            objective: event.payload.objective,
+            tokensUsed: event.payload.tokensUsed,
+            tokenBudget: event.payload.tokenBudget,
+            timeUsedSeconds: event.payload.timeUsedSeconds,
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "thread.goal.cleared": {
+      if (!context?.previousGoal) {
+        return [];
+      }
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "goal.cleared",
+          summary: "Goal cleared",
+          payload: {},
+          turnId: null,
           ...maybeSequence,
         },
       ];
@@ -940,6 +1031,12 @@ const make = Effect.gen(function* () {
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
+  });
+
+  const goalActivityStateByThreadId = yield* Cache.make<ThreadId, GoalActivityState>({
+    capacity: GOAL_ACTIVITY_STATE_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: GOAL_ACTIVITY_STATE_BY_THREAD_TTL,
+    lookup: () => Effect.die(new Error("goal activity state should be read through getOption")),
   });
 
   // Task names arrive on task.started/task.progress but not on task.completed,
@@ -2072,6 +2169,43 @@ const make = Effect.gen(function* () {
         }
       }
 
+      let previousGoalForActivity: GoalActivityState | null = null;
+      if (event.type === "thread.goal.updated" || event.type === "thread.goal.cleared") {
+        const cachedGoal = yield* Cache.getOption(goalActivityStateByThreadId, thread.id);
+        previousGoalForActivity = Option.isSome(cachedGoal)
+          ? cachedGoal.value
+          : ((yield* resolveThreadDetail(thread.id))?.goal ?? null);
+      }
+      if (event.type === "thread.goal.updated") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.update",
+          commandId: yield* providerCommandId(event, "thread-goal-update"),
+          threadId: thread.id,
+          goal: {
+            objective: event.payload.objective,
+            status: event.payload.status,
+            tokensUsed: event.payload.tokensUsed,
+            tokenBudget: event.payload.tokenBudget,
+            timeUsedSeconds: event.payload.timeUsedSeconds,
+            createdAt: epochMsOrSecondsToIso(event.payload.createdAtEpochMsOrSeconds, now),
+            updatedAt: epochMsOrSecondsToIso(event.payload.updatedAtEpochMsOrSeconds, now),
+          },
+          createdAt: now,
+        });
+        yield* Cache.set(goalActivityStateByThreadId, thread.id, {
+          objective: event.payload.objective,
+          status: event.payload.status,
+        });
+      } else if (event.type === "thread.goal.cleared") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.clear",
+          commandId: yield* providerCommandId(event, "thread-goal-clear"),
+          threadId: thread.id,
+          createdAt: now,
+        });
+        yield* Cache.invalidate(goalActivityStateByThreadId, thread.id);
+      }
+
       let activityEvent = event;
       if (
         isCompactedThreadState &&
@@ -2126,7 +2260,10 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(activityEvent, taskTitle);
+      const activities = runtimeEventToActivities(activityEvent, {
+        previousGoal: previousGoalForActivity,
+        ...(taskTitle ? { taskTitle } : {}),
+      });
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

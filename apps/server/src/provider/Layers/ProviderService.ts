@@ -14,6 +14,7 @@ import {
   MessageId,
   ModelSelection,
   NonNegativeInt,
+  ProviderGoalRequestInput,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -1673,6 +1674,50 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const sendGoalRequest: ProviderServiceMethod<"sendGoalRequest"> = Effect.fn("sendGoalRequest")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.sendGoalRequest",
+        schema: ProviderGoalRequestInput,
+        payload: rawInput,
+      });
+      let metricProvider = "unknown";
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.sendGoalRequest",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        if (!routed.adapter.sendGoalRequest) {
+          return yield* toValidationError(
+            "ProviderService.sendGoalRequest",
+            `Provider '${routed.adapter.provider}' does not support goal requests.`,
+          );
+        }
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "send-goal-request",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+          "provider.goal_request_kind": input.request.kind,
+        });
+        yield* routed.adapter.sendGoalRequest(routed.threadId, input.request);
+        yield* analytics.record("provider.goal.requested", {
+          provider: routed.adapter.provider,
+          requestKind: input.request.kind,
+        });
+      }).pipe(
+        withMetrics({
+          counter: providerTurnsTotal,
+          outcomeAttributes: () =>
+            providerMetricAttributes(metricProvider, {
+              operation: "goal-request",
+            }),
+        }),
+      );
+    },
+  );
+
   const respondToRequest: ProviderServiceMethod<"respondToRequest"> = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2076,6 +2121,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     sendTurn,
     compactThread,
     interruptTurn,
+    sendGoalRequest,
     respondToRequest,
     respondToUserInput,
     stopSession,

@@ -11,10 +11,13 @@ import {
   type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
+  type ThreadGoalRequest,
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
+  codexFeedbackMessage,
+  parseCodexGoalCommand,
   parseCodexFeedbackCommand,
   submitCodexFeedback,
   type CodexFeedbackSubmission,
@@ -108,6 +111,9 @@ export function useThreadComposerState() {
     Record<string, ReadonlyArray<CodexFeedbackSubmission>>
   >({});
   const uploadThreadFeedback = useAtomCommand(threadEnvironment.uploadFeedback, {
+    reportFailure: false,
+  });
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, {
     reportFailure: false,
   });
 
@@ -325,6 +331,44 @@ export function useThreadComposerState() {
       return null;
     }
 
+    const goalCommand =
+      attachments.length === 0 &&
+      (provider?.driver === "codex" || thread.session?.providerName === "codex")
+        ? parseCodexGoalCommand(text)
+        : null;
+    if (goalCommand) {
+      if (goalCommand.kind === "invalid") {
+        Alert.alert("Invalid Goal command", goalCommand.message);
+        return null;
+      }
+      if (thread.session === null && goalCommand.kind !== "set") {
+        Alert.alert(
+          "Start a Codex thread first",
+          "Set a goal objective before checking its status.",
+        );
+        return null;
+      }
+      clearComposerDraftContent(threadKey);
+      const result = await requestThreadGoal({
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          threadId: selectedThreadShell.id,
+          request: goalCommand,
+        },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = Cause.squash(result.cause);
+          Alert.alert(
+            "Goal command failed",
+            error instanceof Error ? error.message : "Failed to send Goal command.",
+          );
+        }
+        return null;
+      }
+      return null;
+    }
+
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
     // Enqueue publishes the queued atom synchronously (the durable write
@@ -374,7 +418,24 @@ export function useThreadComposerState() {
     selectedThreadDetail,
     selectedThreadShell,
     uploadThreadFeedback,
+    requestThreadGoal,
   ]);
+
+  const onRequestGoal = useCallback(
+    async (request: ThreadGoalRequest) => {
+      if (!selectedThreadShell) {
+        return null;
+      }
+      return await requestThreadGoal({
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          threadId: selectedThreadShell.id,
+          request,
+        },
+      });
+    },
+    [requestThreadGoal, selectedThreadShell],
+  );
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -572,6 +633,7 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
+    onRequestGoal,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,
