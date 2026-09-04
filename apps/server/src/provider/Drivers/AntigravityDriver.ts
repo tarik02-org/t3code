@@ -47,7 +47,10 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "../ProviderInstanceEnvironment.ts";
 import { withInstanceIdentity } from "./instanceIdentity.ts";
 import { discoverAntigravitySkills } from "./AntigravitySkills.ts";
 
@@ -117,7 +120,9 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         );
 
       const makeRuntime = Effect.fn("AntigravityDriver.makeRuntime")(function* (
-        input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
+        input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner"> & {
+          readonly environment?: NodeJS.ProcessEnv;
+        },
       ): Effect.fn.Return<
         AcpSessionRuntime["Service"],
         AcpError | ProviderSetupError,
@@ -130,8 +135,12 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             detail: authConfigIssue,
           });
         }
+        const sessionEnvironment = mergeProviderSessionEnvironment(
+          processEnvironment,
+          input.environment,
+        );
         const executable = yield* installation
-          .acquire(settings.binaryPath, processEnvironment)
+          .acquire(settings.binaryPath, sessionEnvironment)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -144,7 +153,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           );
         const profile = yield* prepareAntigravityProfile({
           profileDirectory,
-          baseEnv: processEnvironment,
+          baseEnv: sessionEnvironment,
           auth,
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -159,7 +168,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             installation: executable,
             profile,
             cwd: input.cwd,
-            baseEnv: processEnvironment,
+            baseEnv: sessionEnvironment,
             auth,
           }),
         }).pipe(Effect.provideService(Crypto.Crypto, crypto));
