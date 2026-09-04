@@ -54,6 +54,7 @@ import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { ProjectLaunchEnvLive } from "./projectLaunchEnv/Layers/ProjectLaunchEnvLive.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
@@ -126,7 +127,10 @@ import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinar
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
-import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import {
+  OrchestrationInfrastructureLayerLive,
+  OrchestrationLayerLive,
+} from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -371,9 +375,15 @@ const CheckpointingLayerLive = Layer.empty.pipe(
 
 const PortScannerLayerLive = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
+const ProjectLaunchEnvLayerLive = ProjectLaunchEnvLive.pipe(
+  Layer.provideMerge(OrchestrationInfrastructureLayerLive),
+  Layer.provideMerge(PersistenceLayerLive),
+);
+
 const TerminalLayerLive = TerminalManager.layer.pipe(
   Layer.provide(PtyAdapterLive),
   Layer.provide(PortScannerLayerLive),
+  Layer.provide(ProjectLaunchEnvLayerLive),
   Layer.provide(NativeTelemetryLayerLive),
 );
 
@@ -463,6 +473,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
     Layer.mergeAll(SourceControlProviderRegistryLayerLive, PullRequestServiceLive),
   ),
   Layer.provideMerge(GitLayerLive),
+  Layer.provideMerge(ProjectLaunchEnvLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
