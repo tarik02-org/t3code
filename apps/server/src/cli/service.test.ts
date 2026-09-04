@@ -95,7 +95,8 @@ it("reports a newer installed service and tells the CLI to catch up to it", () =
   assert.notInclude(output, "npx");
 });
 
-const newerServiceStatus = { ...status, current: false, installedVersion: "999.0.0" };
+const newerServiceVersion = `${Number.parseInt(packageJson.version, 10) + 1}.0.0`;
+const newerServiceStatus = { ...status, current: false, installedVersion: newerServiceVersion };
 
 function makeTestService(serviceStatus: BootService.BootServiceStatus) {
   const installOptions: Array<Parameters<BootService.BootService["Service"]["install"]>[0]> = [];
@@ -168,7 +169,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
 
         expect(error).toMatchObject({
           _tag: "BootServiceDowngradeRefusedError",
-          installedVersion: "999.0.0",
+          installedVersion: newerServiceVersion,
           targetVersion: packageJson.version,
         });
         expect(installOptions).toEqual([]);
