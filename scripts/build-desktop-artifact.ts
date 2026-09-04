@@ -26,6 +26,7 @@ import {
   BRAND_ASSET_PATHS,
   resolveWebAssetBrandForChannel,
   type WebAssetBrand,
+  type WebAssetChannel,
 } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
 import {
@@ -2486,7 +2487,7 @@ export function resolveDesktopRuntimeDependencies(
 }
 
 export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
-  updateChannel: "latest" | "nightly",
+  updateChannel: WebAssetChannel,
 ) {
   const env = yield* Config.all({
     updateRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
@@ -2506,12 +2507,13 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
     provider: "github",
     owner,
     repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
-    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
+    releaseType: updateChannel === "latest" ? "release" : "prerelease",
+    ...(updateChannel === "latest" ? {} : { channel: updateChannel }),
   };
 });
 
-export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
+export function resolveDesktopUpdateChannel(version: string): WebAssetChannel {
+  if (/-canary\.\d{8}\.\d+$/.test(version)) return "canary";
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
@@ -2524,7 +2526,15 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
 }
 
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (resolveDesktopUpdateChannel(version) === "nightly") {
+  const channel = resolveDesktopUpdateChannel(version);
+  if (channel === "canary") {
+    return {
+      macIconPng: BRAND_ASSET_PATHS.developmentDesktopIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.developmentUniversalIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.developmentWindowsIconIco,
+    };
+  }
+  if (channel === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
@@ -2557,9 +2567,10 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+  const channel = resolveDesktopUpdateChannel(version);
+  if (channel === "canary") return "T3 Code (Canary)";
+  if (channel === "nightly") return "T3 Code (Nightly)";
+  return desktopPackageJson.productName ?? "T3 Code";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2643,12 +2654,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "mac" && target === "dmg") {
+    const dmgChannel = updateChannel === "canary" ? "nightly" : updateChannel;
     buildConfig.dmg = {
       // Give the themed installer its own Finder volume name. Finder caches
       // DMG window backgrounds by volume name, so reusing a generic name can
       // make a newly built background look unchanged during testing.
       title: `${resolveDesktopProductName(version)} ${version} Installer`,
-      background: `dmg/dmg-background-${updateChannel}.png`,
+      background: `dmg/dmg-background-${dmgChannel}.png`,
       window: {
         width: 540,
         // Finder counts its 32px title bar in the window bounds. The themed
@@ -2666,9 +2678,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "linux") {
+    const executableName = updateChannel === "canary" ? "t3code-canary" : "t3code";
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName,
       icon: "icons",
       category: "Development",
       // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
@@ -2682,7 +2695,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ],
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: executableName,
         },
       },
     };
@@ -3555,9 +3568,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
   if (options.platform === "mac" && options.target === "dmg") {
+    const dmgChannel = resolveDesktopUpdateChannel(appVersion);
     yield* stageDesktopDmgBackground(
       stageResourcesDir,
-      resolveDesktopUpdateChannel(appVersion),
+      dmgChannel === "canary" ? "nightly" : dmgChannel,
       options.verbose,
     );
   }
