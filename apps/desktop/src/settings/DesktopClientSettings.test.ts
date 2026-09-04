@@ -25,6 +25,7 @@ const clientSettings: ClientSettings = {
   confirmQuit: "double-click",
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  contextMenuStyle: "default",
   confirmThreadUnpin: false,
   contextWindowMeterEnabled: false,
   composerCollapseOnBlur: false,

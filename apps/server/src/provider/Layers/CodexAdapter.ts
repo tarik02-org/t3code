@@ -76,6 +76,8 @@ import {
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { stripManagedRuntimeEnvKeys } from "@t3tools/shared/projectLaunchEnv";
+import { mergeProviderSessionEnvironment } from "../ProviderInstanceEnvironment.ts";
 import { codexRateLimitsToUpdate } from "./codexUsageLimits.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
@@ -2263,6 +2265,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           getModelSelectionStringOptionValue(input.modelSelection, "contextWindow") === "1m" &&
           supportsCodexLongContext(input.modelSelection.model);
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const sessionEnvironment =
+          options?.environment === undefined && input.env === undefined
+            ? undefined
+            : mergeProviderSessionEnvironment(options?.environment, input.env);
         const appServerArgs = [
           ...(useLongContext
             ? ["-c", "model_context_window=1000000", "-c", "model_auto_compact_token_limit=900000"]
@@ -2281,8 +2287,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
-          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
-          ...(options?.environment ? { environment: options.environment } : {}),
+          launchArgs: resolveCodexLaunchArgs(
+            codexConfig.launchArgs,
+            sessionEnvironment ?? process.env,
+          ),
+          ...(sessionEnvironment ? { environment: sessionEnvironment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
@@ -2296,7 +2305,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(mcpSession
             ? {
                 environment: {
-                  ...(options?.environment ?? process.env),
+                  ...(sessionEnvironment ?? stripManagedRuntimeEnvKeys(process.env)),
                   T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
                 },
               }

@@ -103,6 +103,10 @@
       "types": "./src/projectScripts.ts",
       "import": "./src/projectScripts.ts"
     },
+    "./projectLaunchEnv": {
+      "types": "./src/projectLaunchEnv.ts",
+      "import": "./src/projectLaunchEnv.ts"
+    },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"

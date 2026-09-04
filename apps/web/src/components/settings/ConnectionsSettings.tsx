@@ -105,7 +105,7 @@ import { AnimatedHeight } from "../AnimatedHeight";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { Textarea } from "../ui/textarea";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
-import { readHostedPairingRequest } from "../../hostedPairing";
+import { isDesktopBackendless, readHostedPairingRequest } from "../../hostedPairing";
 import {
   createServerPairingCredential,
   revokeOtherServerClientSessions,
@@ -1769,6 +1769,7 @@ function CloudRemoteEnvironmentRows({
 
 export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
+  const desktopBackendless = isDesktopBackendless();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
@@ -1813,6 +1814,11 @@ export function ConnectionsSettings() {
   const [desktopServerExposureMutationError, setDesktopServerExposureMutationError] = useState<
     string | null
   >(null);
+  const [localBackendMutationError, setLocalBackendMutationError] = useState<string | null>(null);
+  const [pendingLocalBackendEnabled, setPendingLocalBackendEnabled] = useState<boolean | null>(
+    null,
+  );
+  const [isUpdatingLocalBackend, setIsUpdatingLocalBackend] = useState(false);
   const [desktopAccessManagementMutationError, setDesktopAccessManagementMutationError] = useState<
     string | null
   >(null);
@@ -1903,7 +1909,9 @@ export function ConnectionsSettings() {
       : null,
   );
   const desktopNetworkAccess = useEnvironmentQuery(
-    canManageLocalBackend && desktopBridge ? desktopNetworkAccessStateAtom : null,
+    canManageLocalBackend && desktopBridge && !desktopBackendless
+      ? desktopNetworkAccessStateAtom
+      : null,
   );
   const isSshDiscoveryActive =
     desktopBridge !== undefined && addBackendDialogOpen && savedBackendMode === "ssh";
@@ -1917,7 +1925,7 @@ export function ConnectionsSettings() {
     if (isSshDiscoveryActive) refreshDesktopSshHosts();
   }, [isSshDiscoveryActive, refreshDesktopSshHosts]);
   const desktopWsl = useEnvironmentQuery(
-    canManageLocalBackend && desktopBridge ? desktopWslStateAtom : null,
+    canManageLocalBackend && desktopBridge && !desktopBackendless ? desktopWslStateAtom : null,
   );
   const desktopWslState = desktopWsl.data;
   const desktopWslError = desktopWslMutationError ?? desktopWsl.error;
@@ -1995,6 +2003,29 @@ export function ConnectionsSettings() {
       return pendingTailscaleServeEndpoint.httpBaseUrl;
     }
   }, [isTailscaleServePortValid, parsedTailscaleServePort, pendingTailscaleServeEndpoint]);
+
+  const handleConfirmLocalBackendChange = useCallback(async () => {
+    if (!desktopBridge || pendingLocalBackendEnabled === null) return;
+    const enabled = pendingLocalBackendEnabled;
+    setIsUpdatingLocalBackend(true);
+    setLocalBackendMutationError(null);
+    try {
+      await desktopBridge.setLocalBackendEnabled(enabled);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to update the local backend.";
+      setPendingLocalBackendEnabled(null);
+      setLocalBackendMutationError(message);
+      setIsUpdatingLocalBackend(false);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not update local backend",
+          description: message,
+        }),
+      );
+    }
+  }, [desktopBridge, pendingLocalBackendEnabled]);
 
   const handleDesktopServerExposureChange = useCallback(
     async (checked: boolean) => {
@@ -3127,7 +3158,74 @@ export function ConnectionsSettings() {
 
   return (
     <SettingsPageContainer>
-      {canManageLocalBackend ? (
+      {desktopBridge ? (
+        <SettingsSection title="Desktop app">
+          <SettingsRow
+            title="Local backend"
+            description="Start and manage a backend on this computer. T3 Code restarts when this changes."
+            status={
+              localBackendMutationError ? (
+                <span className="block text-destructive">{localBackendMutationError}</span>
+              ) : null
+            }
+            control={
+              <Switch
+                checked={!desktopBackendless}
+                disabled={isUpdatingLocalBackend}
+                onCheckedChange={setPendingLocalBackendEnabled}
+                aria-label="Enable local backend"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      <AlertDialog
+        open={pendingLocalBackendEnabled !== null}
+        onOpenChange={(open) => {
+          if (isUpdatingLocalBackend) return;
+          if (!open) setPendingLocalBackendEnabled(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingLocalBackendEnabled ? "Enable local backend?" : "Disable local backend?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingLocalBackendEnabled
+                ? "T3 Code will restart and start the backend on this computer. Your local projects and threads will become available again."
+                : "T3 Code will restart without a backend on this computer. Local projects and threads stay on disk and return when you enable it again."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              disabled={isUpdatingLocalBackend}
+              render={<Button variant="outline" disabled={isUpdatingLocalBackend} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant={pendingLocalBackendEnabled ? "default" : "destructive"}
+              onClick={() => void handleConfirmLocalBackendChange()}
+              disabled={isUpdatingLocalBackend}
+            >
+              {isUpdatingLocalBackend ? (
+                <>
+                  <Spinner data-icon="inline-start" />
+                  Restarting…
+                </>
+              ) : pendingLocalBackendEnabled ? (
+                "Restart and enable"
+              ) : (
+                "Restart and disable"
+              )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+
+      {canManageLocalBackend && !desktopBackendless ? (
         <>
           <SettingsSection {...searchableSetting("connections-environment")}>
             {primaryVersionMismatch || primaryServerUpdateState.status !== "idle" ? (
@@ -3503,7 +3601,7 @@ export function ConnectionsSettings() {
             </DialogPopup>
           </Dialog>
         </>
-      ) : (
+      ) : desktopBridge ? null : (
         <SettingsSection {...searchableSetting("connections-environment")}>
           <SettingsRow
             title="Administrative access"
