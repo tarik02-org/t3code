@@ -31,6 +31,7 @@ export type StartupPresentation = typeof StartupPresentation.Type;
 export interface ServerDerivedPaths {
   readonly stateDir: string;
   readonly dbPath: string;
+  readonly forkDbPath: string;
   readonly keybindingsConfigPath: string;
   readonly settingsPath: string;
   /** Palettes this machine publishes for clients to follow, one file per theme. */
@@ -112,6 +113,7 @@ export const deriveServerPaths = Effect.fn(function* (
     devUrl !== undefined && !options.baseDirIsExplicit ? "dev" : "userdata",
   );
   const dbPath = join(stateDir, "state.sqlite");
+  const forkDbPath = join(stateDir, "state-tarik02.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
   const logsDir = join(stateDir, "logs");
   const providerLogsDir = join(logsDir, "provider");
@@ -119,6 +121,7 @@ export const deriveServerPaths = Effect.fn(function* (
   return {
     stateDir,
     dbPath,
+    forkDbPath,
     keybindingsConfigPath: join(stateDir, "keybindings.json"),
     settingsPath: join(stateDir, "settings.json"),
     environmentThemesDir: join(stateDir, "themes"),
