@@ -1,0 +1,405 @@
+name: Release Build Jobs
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Release channel to package
+        required: true
+        type: string
+      release_ref:
+        description: Commit to package
+        required: true
+        type: string
+      version:
+        description: Stable version override
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      channel: ${{ steps.release_meta.outputs.channel }}
+      version: ${{ steps.release_meta.outputs.version }}
+      tag: ${{ steps.release_meta.outputs.tag }}
+      release_name: ${{ steps.release_meta.outputs.name }}
+      previous_tag: ${{ steps.previous_tag.outputs.previous_tag }}
+      is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
+      make_latest: ${{ steps.release_meta.outputs.make_latest }}
+      ref: ${{ inputs.release_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - id: release_meta
+        name: Resolve version and channel
+        shell: bash
+        env:
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_SHA: ${{ inputs.release_ref }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./apps/server/package.json').version")"
+          channel="$RELEASE_CHANNEL"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+          release_date="$(date -u +%Y%m%d)"
+          if [[ "$channel" == stable ]]; then
+            version="${RELEASE_VERSION#v}"
+            if [[ -z "$version" ]]; then
+              if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+                version="$package_version"
+              else
+                version="$(node scripts/resolve-fork-stable-release.ts --date "$release_date" --version-only)"
+              fi
+            fi
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid stable release version: $version" >&2
+              exit 1
+            fi
+
+            {
+              echo "version=$version"
+              echo "tag=v$version"
+              echo "name=T3 Code v$version"
+              echo "is_prerelease=false"
+              echo "make_latest=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            node scripts/resolve-nightly-release.ts \
+              --date "$release_date" \
+              --run-number "$RELEASE_RUN_NUMBER" \
+              --sha "$RELEASE_SHA" \
+              --github-output
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: previous_tag
+        name: Resolve previous release
+        run: |
+          node scripts/resolve-previous-release-tag.ts \
+            --channel "${{ steps.release_meta.outputs.channel }}" \
+            --current-tag "${{ steps.release_meta.outputs.tag }}" \
+            --github-output
+
+      - name: Write release metadata
+        env:
+          VERSION: ${{ steps.release_meta.outputs.version }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          RELEASE_NAME: ${{ steps.release_meta.outputs.name }}
+          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.previous_tag }}
+          IS_PRERELEASE: ${{ steps.release_meta.outputs.is_prerelease }}
+          MAKE_LATEST: ${{ steps.release_meta.outputs.make_latest }}
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          mkdir -p release-metadata
+          jq -n \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg name "$RELEASE_NAME" \
+            --arg previousTag "$PREVIOUS_TAG" \
+            --argjson prerelease "$IS_PRERELEASE" \
+            --argjson makeLatest "$MAKE_LATEST" \
+            --arg ref "$RELEASE_REF" \
+            '{version: $version, tag: $tag, name: $name, previousTag: $previousTag, prerelease: $prerelease, makeLatest: $makeLatest, ref: $ref}' \
+            > release-metadata/release.json
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-metadata
+          path: release-metadata/release.json
+          if-no-files-found: error
+          retention-days: 7
+
+  common_nix:
+    name: Build shared release files with Nix
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Restore and populate Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build shared desktop and server files
+        env:
+          T3CODE_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          release_source="$RUNNER_TEMP/t3code-release-source"
+          mkdir -p "$release_source"
+          git archive HEAD -- . ':(exclude).repos' | tar -x -C "$release_source"
+
+          nix build \
+            --impure \
+            --out-link result \
+            --file .github/nix/release-common.nix \
+            --argstr repo "path:$release_source" \
+            --argstr version "$T3CODE_RELEASE_VERSION"
+
+      - name: Collect shared release files
+        run: |
+          mkdir -p release-common/apps/desktop release-common/apps/server release-common/wsl-prebuild
+          cp -R result/apps/desktop/dist-electron release-common/apps/desktop/
+          cp -R result/apps/desktop/resources release-common/apps/desktop/
+          cp -R result/apps/server/dist release-common/apps/server/
+          cp result/wsl-prebuild/pty.node release-common/wsl-prebuild/
+          test -f release-common/apps/desktop/dist-electron/preload.cjs
+          test -f release-common/apps/server/dist/bin.mjs
+          file release-common/wsl-prebuild/pty.node
+
+      - name: Upload shared release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-common
+          path: release-common
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop:
+    name: Package ${{ matrix.label }}
+    needs:
+      - metadata
+      - common_nix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+          - label: macOS x64
+            runner: macos-15-intel
+            platform: mac
+            target: dmg
+            arch: x64
+          - label: Linux x64
+            runner: ubuntu-latest
+            platform: linux
+            target: AppImage
+            arch: x64
+          - label: Windows x64
+            runner: windows-2025
+            platform: win
+            target: nsis
+            arch: x64
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: ""
+      T3CODE_CLERK_JWT_TEMPLATE: ""
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ""
+      T3CODE_RELAY_URL: ""
+      T3CODE_DESKTOP_SKIP_BUILD: "true"
+      T3CODE_DESKTOP_SIGNED: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/desktop...
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.metadata.outputs.version }}"
+
+      - name: Download shared release files
+        uses: actions/download-artifact@v8
+        with:
+          name: release-common
+          path: .
+
+      - name: Install Windows native build prerequisites
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Install Linux image tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get install -y imagemagick
+          fi
+
+      - name: Package desktop artifact
+        shell: bash
+        run: |
+          if [[ "${{ matrix.platform }}" == mac ]]; then
+            sudo launchctl limit maxfiles 65536 200000
+            ulimit -n 65536
+          fi
+
+          args=(
+            --platform "${{ matrix.platform }}"
+            --target "${{ matrix.target }}"
+            --arch "${{ matrix.arch }}"
+            --build-version "${{ needs.metadata.outputs.version }}"
+            --verbose
+          )
+          if [[ "${{ matrix.platform }}" == win ]]; then
+            args+=(--wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node")
+          fi
+          vp run dist:desktop:artifact "${args[@]}"
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in \
+            "release/*.dmg" \
+            "release/*.zip" \
+            "release/*.AppImage" \
+            "release/*.exe" \
+            "release/*.blockmap" \
+            "release/*.yml"; do
+            for file in $pattern; do
+              cp "$file" release-publish/
+            done
+          done
+
+          if [[ "${{ matrix.platform }}" == mac && "${{ matrix.arch }}" == x64 ]]; then
+            for manifest in release-publish/*-mac.yml; do
+              mv "$manifest" "${manifest%.yml}-x64.yml"
+            done
+          fi
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 7
+
+  web:
+    name: Package web
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: ""
+      T3CODE_CLERK_JWT_TEMPLATE: ""
+      T3CODE_RELAY_URL: ""
+      VITE_HOSTED_STATIC_APP: "true"
+      VITE_HOSTED_APP_CHANNEL: ${{ contains(needs.metadata.outputs.version, '-nightly.') && 'nightly' || 'latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.ref }}
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+              - --filter=@t3tools/web...
+
+      - name: Set release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.metadata.outputs.version }}"
+
+      - name: Build web
+        run: vp run --filter @t3tools/web build
+
+      - name: Verify web asset paths
+        run: |
+          if grep -Eq '(src|href)="assets/' apps/web/dist/index.html; then
+            echo "Web assets must use root-relative paths." >&2
+            exit 1
+          fi
+          grep -Eq '(src|href)="/assets/' apps/web/dist/index.html
+
+      - name: Archive web
+        run: |
+          mkdir -p release-publish
+          archive="$GITHUB_WORKSPACE/release-publish/T3-Code-Web-${{ needs.metadata.outputs.version }}.zip"
+          (cd apps/web && zip -r "$archive" dist)
+          unzip -t "$archive"
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: release-publish/*.zip
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,67 @@
+name: Sync upstream main
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync upstream main mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: app_token
+        name: Mint release app token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - id: gate
+        name: Keep the mirror stable during actualization
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          open_prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --base upstream/main --state open --label actualization --json number --jq length)"
+          echo "has_open_actualization=$([[ "$open_prs" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve upstream main
+        id: upstream
+        if: steps.gate.outputs.has_open_actualization == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          upstream_sha="$(git ls-remote https://github.com/pingdotgg/t3code.git refs/heads/main | awk '{print $1}')"
+          test -n "$upstream_sha"
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/upstream/main" --jq .object.sha 2>/dev/null || true)"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "current_sha=$current_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Update upstream main mirror
+        if: >-
+          steps.gate.outputs.has_open_actualization == 'false' &&
+          steps.upstream.outputs.upstream_sha != steps.upstream.outputs.current_sha
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
+          CURRENT_SHA: ${{ steps.upstream.outputs.current_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$CURRENT_SHA" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/upstream/main" \
+              -f sha="$UPSTREAM_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/heads/upstream/main -f sha="$UPSTREAM_SHA" >/dev/null
+          fi
