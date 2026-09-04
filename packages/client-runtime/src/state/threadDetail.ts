@@ -65,6 +65,7 @@ export function mergeEnvironmentThread(
     pinnedAt: shell.pinnedAt,
     pinOrderKey: shell.pinOrderKey,
     session: shell.session,
+    goal: shell.goal === undefined ? detail.goal : shell.goal,
   };
 }
 
