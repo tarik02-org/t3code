@@ -21,9 +21,11 @@ import {
 export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
-const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(packageJson.version)
-  ? "nightly"
-  : "latest";
+const cliBuildChannel = packageJson.version.includes("-canary.")
+  ? "canary"
+  : packageJson.version.includes("-nightly.")
+    ? "nightly"
+    : "latest";
 
 // `build:exe` wraps the same bundle in a Node single-executable. tsdown's exe
 // step refuses multi-chunk output and counts the sourcemap as a chunk, and the
@@ -32,8 +34,8 @@ const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(packageJson.version
 const packExecutable = process.env.T3CODE_PACK_EXE === "1";
 // `<platform>-<arch>` in nodejs.org naming (darwin-x64, linux-arm64, win-x64).
 // When set, tsdown injects the bundle into a downloaded Node of that target
-// instead of the host Node, which is how the arm64 macOS runner produces the
-// x64 archive. Cross-building is safe because the code cache is off.
+// instead of the host Node, which is how a runner of one architecture produces
+// another. Cross-building is safe because the code cache is off.
 //
 // The Node inside the executable is pinned here rather than taken from the
 // build host, so every archive of a release embeds the same runtime no matter
