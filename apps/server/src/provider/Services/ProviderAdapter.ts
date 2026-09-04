@@ -16,6 +16,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ThreadGoalRequest,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
   ThreadId,
@@ -79,6 +80,14 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /**
+   * Send a provider-native goal request, when the provider supports goals.
+   */
+  readonly sendGoalRequest?: (
+    threadId: ThreadId,
+    request: ThreadGoalRequest,
+  ) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

@@ -8,6 +8,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
   type ProviderEvent,
+  type ThreadGoalRequest,
   type ProviderInteractionMode,
   type ProviderRequestKind,
   type ProviderSession,
@@ -41,6 +42,14 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+const decodeThreadGoalGetResponse = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    goal: Schema.Union([
+      EffectCodexSchema.V2ThreadGoalUpdatedNotification__ThreadGoal,
+      Schema.Null,
+    ]),
+  }),
+);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -199,6 +208,9 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly sendGoalRequest?: (
+    request: ThreadGoalRequest,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
@@ -223,6 +235,7 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
+  | CodexSessionRuntimeGoalUnsupportedError
   | CodexSessionRuntimeThreadIdMissingError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
@@ -266,6 +279,15 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeGoalUnsupportedError extends Schema.TaggedErrorClass<CodexSessionRuntimeGoalUnsupportedError>()(
+  "CodexSessionRuntimeGoalUnsupportedError",
+  {},
+) {
+  override get message(): string {
+    return "Codex session does not support goals.";
   }
 }
 
@@ -751,6 +773,7 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/name/updated":
     case "thread/settings/updated":
     case "thread/tokenUsage/updated":
+    case "thread/goal/cleared":
     case "model/rerouted":
     case "turn/started":
     case "hook/started":
@@ -784,6 +807,8 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/realtime/error":
     case "thread/realtime/closed":
       return notification.params.threadId;
+    case "thread/goal/updated":
+      return notification.params.goal.threadId;
     default:
       return undefined;
   }
@@ -1020,6 +1045,8 @@ function shouldSuppressChildConversationNotification(
     method === "thread/name/updated" ||
     method === "thread/settings/updated" ||
     method === "thread/tokenUsage/updated" ||
+    method === "thread/goal/updated" ||
+    method === "thread/goal/cleared" ||
     method === "model/rerouted" ||
     method === "turn/started" ||
     method === "turn/completed" ||
@@ -2399,6 +2426,66 @@ export const makeCodexSessionRuntime = (
             threadId: providerThreadId,
             turnId: effectiveTurnId,
           });
+        }),
+      sendGoalRequest: (request) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          switch (request.kind) {
+            case "status": {
+              const rawResponse = yield* client.raw.request("thread/goal/get", {
+                threadId: providerThreadId,
+              });
+              const response = yield* decodeThreadGoalGetResponse(rawResponse).pipe(
+                Effect.mapError((error) =>
+                  CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
+                    "decode-response-payload",
+                    error,
+                    { method: "thread/goal/get" },
+                  ),
+                ),
+              );
+              if (response.goal) {
+                yield* emitEvent({
+                  kind: "notification",
+                  threadId: options.threadId,
+                  method: "thread/goal/updated",
+                  payload: {
+                    threadId: providerThreadId,
+                    goal: response.goal,
+                  },
+                });
+              } else {
+                yield* emitEvent({
+                  kind: "notification",
+                  threadId: options.threadId,
+                  method: "thread/goal/cleared",
+                  payload: {
+                    threadId: providerThreadId,
+                  },
+                });
+              }
+              return;
+            }
+            case "set":
+              yield* client.raw.request("thread/goal/set", {
+                threadId: providerThreadId,
+                objective: request.objective,
+                status: "active",
+              });
+              return;
+            case "control":
+              if (request.action === "clear") {
+                yield* client.raw.request("thread/goal/clear", {
+                  threadId: providerThreadId,
+                });
+                return;
+              }
+              yield* client.raw.request("thread/goal/set", {
+                threadId: providerThreadId,
+                status: request.action === "pause" ? "paused" : "active",
+              });
+              return;
+          }
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
