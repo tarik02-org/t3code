@@ -2,6 +2,19 @@ import { assert, it } from "@effect/vitest";
 
 import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
+const defaultModeQuestionsDescriptor = {
+  id: "defaultModeRequestUserInput",
+  label: "Default Mode Questions",
+  description: "Control whether Codex can ask questions while working in Default mode.",
+  type: "select" as const,
+  options: [
+    { id: "unset", label: "Unset", isDefault: true },
+    { id: "allow", label: "Allow" },
+    { id: "reject", label: "Reject" },
+  ],
+  currentValue: "unset",
+};
+
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: [],
@@ -61,6 +74,7 @@ it("maps current Codex model capability fields", () => {
       ],
       currentValue: "flex",
     },
+    defaultModeQuestionsDescriptor,
   ]);
 });
 
@@ -100,6 +114,7 @@ it("uses standard routing when the catalog has no default service tier", () => {
       ],
       currentValue: "default",
     },
+    defaultModeQuestionsDescriptor,
   ]);
 });
 
