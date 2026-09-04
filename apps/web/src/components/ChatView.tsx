@@ -24,6 +24,7 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
+  resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
@@ -1523,8 +1524,9 @@ function ChatViewContent(props: ChatViewProps) {
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   useEffect(() => {
     const item = expandedImage?.images[expandedImage.index];
-    if (item?.type !== "video" || !item.src.startsWith("blob:")) return;
-    return () => revokeBlobPreviewUrl(item.src);
+    if (item?.type !== "video" || item.src === null || !item.src.startsWith("blob:")) return;
+    const src = item.src;
+    return () => revokeBlobPreviewUrl(src);
   }, [expandedImage]);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
@@ -3068,6 +3070,7 @@ function ChatViewContent(props: ChatViewProps) {
     hasActiveProject: activeProject !== null,
     isGitRepo,
     showEnvironmentIndicator: showComposerEnvironmentIndicator,
+    hostsRestingComposerControls: routeKind === "server",
   });
   const initialDiffPanelGitScope =
     gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
@@ -4321,8 +4324,7 @@ function ChatViewContent(props: ChatViewProps) {
         // up, and a gesture landing in that window while still pinned would
         // otherwise break follow with no scroll event left to re-arm it.
         const viewportIsAwayFromEnd = () =>
-          resolveTimelineIsAtEnd(legendListRef.current?.getState(), composerOverlayHeight) ===
-          false;
+          resolveTimelineIsAtEnd(legendListRef.current?.getState()) === false;
         // Only an upward wheel is a navigation intent; wheeling down while
         // following either does nothing (at the end) or moves toward it.
         const handleWheel = (event: WheelEvent) => {
@@ -4710,8 +4712,13 @@ function ChatViewContent(props: ChatViewProps) {
     linkedPullRequestStatus,
   });
   const handlePullRequestTabStatusChange = useCallback(
-    (status: PullRequestTabStatus) => {
-      updatePullRequestTabStatusFromPanel(status);
+    (status: Pick<PullRequestTabStatus, "repository" | "number" | "state">) => {
+      if (activePullRequestSurfaceId !== undefined) {
+        const existing = pullRequestTabStatuses[activePullRequestSurfaceId];
+        if (existing) {
+          updatePullRequestTabStatusFromPanel({ ...existing, ...status });
+        }
+      }
       const source = threadPullRequestRefreshSource({
         panel: status,
         thread: {
@@ -4763,6 +4770,8 @@ function ChatViewContent(props: ChatViewProps) {
       refreshVcsStatus,
       threadRepository,
       updatePullRequestTabStatusFromPanel,
+      activePullRequestSurfaceId,
+      pullRequestTabStatuses,
     ],
   );
   const activeThreadReferenceCopyTarget = useMemo(
@@ -7598,6 +7607,7 @@ function ChatViewContent(props: ChatViewProps) {
             activeProjectName={activeProject?.title}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
             activeProjectFaviconPath={activeProject?.faviconPath ?? null}
+            activeProjectIcon={activeProject?.projectIcon ?? null}
             openInCwd={gitCwd}
             activeProjectScripts={activeProject?.scripts}
             preferredScriptId={
@@ -7915,7 +7925,15 @@ function ChatViewContent(props: ChatViewProps) {
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                                   : {})}
                                 {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
-                                availableEnvironments={logicalProjectEnvironments}
+                                availableEnvironments={logicalProjectEnvironments.map(
+                                  (environment) => ({
+                                    ...environment,
+                                    machine: resolveEnvironmentMachineKind(
+                                      environmentById.get(environment.environmentId)
+                                        ?.serverConfig ?? null,
+                                    ),
+                                  }),
+                                )}
                               />
                             </div>
                           )}
@@ -8016,6 +8034,7 @@ function ChatViewContent(props: ChatViewProps) {
           mode="inline"
           maximized={rightPanelMaximized}
           surfaces={rightPanelState.surfaces}
+          environmentId={activeThreadRef.environmentId}
           activeSurfaceId={activeRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}
           previewSessions={activePreviewState.sessions}
@@ -8029,6 +8048,7 @@ function ChatViewContent(props: ChatViewProps) {
           onCloseAllSurfaces={closeAllRightPanelSurfaces}
           onCopyFilePath={copyRightPanelFilePath}
           onAddBrowser={createBrowserSurface}
+          onAddBrowserInProfile={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
@@ -8040,14 +8060,19 @@ function ChatViewContent(props: ChatViewProps) {
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           agentsAvailable
-          pullRequestStatuses={pullRequestTabStatuses}
+          pullRequestStatusSeeds={Object.fromEntries(
+            Object.entries(pullRequestTabStatuses).map(([id, status]) => [
+              id,
+              { state: status.state, isDraft: status.isDraft },
+            ]),
+          )}
           liveAgentCount={agentPanelModel.liveCount}
         >
           {rightPanelContent}
         </RightPanelTabs>
       ) : null}
       {shouldUseRightPanelSheet && rightPanelOpen && activeThreadRef ? (
-        <RightPanelSheet open onClose={closePreviewPanel}>
+        <RightPanelSheet open animationDurationMs={0} onClose={closePreviewPanel}>
           <RightPanelTabs
             mode="sheet"
             // Same effective inset as the closed-state titlebar controls
@@ -8056,6 +8081,7 @@ function ChatViewContent(props: ChatViewProps) {
             // the sheet opens.
             layoutControls={<div className="mr-px flex items-center">{panelToggleControls}</div>}
             surfaces={rightPanelState.surfaces}
+            environmentId={activeThreadRef.environmentId}
             activeSurfaceId={activeRightPanelSurface?.id ?? null}
             pendingSurfaceIds={pendingFileSurfaceIds}
             previewSessions={activePreviewState.sessions}
@@ -8069,6 +8095,7 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
             onCopyFilePath={copyRightPanelFilePath}
             onAddBrowser={createBrowserSurface}
+            onAddBrowserInProfile={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
@@ -8080,7 +8107,12 @@ function ChatViewContent(props: ChatViewProps) {
             filesAvailable={activeProject !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             agentsAvailable
-            pullRequestStatuses={pullRequestTabStatuses}
+            pullRequestStatusSeeds={Object.fromEntries(
+              Object.entries(pullRequestTabStatuses).map(([id, status]) => [
+                id,
+                { state: status.state, isDraft: status.isDraft },
+              ]),
+            )}
             liveAgentCount={agentPanelModel.liveCount}
           >
             {rightPanelContent}

@@ -2,10 +2,12 @@
   cacert,
   fetchPnpmDeps,
   lib,
+  libsecret,
   node-gyp,
   nodejs_24,
   pnpm_11,
   pnpmConfigHook,
+  pkg-config,
   python3,
   rustPlatform,
   src,
@@ -48,7 +50,7 @@ stdenv.mkDerivation (finalAttrs: {
     version = sourceVersion;
     inherit pnpm;
     fetcherVersion = 4;
-    hash = "sha256-t/hmpXdYPnBFx18A6NrSL4zSvVnUDIjIPtLjGOzoaDk=";
+    hash = "sha256-A9llQc6umnGZTNlvzG7yt+qu39scGHho8Xvf0vScLtU=";
   };
 
   nativeBuildInputs = [
@@ -56,9 +58,12 @@ stdenv.mkDerivation (finalAttrs: {
     nodejs
     pnpm
     pnpmConfigHook
+    pkg-config
     python3
     writableTmpDirAsHomeHook
   ];
+
+  buildInputs = [ libsecret ];
 
   dontPatchELF = true;
   noAuditTmpdir = true;
