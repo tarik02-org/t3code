@@ -31,6 +31,10 @@
       "types": "./src/markdownImages.ts",
       "default": "./src/markdownImages.ts"
     },
+    "./markdown-frontmatter": {
+      "types": "./src/markdownFrontmatter.ts",
+      "default": "./src/markdownFrontmatter.ts"
+    },
     "./markdown-links": {
       "types": "./src/markdownLinks.ts",
       "default": "./src/markdownLinks.ts"
