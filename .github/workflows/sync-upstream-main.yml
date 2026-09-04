@@ -1,0 +1,136 @@
+name: Sync upstream main
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Optional upstream main commit to mirror"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-history-mutation
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream main mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: app_token
+        name: Mint release app token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - id: gate
+        name: Keep the mirror stable during actualization
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          open_prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label actualization --json number --jq length)"
+          echo "has_open_actualization=$([[ "$open_prs" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        if: steps.gate.outputs.has_open_actualization == 'false'
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Import upstream main objects
+        id: upstream
+        if: steps.gate.outputs.has_open_actualization == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          REQUESTED_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/pingdotgg/t3code.git main:refs/remotes/upstream/main
+          git fetch --no-tags origin main:refs/remotes/origin/main upstream/main:refs/remotes/origin/upstream/main
+          if [[ -n "$REQUESTED_SHA" ]]; then
+            if [[ ! "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "target_sha must be a full commit SHA" >&2
+              exit 1
+            fi
+            upstream_sha="$(git rev-parse "$REQUESTED_SHA^{commit}")"
+            if ! git merge-base --is-ancestor "$upstream_sha" refs/remotes/upstream/main; then
+              echo "target_sha is not reachable from upstream main" >&2
+              exit 1
+            fi
+          else
+            upstream_sha="$(git rev-parse refs/remotes/upstream/main)"
+          fi
+          current_sha="$(git rev-parse refs/remotes/origin/upstream/main 2>/dev/null || true)"
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          {
+            echo "upstream_sha=$upstream_sha"
+            echo "current_sha=$current_sha"
+            echo "main_sha=$main_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update upstream main mirror
+        if: >-
+          steps.gate.outputs.has_open_actualization == 'false' &&
+          steps.upstream.outputs.upstream_sha != steps.upstream.outputs.current_sha
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
+          CURRENT_SHA: ${{ steps.upstream.outputs.current_sha }}
+        run: |
+          set -euo pipefail
+          import_ref="upstream/import-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            git push origin ":refs/heads/$import_ref" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          git push origin "refs/remotes/upstream/main:refs/heads/$import_ref"
+          remote_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/upstream/main" --jq .object.sha)"
+          if [[ "$remote_sha" != "$CURRENT_SHA" ]]; then
+            echo "upstream/main moved from $CURRENT_SHA to $remote_sha; retry the sync" >&2
+            exit 1
+          fi
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/upstream/main" \
+            -f sha="$UPSTREAM_SHA" -F force=true >/dev/null
+
+      - name: Prepare actualization PR head
+        if: steps.upstream.outputs.upstream_sha != steps.upstream.outputs.current_sha
+        run: git push --force origin "refs/remotes/origin/main:refs/heads/actualization/incoming"
+
+      - name: Create actualization PR
+        if: steps.upstream.outputs.upstream_sha != steps.upstream.outputs.current_sha
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          MAIN_SHA: ${{ steps.upstream.outputs.main_sha }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head actualization/incoming --base upstream/main --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" \
+              --title 'actualize fork on current upstream' \
+              --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. This PR intentionally starts from the current main snapshot; rebuild its head before /promote.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->\n<!-- actualization-upstream-sha: '"${UPSTREAM_SHA}"$' -->'
+          else
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --base upstream/main \
+              --head actualization/incoming \
+              --title 'actualize fork on current upstream' \
+              --label actualization \
+              --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. This PR intentionally starts from the current main snapshot; rebuild its head before /promote.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->\n<!-- actualization-upstream-sha: '"${UPSTREAM_SHA}"$' -->'
+          fi
