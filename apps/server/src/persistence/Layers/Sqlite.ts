@@ -3,10 +3,11 @@ import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
+import { ProjectionThreadGoalRepositoryLive } from "../Services/ProjectionThreadGoals.ts";
+import { makeRuntimeSqliteLayer } from "../RuntimeSqliteLayer.ts";
 
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -27,20 +28,23 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
   return Layer.provideMerge(
-    setup,
-    NodeSqliteClient.layer({
-      filename: dbPath,
-      spanAttributes: {
-        "db.name": path.basename(dbPath),
-        "service.name": "t3-server",
-      },
-    }),
+    ProjectionThreadGoalRepositoryLive,
+    Layer.provideMerge(
+      setup,
+      makeRuntimeSqliteLayer({
+        filename: dbPath,
+        spanAttributes: {
+          "db.name": path.basename(dbPath),
+          "service.name": "t3-server",
+        },
+      }),
+    ),
   );
 }, Layer.unwrap);
 
 export const SqlitePersistenceMemory = Layer.provideMerge(
-  setup,
-  NodeSqliteClient.layer({ filename: ":memory:" }),
+  ProjectionThreadGoalRepositoryLive,
+  Layer.provideMerge(setup, makeRuntimeSqliteLayer({ filename: ":memory:" })),
 );
 
 export const layerConfig = Layer.unwrap(
