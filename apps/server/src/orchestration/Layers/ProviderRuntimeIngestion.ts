@@ -1068,6 +1068,12 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
+  const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
+    return yield* projectionSnapshotQuery
+      .getThreadShellById(threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
+  });
+
   const getThreadMessageById = Effect.fn("getThreadMessageById")(function* (
     threadId: ThreadId,
     messageId: MessageId,

@@ -910,7 +910,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       environmentId={props.environmentId}
                       onClose={dismissUsageLimits}
                     />
-                    </Animated.View>
+                  </Animated.View>
                 ) : null}
                 {props.selectedThread.goal ? (
                   <View className="mx-4 mb-3 rounded-xl border border-adaptive-blue-300-a50-blue-400-a28 bg-adaptive-blue-50-blue-400-a14 p-3">

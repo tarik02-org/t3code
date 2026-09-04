@@ -27,6 +27,7 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   resolveEnvironmentMachineKind,
+  type EnvironmentId,
   type EnvironmentMachineKind,
   type ProjectIconOverride,
   type ScopedThreadRef,
@@ -45,6 +46,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  Globe2Icon,
   PinIcon,
   PlusIcon,
   SearchIcon,
@@ -209,6 +211,8 @@ import {
 } from "./ui/combobox";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { useSidebarActiveThreadScroll } from "./sidebar/useSidebarActiveThreadScroll";
+import { Menu, MenuCheckboxItem, MenuGroup, MenuPopup, MenuTrigger } from "./ui/menu";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import {
@@ -227,6 +231,77 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 // Fresh keys deliberately reset both shelves to collapsed for existing users.
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
+
+interface SidebarEnvironmentVisibilityOption {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly visible: boolean;
+  readonly projectCount: number;
+}
+
+function EnvironmentVisibilityMenu(props: {
+  readonly environments: readonly SidebarEnvironmentVisibilityOption[];
+  readonly onVisibilityChange: (environmentId: EnvironmentId, visible: boolean) => void;
+}) {
+  if (props.environments.length <= 1) return null;
+  const visibleEnvironmentCount = props.environments.filter(
+    (environment) => environment.visible,
+  ).length;
+  const hiddenCount = props.environments.length - visibleEnvironmentCount;
+  return (
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={
+                <SidebarMenuButton
+                  size="icon"
+                  type="button"
+                  aria-label="Choose sidebar environments"
+                  className="relative shrink-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                />
+              }
+            />
+          }
+        >
+          <Globe2Icon />
+        </TooltipTrigger>
+        <TooltipPopup side="right">
+          {hiddenCount > 0
+            ? `${hiddenCount} hidden environment${hiddenCount === 1 ? "" : "s"}`
+            : "Sidebar environments"}
+        </TooltipPopup>
+      </Tooltip>
+      <MenuPopup align="end" side="bottom" className="min-w-56">
+        <MenuGroup>
+          {props.environments.map((environment) => {
+            const isLastVisibleEnvironment = environment.visible && visibleEnvironmentCount === 1;
+            return (
+              <MenuCheckboxItem
+                key={environment.environmentId}
+                checked={environment.visible}
+                disabled={isLastVisibleEnvironment}
+                variant="switch"
+                onCheckedChange={(checked) => {
+                  if (isLastVisibleEnvironment && checked !== true) return;
+                  props.onVisibilityChange(environment.environmentId, checked === true);
+                }}
+              >
+                <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                  <span className="truncate">{environment.label}</span>
+                  <span className="text-muted-foreground/60">
+                    {environment.projectCount} project{environment.projectCount === 1 ? "" : "s"}
+                  </span>
+                </span>
+              </MenuCheckboxItem>
+            );
+          })}
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
 
 function compactSidebarTimeLabel(label: string): string {
   if (label === "just now") return "now";
@@ -775,6 +850,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
   projectIconByKey: ReadonlyMap<string, ProjectIconOverride | null | undefined>;
   scopedProjectKeys: ReadonlySet<string> | null;
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId>;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
 }) {
@@ -814,6 +890,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       if (session.promotedTo != null) {
         continue;
       }
+      if (props.hiddenEnvironmentIds.has(session.environmentId)) continue;
       if (
         props.scopedProjectKeys !== null &&
         !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -843,6 +920,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenActive,
     props.routeDraftId,
     props.scopedProjectKeys,
+    props.hiddenEnvironmentIds,
   ]);
   const handleDiscard = useCallback(
     (draftId: DraftId) => {
@@ -1468,6 +1546,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     return (
       <li
         data-thread-item
+        data-sidebar-thread-key={threadKey}
         {...sortableRootProps}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_34px]",
@@ -1626,6 +1705,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   return (
     <li
       data-thread-item
+      data-sidebar-thread-key={threadKey}
       {...sortableRootProps}
       className={cn(
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]",
@@ -2005,9 +2085,15 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 });
 
 export default function Sidebar() {
-  const projects = useProjects();
+  const allProjects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const threads = useThreadShells();
+  const allThreads = useThreadShells();
+  const sidebarEnvironmentHiddenById = useUiStateStore(
+    (store) => store.sidebarEnvironmentHiddenById,
+  );
+  const setSidebarEnvironmentVisible = useUiStateStore(
+    (store) => store.setSidebarEnvironmentVisible,
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -2094,6 +2180,47 @@ export default function Sidebar() {
   );
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environmentVisibilityOptions = useMemo<SidebarEnvironmentVisibilityOption[]>(() => {
+    const projectCounts = new Map<EnvironmentId, number>();
+    for (const project of allProjects) {
+      projectCounts.set(project.environmentId, (projectCounts.get(project.environmentId) ?? 0) + 1);
+    }
+    return environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      visible:
+        environments.length <= 1 ||
+        sidebarEnvironmentHiddenById[environment.environmentId] !== true,
+      projectCount: projectCounts.get(environment.environmentId) ?? 0,
+    }));
+  }, [allProjects, environments, sidebarEnvironmentHiddenById]);
+  const hiddenEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        environmentVisibilityOptions
+          .filter((environment) => !environment.visible)
+          .map((environment) => environment.environmentId),
+      ),
+    [environmentVisibilityOptions],
+  );
+  const visibleEnvironmentKey = environmentVisibilityOptions
+    .filter((environment) => environment.visible)
+    .map((environment) => environment.environmentId)
+    .join("\0");
+  const projects = useMemo(
+    () =>
+      environments.length <= 1
+        ? allProjects
+        : allProjects.filter((project) => !hiddenEnvironmentIds.has(project.environmentId)),
+    [allProjects, environments.length, hiddenEnvironmentIds],
+  );
+  const threads = useMemo(
+    () =>
+      environments.length <= 1
+        ? allThreads
+        : allThreads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId)),
+    [allThreads, environments.length, hiddenEnvironmentIds],
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -2106,6 +2233,9 @@ export default function Sidebar() {
     },
     [markThreadVisited],
   );
+  useEffect(() => {
+    clearSelection();
+  }, [clearSelection, visibleEnvironmentKey]);
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -2118,6 +2248,10 @@ export default function Sidebar() {
     [routeDraftThread, routeTarget],
   );
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const markSidebarThreadNavigation = useSidebarActiveThreadScroll({
+    hasThreadRoute: routeTarget !== null,
+    routeThreadKey,
+  });
   const routeTargetRef = useRef(routeTarget);
   routeTargetRef.current = routeTarget;
   // Post-settle navigation validates against the CURRENT route, not the one
@@ -2722,6 +2856,13 @@ export default function Sidebar() {
       });
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
+  );
+  const navigateToThreadFromSidebar = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      markSidebarThreadNavigation(scopedThreadKey(threadRef));
+      navigateToThread(threadRef);
+    },
+    [markSidebarThreadNavigation, navigateToThread],
   );
 
   const navigateToDraft = useCallback(
@@ -4221,6 +4362,10 @@ export default function Sidebar() {
                   </TooltipPopup>
                 </Tooltip>
               </div>
+              <EnvironmentVisibilityMenu
+                environments={environmentVisibilityOptions}
+                onVisibilityChange={setSidebarEnvironmentVisible}
+              />
             </div>
             {projectGroups.length > 0 ? (
               <div className="flex items-center gap-1">
@@ -4593,7 +4738,7 @@ export default function Sidebar() {
                             }
                             timestampFormat={timestampFormat}
                             onThreadClick={handleThreadClick}
-                            onThreadActivate={navigateToThread}
+                            onThreadActivate={navigateToThreadFromSidebar}
                             onStartRename={startThreadRename}
                             onRenameTitleChange={setRenamingTitle}
                             onCommitRename={commitThreadRename}
@@ -4647,6 +4792,7 @@ export default function Sidebar() {
                           projectFaviconPathByKey={projectFaviconPathByKey}
                           projectIconByKey={projectIconByKey}
                           scopedProjectKeys={scopedProjectKeys}
+                          hiddenEnvironmentIds={hiddenEnvironmentIds}
                           routeDraftId={routeDraftIdForRows}
                           onNavigateToDraft={navigateToDraft}
                         />,
