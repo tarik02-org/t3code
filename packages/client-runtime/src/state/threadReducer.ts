@@ -480,6 +480,26 @@ export function applyThreadDetailEvent(
             },
           };
 
+    case "thread.goal-updated":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          goal: event.payload.goal,
+          updatedAt: event.occurredAt,
+        },
+      };
+
+    case "thread.goal-cleared":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          goal: null,
+          updatedAt: event.occurredAt,
+        },
+      };
+
     // ── Proposed plans ──────────────────────────────────────────────
     case "thread.proposed-plan-upserted": {
       const proposedPlan = event.payload.proposedPlan;
