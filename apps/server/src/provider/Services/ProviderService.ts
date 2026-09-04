@@ -12,6 +12,7 @@
  * @module ProviderService
  */
 import type {
+  ProviderGoalRequestInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -65,6 +66,13 @@ export interface ProviderServiceShape {
    */
   readonly interruptTurn: (
     input: ProviderInterruptTurnInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Send a provider-native goal request.
+   */
+  readonly sendGoalRequest?: (
+    input: ProviderGoalRequestInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

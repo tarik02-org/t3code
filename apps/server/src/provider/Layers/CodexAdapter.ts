@@ -66,6 +66,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
+  CodexSessionRuntimeGoalUnsupportedError,
   CodexSessionRuntimeThreadIdMissingError,
   describeMcpElicitation,
   makeCodexSessionRuntime,
@@ -2525,12 +2526,29 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
-  const compactThread = Effect.fn("compactThread")(function* (threadId: ThreadId) {
-    const session = yield* requireSession(threadId);
-    yield* session.runtime.compactThread.pipe(
-      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/compact/start", cause)),
+  const sendGoalRequest: NonNullable<CodexAdapterShape["sendGoalRequest"]> = (threadId, request) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => {
+        if (!session.runtime.sendGoalRequest) {
+          return Effect.fail(new CodexSessionRuntimeGoalUnsupportedError());
+        }
+        return session.runtime.sendGoalRequest(request);
+      }),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/goal", cause),
+      ),
     );
-  });
+
+  const compactThread: NonNullable<CodexAdapterShape["compactThread"]> = Effect.fn("compactThread")(
+    function* (threadId) {
+      const session = yield* requireSession(threadId);
+      yield* session.runtime.compactThread.pipe(
+        Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/compact/start", cause)),
+      );
+    },
+  );
 
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
@@ -2679,6 +2697,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     sendTurn,
     compaction: { type: "native", start: compactThread },
     interruptTurn,
+    sendGoalRequest,
     readThread,
     rollbackThread,
     uploadFeedback,
