@@ -1,0 +1,212 @@
+name: Release Publish
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Prerelease Build
+      - Stable Release Build
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+jobs:
+  runs:
+    name: Match successful CI and build runs
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.match.outputs.ready }}
+      build_run_id: ${{ steps.match.outputs.build_run_id }}
+    steps:
+      - id: match
+        name: Match successful CI and build runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          has_release_metadata() {
+            local run_id="$1"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" -f per_page=100 \
+              --jq '[.artifacts[] | select(.name == "release-metadata" and .expired == false)] | length' \
+              | grep -q '[1-9]'
+          }
+
+          ci_run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch="$RELEASE_BRANCH" -f head_sha="$RELEASE_SHA" -f event=push -f status=success -f per_page=20 \
+            --jq '.workflow_runs[0].id // empty')"
+          history_run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/history-validation.yml/runs" \
+            -f branch="$RELEASE_BRANCH" -f head_sha="$RELEASE_SHA" -f event=push -f status=success -f per_page=20 \
+            --jq '.workflow_runs[0].id // empty')"
+          build_run_id=""
+          case "$TRIGGER_WORKFLOW" in
+            "Prerelease Build" | "Stable Release Build") build_run_id="$TRIGGER_RUN_ID" ;;
+            CI)
+              for workflow in release.yml release-stable.yml; do
+                candidate="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+                  -f branch="$RELEASE_BRANCH" -f head_sha="$RELEASE_SHA" -f event=push -f status=success -f per_page=20 \
+                  --jq '.workflow_runs[0].id // empty')"
+                if [[ -n "$candidate" ]] && has_release_metadata "$candidate"; then
+                  build_run_id="$candidate"
+                  break
+                fi
+              done
+              ;;
+            *) echo "Unexpected release trigger: $TRIGGER_WORKFLOW" >&2; exit 1 ;;
+          esac
+
+          if [[ -z "$ci_run_id" || -z "$history_run_id" || -z "$build_run_id" ]] || ! has_release_metadata "$build_run_id"; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo "build_run_id=$build_run_id" >> "$GITHUB_OUTPUT"
+          fi
+
+  metadata:
+    name: Read release metadata
+    needs: runs
+    if: needs.runs.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      name: ${{ steps.read.outputs.name }}
+      previous_tag: ${{ steps.read.outputs.previous_tag }}
+      prerelease: ${{ steps.read.outputs.prerelease }}
+      ref: ${{ steps.read.outputs.ref }}
+      environment: ${{ steps.read.outputs.environment }}
+    steps:
+      - name: Download release metadata
+        uses: actions/download-artifact@v8
+        with:
+          name: release-metadata
+          path: release-metadata
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.runs.outputs.build_run_id }}
+
+      - id: read
+        name: Read metadata
+        run: |
+          metadata=release-metadata/release.json
+          {
+            echo "version=$(jq -r .version "$metadata")"
+            echo "tag=$(jq -r .tag "$metadata")"
+            echo "name=$(jq -r .name "$metadata")"
+            echo "previous_tag=$(jq -r .previousTag "$metadata")"
+            echo "prerelease=$(jq -r .prerelease "$metadata")"
+            echo "ref=$(jq -r .ref "$metadata")"
+            if [[ "$(jq -r .prerelease "$metadata")" == true ]]; then
+              echo 'environment=nightly'
+            else
+              echo 'environment=stable'
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish release
+    needs: [runs, metadata]
+    if: needs.runs.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: ${{ needs.metadata.outputs.environment }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup release notes tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --force --tags origin
+          git fetch --no-tags origin upstream/main:refs/remotes/upstream/main
+
+      - name: Render release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ needs.metadata.outputs.ref }}
+          PREVIOUS_TAG: ${{ needs.metadata.outputs.previous_tag }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "$PRERELEASE" == true ]]; then
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              node scripts/render-upstream-release-notes.mjs \
+                --previous-tag "$PREVIOUS_TAG" \
+                --release-ref "$RELEASE_REF" \
+                --upstream-ref refs/remotes/upstream/main \
+                --output release-body.md
+            else
+              printf '%s\n' '## Upstream changes' '' '- No previous release tag was available.' > release-body.md
+            fi
+          else
+            pr_number="$(git show -s --format=%B "$RELEASE_REF" | sed -n 's/^Release-PR: #//p' | head -n 1)"
+            if [[ -n "$pr_number" ]]; then
+              gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-body.md
+            else
+              node scripts/render-upstream-release-notes.mjs \
+                --previous-tag "$PREVIOUS_TAG" \
+                --release-ref "$RELEASE_REF" \
+                --upstream-ref refs/remotes/upstream/main \
+                --output release-body.md
+            fi
+          fi
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.runs.outputs.build_run_id }}
+
+      - name: Download web artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: release-assets
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.runs.outputs.build_run_id }}
+
+      - name: Merge macOS updater manifests
+        run: |
+          shopt -s nullglob
+          for x64_manifest in release-assets/*-mac-x64.yml; do
+            arm64_manifest="${x64_manifest%-x64.yml}.yml"
+            test -f "$arm64_manifest"
+            node scripts/merge-update-manifests.ts --platform mac "$arm64_manifest" "$x64_manifest"
+            rm "$x64_manifest"
+          done
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          target_commitish: ${{ needs.metadata.outputs.ref }}
+          name: ${{ needs.metadata.outputs.name }}
+          body_path: release-body.md
+          prerelease: ${{ needs.metadata.outputs.prerelease }}
+          make_latest: ${{ needs.metadata.outputs.prerelease == 'false' }}
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true
