@@ -4,6 +4,7 @@ import type {
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
 } from "@t3tools/contracts";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -61,6 +62,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly serverRoot: string;
     readonly backendEntryPath: string;
     readonly backendCwd: string;
+    readonly rendererRootPath: string;
     readonly preloadPath: string;
     readonly appUpdateYmlPath: string;
     readonly devServerUrl: Option.Option<URL>;
@@ -211,6 +213,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     serverRoot,
     backendEntryPath: path.join(serverRoot, "apps/server/dist/bin.mjs"),
     backendCwd: input.isPackaged ? homeDirectory : appRoot,
+    rendererRootPath: path.join(serverRoot, "apps/server/dist/client"),
     preloadPath: path.join(input.dirname, "preload.cjs"),
     appUpdateYmlPath: input.isPackaged
       ? path.join(resourcesPath, "app-update.yml")
@@ -273,4 +276,6 @@ const make = Effect.fn("desktop.environment.make")(function* (
 });
 
 export const layer = (input: MakeDesktopEnvironmentInput) =>
-  Layer.effect(DesktopEnvironment, make(input));
+  Layer.effect(DesktopEnvironment, make(input)).pipe(
+    Layer.provide(input.platform === "win32" ? NodePath.layerWin32 : NodePath.layerPosix),
+  );

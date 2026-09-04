@@ -31,8 +31,10 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   resolveEnvironmentMachineKind,
+  type EnvironmentId,
   type EnvironmentMachineKind,
   type ProjectIconOverride,
+  type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -49,6 +51,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  Globe2Icon,
   PinIcon,
   PlusIcon,
   SearchIcon,
@@ -203,6 +206,7 @@ import {
 } from "./ui/combobox";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { useSidebarActiveThreadScroll } from "./sidebar/useSidebarActiveThreadScroll";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import {
@@ -221,6 +225,65 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 // Fresh keys deliberately reset both shelves to collapsed for existing users.
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
+
+interface SidebarEnvironmentVisibilityOption {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly visible: boolean;
+  readonly projectCount: number;
+}
+
+function EnvironmentVisibilityMenu(props: {
+  readonly environments: readonly SidebarEnvironmentVisibilityOption[];
+  readonly onVisibilityChange: (environmentId: EnvironmentId, visible: boolean) => void;
+}) {
+  if (props.environments.length <= 1) return null;
+  const visibleCount = props.environments.filter((environment) => environment.visible).length;
+  const hiddenCount = props.environments.length - visibleCount;
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <Button
+            size="icon"
+            variant="ghost"
+            type="button"
+            aria-label="Choose sidebar environments"
+          >
+            <Globe2Icon />
+          </Button>
+        }
+      />
+      <PopoverPopup align="end" className="w-64 p-2">
+        <p className="px-2 py-1 text-xs font-medium text-muted-foreground">
+          {hiddenCount > 0
+            ? `${hiddenCount} hidden environment${hiddenCount === 1 ? "" : "s"}`
+            : "Sidebar environments"}
+        </p>
+        {props.environments.map((environment) => {
+          const isLastVisible = environment.visible && visibleCount === 1;
+          return (
+            <label
+              key={environment.environmentId}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
+            >
+              <input
+                type="checkbox"
+                checked={environment.visible}
+                disabled={isLastVisible}
+                onChange={(event) =>
+                  props.onVisibilityChange(environment.environmentId, event.target.checked)
+                }
+              />
+              <span className="min-w-0 flex-1 truncate">{environment.label}</span>
+              <span className="text-xs text-muted-foreground">{environment.projectCount}</span>
+            </label>
+          );
+        })}
+      </PopoverPopup>
+    </Popover>
+  );
+}
 
 function compactSidebarTimeLabel(label: string): string {
   if (label === "just now") return "now";
@@ -625,6 +688,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
   projectIconByKey: ReadonlyMap<string, ProjectIconOverride | null | undefined>;
   scopedProjectKeys: ReadonlySet<string> | null;
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId>;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
 }) {
@@ -664,6 +728,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       if (session.promotedTo != null) {
         continue;
       }
+      if (props.hiddenEnvironmentIds.has(session.environmentId)) continue;
       if (
         props.scopedProjectKeys !== null &&
         !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -693,6 +758,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenActive,
     props.routeDraftId,
     props.scopedProjectKeys,
+    props.hiddenEnvironmentIds,
   ]);
   const handleDiscard = useCallback(
     (draftId: DraftId) => {
@@ -774,6 +840,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   projectDisplayName: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   timestampFormat: TimestampFormat;
+  keybindings: ResolvedKeybindingsConfig;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
@@ -783,6 +850,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   isRenaming: boolean;
   renamingTitle: string;
   onContextMenu: (threadRef: ScopedThreadRef, position: { x: number; y: number }) => void;
+  onArchive: (threadRef: ScopedThreadRef) => void;
   onSettle: (threadRef: ScopedThreadRef) => void;
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: SnoozePreset) => void;
@@ -802,6 +870,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     onCancelRename,
     onCommitRename,
     onContextMenu,
+    onArchive,
     onAcknowledgeWoke,
     onRenameTitleChange,
     onSettle,
@@ -823,6 +892,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     [thread.environmentId, thread.id],
   );
   const threadKey = scopedThreadKey(threadRef);
+  const handleRowMouseDown = useCallback((event: ReactMouseEvent) => {
+    if (event.button === 1) event.preventDefault();
+  }, []);
+  const handleRowAuxClick = useCallback(
+    (event: ReactMouseEvent) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onArchive(threadRef);
+    },
+    [onArchive, threadRef],
+  );
   const { leaseLiveStatus, rowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
@@ -1061,12 +1142,27 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
+      const command = resolveShortcutCommand(event, props.keybindings, {
+        platform: navigator.platform,
+        context: {
+          terminalFocus: false,
+          terminalOpen: false,
+          previewFocus: false,
+          previewOpen: false,
+        },
+      });
+      if (command === "thread.rename") {
+        event.preventDefault();
+        event.stopPropagation();
+        onStartRename(threadRef, thread.title);
+        return;
+      }
       if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       onThreadActivate(threadRef);
     },
-    [onThreadActivate, threadRef],
+    [onStartRename, onThreadActivate, props.keybindings, thread.title, threadRef],
   );
   const handleDoubleClick = useCallback(
     (event: ReactMouseEvent) => {
@@ -1325,6 +1421,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     return (
       <li
         data-thread-item
+        data-sidebar-thread-key={threadKey}
         className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_34px]"
       >
         <Tooltip>
@@ -1338,6 +1435,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
                 onClick={handleClick}
+                onMouseDown={handleRowMouseDown}
+                onAuxClick={handleRowAuxClick}
                 onDoubleClick={handleDoubleClick}
                 onKeyDown={handleKeyDown}
                 onContextMenu={handleContextMenu}
@@ -1476,6 +1575,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   return (
     <li
       data-thread-item
+      data-sidebar-thread-key={threadKey}
       ref={sortable?.setNodeRef}
       style={
         sortable
@@ -1502,6 +1602,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
               onClick={handleClick}
+              onMouseDown={handleRowMouseDown}
+              onAuxClick={handleRowAuxClick}
               onDoubleClick={handleDoubleClick}
               onKeyDown={handleKeyDown}
               onContextMenu={handleContextMenu}
@@ -1860,9 +1962,15 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 });
 
 export default function Sidebar() {
-  const projects = useProjects();
+  const allProjects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const threads = useThreadShells();
+  const allThreads = useThreadShells();
+  const sidebarEnvironmentHiddenById = useUiStateStore(
+    (store) => store.sidebarEnvironmentHiddenById,
+  );
+  const setSidebarEnvironmentVisible = useUiStateStore(
+    (store) => store.setSidebarEnvironmentVisible,
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -1947,6 +2055,47 @@ export default function Sidebar() {
   );
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environmentVisibilityOptions = useMemo<SidebarEnvironmentVisibilityOption[]>(() => {
+    const projectCounts = new Map<EnvironmentId, number>();
+    for (const project of allProjects) {
+      projectCounts.set(project.environmentId, (projectCounts.get(project.environmentId) ?? 0) + 1);
+    }
+    return environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      visible:
+        environments.length <= 1 ||
+        sidebarEnvironmentHiddenById[environment.environmentId] !== true,
+      projectCount: projectCounts.get(environment.environmentId) ?? 0,
+    }));
+  }, [allProjects, environments, sidebarEnvironmentHiddenById]);
+  const hiddenEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        environmentVisibilityOptions
+          .filter((environment) => !environment.visible)
+          .map((environment) => environment.environmentId),
+      ),
+    [environmentVisibilityOptions],
+  );
+  const visibleEnvironmentKey = environmentVisibilityOptions
+    .filter((environment) => environment.visible)
+    .map((environment) => environment.environmentId)
+    .join("\0");
+  const projects = useMemo(
+    () =>
+      environments.length <= 1
+        ? allProjects
+        : allProjects.filter((project) => !hiddenEnvironmentIds.has(project.environmentId)),
+    [allProjects, environments.length, hiddenEnvironmentIds],
+  );
+  const threads = useMemo(
+    () =>
+      environments.length <= 1
+        ? allThreads
+        : allThreads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId)),
+    [allThreads, environments.length, hiddenEnvironmentIds],
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -1971,6 +2120,10 @@ export default function Sidebar() {
     [routeDraftThread, routeTarget],
   );
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const markSidebarThreadNavigation = useSidebarActiveThreadScroll({
+    hasThreadRoute: routeTarget !== null,
+    routeThreadKey,
+  });
   const routeTargetRef = useRef(routeTarget);
   routeTargetRef.current = routeTarget;
   // Post-settle navigation validates against the CURRENT route, not the one
@@ -2195,6 +2348,9 @@ export default function Sidebar() {
       if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {
         continue;
       }
+      if (hiddenEnvironmentIds.has(session.environmentId)) {
+        continue;
+      }
       if (
         scopedProjectKeys !== null &&
         !scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -2209,7 +2365,7 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, projectScopeKey, visibleEnvironmentKey]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2530,6 +2686,13 @@ export default function Sidebar() {
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
+  const navigateToThreadFromSidebar = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      markSidebarThreadNavigation(scopedThreadKey(threadRef));
+      navigateToThread(threadRef);
+    },
+    [markSidebarThreadNavigation, navigateToThread],
+  );
 
   const navigateToDraft = useCallback(
     (draftId: DraftId) => {
@@ -2553,9 +2716,9 @@ export default function Sidebar() {
   const selectThreadSearchResult = useCallback(
     (thread: EnvironmentThreadShell) => {
       clearThreadSearch();
-      navigateToThread(scopeThreadRef(thread.environmentId, thread.id));
+      navigateToThreadFromSidebar(scopeThreadRef(thread.environmentId, thread.id));
     },
-    [clearThreadSearch, navigateToThread],
+    [clearThreadSearch, navigateToThreadFromSidebar],
   );
   const handleThreadSearchKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -2651,9 +2814,15 @@ export default function Sidebar() {
       if (isTrailingDoubleClick(event.detail)) {
         return;
       }
-      navigateToThread(threadRef);
+      navigateToThreadFromSidebar(threadRef);
     },
-    [navigateToThread, rangeSelectTo, toggleThreadSelection],
+    [navigateToThreadFromSidebar, rangeSelectTo, toggleThreadSelection],
+  );
+  const handleMiddleClickArchive = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      void archiveThread(threadRef);
+    },
+    [archiveThread],
   );
 
   // A settle per thread at a time: double clicks and repeated menu picks
@@ -3530,7 +3699,7 @@ export default function Sidebar() {
         if (!targetThread) return false;
         event.preventDefault();
         event.stopPropagation();
-        navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
+        navigateToThreadFromSidebar(scopeThreadRef(targetThread.environmentId, targetThread.id));
         return true;
       };
       const traversalDirection = threadTraversalDirectionFromCommand(command);
@@ -3552,7 +3721,7 @@ export default function Sidebar() {
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
     keybindings,
-    navigateToThread,
+    navigateToThreadFromSidebar,
     orderedThreadKeys,
     routeTerminalOpen,
     routeThreadKey,
@@ -3721,6 +3890,10 @@ export default function Sidebar() {
                   </TooltipPopup>
                 </Tooltip>
               </div>
+              <EnvironmentVisibilityMenu
+                environments={environmentVisibilityOptions}
+                onVisibilityChange={setSidebarEnvironmentVisible}
+              />
             </div>
             {projectGroups.length > 0 ? (
               <div className="flex items-center gap-1">
@@ -4071,8 +4244,9 @@ export default function Sidebar() {
                           EMPTY_PROVIDER_ENTRIES
                         }
                         timestampFormat={timestampFormat}
+                        keybindings={keybindings}
                         onThreadClick={handleThreadClick}
-                        onThreadActivate={navigateToThread}
+                        onThreadActivate={navigateToThreadFromSidebar}
                         onStartRename={startThreadRename}
                         onRenameTitleChange={setRenamingTitle}
                         onCommitRename={commitThreadRename}
@@ -4080,6 +4254,7 @@ export default function Sidebar() {
                         isRenaming={renamingThreadKey === threadKey}
                         renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
                         onContextMenu={handleThreadContextMenu}
+                        onArchive={handleMiddleClickArchive}
                         onSettle={attemptSettle}
                         onUnsettle={attemptUnsettle}
                         onSnooze={attemptSnooze}
@@ -4107,6 +4282,7 @@ export default function Sidebar() {
                       projectFaviconPathByKey={projectFaviconPathByKey}
                       projectIconByKey={projectIconByKey}
                       scopedProjectKeys={scopedProjectKeys}
+                      hiddenEnvironmentIds={hiddenEnvironmentIds}
                       routeDraftId={routeDraftIdForRows}
                       onNavigateToDraft={navigateToDraft}
                     />,
