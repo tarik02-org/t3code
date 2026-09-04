@@ -314,4 +314,18 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
       assert.equal(versionError.argument, "version");
     }),
   );
+
+  // Upstream actualizations carry 0.0.x package versions. Nightly releases
+  // derive their version from these manifests before the next stable release.
+  it.effect("keeps the fork calendar version in the workspace manifests", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const versions = yield* readReleaseVersions(path.resolve(import.meta.dirname, ".."));
+
+      for (const [relativePath, version] of versions) {
+        assert.match(version, /^20\d{2}\.\d{1,2}\.\d+$/, relativePath);
+      }
+      assert.equal(new Set(versions.values()).size, 1);
+    }),
+  );
 });
