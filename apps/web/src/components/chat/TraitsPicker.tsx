@@ -423,7 +423,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
                           ) : null}
                         </span>
                       </span>
-                      {option.description ? (
+                      {option.description && descriptor.id !== "defaultModeRequestUserInput" ? (
                         <span className="max-w-56 text-pretty text-muted-foreground/80 text-xs">
                           {option.description}
                         </span>
@@ -488,6 +488,9 @@ export function buildTraitsTriggerDisplay(input: {
   let fastModeEnabled = false;
   const labels: Array<string> = [];
   for (const descriptor of input.descriptors) {
+    if (descriptor.id === "defaultModeRequestUserInput") {
+      continue;
+    }
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       fastModeEnabled = descriptor.currentValue === true;
       fastModeFallbackLabel = fastModeEnabled ? "Fast" : "Normal";
