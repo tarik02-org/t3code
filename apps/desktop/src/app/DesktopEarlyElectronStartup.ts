@@ -9,6 +9,7 @@ import {
   type LinuxPasswordStoreSwitch,
   type LinuxPasswordStorePreference,
 } from "../linuxSecretStorage.ts";
+import { isCanaryDesktopVersion } from "../updates/updateChannels.ts";
 import {
   resolveDesktopBaseDir,
   resolveDesktopStateDir,
@@ -16,6 +17,7 @@ import {
 } from "./DesktopStatePaths.ts";
 
 interface EarlyDesktopSettingsInput {
+  readonly appVersion: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
@@ -26,18 +28,25 @@ type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
 
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
+  readonly linuxDesktopEntryManaged: boolean;
   readonly linuxWmClass: string;
   readonly linuxDesktopEntryName: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
 
-export const resolveLinuxDesktopEntryName = (isDevelopment: boolean): string =>
-  isDevelopment ? "com.t3tools.T3Code.Development.desktop" : "com.t3tools.T3Code.desktop";
+export const resolveLinuxDesktopEntryName = (isDevelopment: boolean, appVersion: string): string =>
+  isDevelopment
+    ? "com.t3tools.T3Code.Development.desktop"
+    : isCanaryDesktopVersion(appVersion)
+      ? "com.t3tools.T3Code.Canary.desktop"
+      : "com.t3tools.T3Code.desktop";
 
 const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : null;
 };
+
+const isManagedDesktopEntryFlag = Schema.is(Schema.Literal("true"));
 
 const EarlyDesktopSettingsJson = fromLenientJson(
   Schema.Struct({
@@ -49,11 +58,7 @@ const decodeEarlyDesktopSettingsJson = Schema.decodeSync(EarlyDesktopSettingsJso
 const isDevelopmentEnvironment = (env: NodeJS.ProcessEnv): boolean =>
   trimNonEmpty(env.VITE_DEV_SERVER_URL) !== null;
 
-function resolveEarlyDesktopSettingsPath(input: {
-  readonly env: NodeJS.ProcessEnv;
-  readonly homeDirectory: string;
-  readonly joinPath: JoinPath;
-}): string {
+function resolveEarlyDesktopSettingsPath(input: EarlyDesktopSettingsInput): string {
   const t3Home = Option.fromUndefinedOr(input.env.T3CODE_HOME);
   const baseDir = resolveDesktopBaseDir({
     homeDirectory: input.homeDirectory,
@@ -88,8 +93,15 @@ export function resolveEarlyLinuxElectronOptions(
   const isDevelopment = isDevelopmentEnvironment(input.env);
   return {
     isDevelopment,
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
+    linuxDesktopEntryManaged: isManagedDesktopEntryFlag(
+      input.env.T3CODE_LINUX_DESKTOP_ENTRY_MANAGED,
+    ),
+    linuxWmClass: isDevelopment
+      ? "t3code-dev"
+      : isCanaryDesktopVersion(input.appVersion)
+        ? "t3code-canary"
+        : "t3code",
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, input.appVersion),
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,
