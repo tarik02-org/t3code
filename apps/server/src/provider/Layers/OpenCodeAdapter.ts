@@ -35,6 +35,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { mergeProviderSessionEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -2795,6 +2796,10 @@ export function makeOpenCodeAdapter(
         }
 
         const started = yield* Effect.gen(function* () {
+          const sessionEnvironment = mergeProviderSessionEnvironment(
+            options?.environment,
+            input.env,
+          );
           const sessionScope = yield* Scope.make();
           const startedExit = yield* Effect.exit(
             Effect.gen(function* () {
@@ -2806,7 +2811,7 @@ export function makeOpenCodeAdapter(
                 directory,
                 serverUrl,
                 ...(serverPassword ? { serverPassword } : {}),
-                ...(options?.environment ? { environment: options.environment } : {}),
+                environment: sessionEnvironment,
               });
               const client = openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,

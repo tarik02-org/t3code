@@ -205,6 +205,9 @@ available.
   - No automatic download or install.
   - The desktop UI shows a rocket update button when an update is available; click once to download, click again after download to restart/install.
 - Provider: GitHub Releases (`provider: github`) configured at build time.
+- Installation:
+  - Linux AppImage and Windows NSIS builds use `electron-updater`'s standard installer.
+  - macOS uses `MacUpdater` for checks, architecture selection, download, and SHA-512 verification. A detached helper extracts the ZIP, clears quarantine, replaces the installed app bundle, and restores the previous bundle if replacement or relaunch fails. Protected install locations request administrator privileges.
 - Repository slug source:
   - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
   - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
