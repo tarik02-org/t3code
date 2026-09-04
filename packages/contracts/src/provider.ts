@@ -32,6 +32,14 @@ const ProviderSessionStatus = Schema.Literals([
   "closed",
 ]);
 
+const ProviderEnvKey = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/)).check(
+  Schema.isMaxLength(128),
+);
+const ProviderEnvValue = Schema.String.check(Schema.isMaxLength(8_192));
+export const ProviderEnv = Schema.Record(ProviderEnvKey, ProviderEnvValue).check(
+  Schema.isMaxProperties(256),
+);
+
 export const ProviderSession = Schema.Struct({
   provider: ProviderDriverKind,
   // Optional during the driver/instance migration. Once every producer
@@ -60,6 +68,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  env: Schema.optional(ProviderEnv),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
