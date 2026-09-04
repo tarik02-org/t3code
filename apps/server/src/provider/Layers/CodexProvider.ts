@@ -199,18 +199,15 @@ export function mapCodexModelCapabilities(
       {
         id: "unset",
         label: "Unset",
-        description: "Use the configured Codex default.",
         isDefault: true,
       },
       {
         id: "allow",
         label: "Allow",
-        description: "Allow request_user_input in Default mode.",
       },
       {
         id: "reject",
         label: "Reject",
-        description: "Restrict request_user_input to Plan mode.",
       },
     ],
     currentValue: "unset",
