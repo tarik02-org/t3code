@@ -59,16 +59,15 @@ to the rolling `desktop-preview` prerelease, and works for fork PRs. The label i
 for the commit it is applied to: the trusted workflow removes it once the build is in hand, and later
 pushes do not build until a maintainer applies it again. Every signed preview is therefore a
 per-commit maintainer decision, which matters because the result carries the Developer ID signature.
-Vouching a contributor lets their labeled commits be signed; it is not a standing grant. The build is
-split so the Developer ID certificate never shares a job with PR code:
+Only collaborators' and bots' labeled commits can be signed; `.github/VOUCHED.td` does not grant
+this. The build is split so the Developer ID certificate never shares a job with PR code:
 
 - `.github/workflows/desktop-macos-preview.yml` runs on `pull_request` with no secrets and builds
   only the JS bundle from the PR (the same `js-bundle` artifact `release.yml` produces).
 - `.github/workflows/desktop-macos-preview-publish.yml` runs on `workflow_run` from `main`. It
   refuses unless the PR is open, still labeled, its head is the built commit, and the author is a
-  bot, a collaborator, or listed in `.github/VOUCHED.td` (read from the default branch, so a PR cannot vouch
-  for itself). It then packages and signs the bundle through `release-desktop.yml` checked out at
-  `main`, so packaging, native helpers, and the Electron/desktop dependencies come from `main`, not
+  bot or a collaborator. It then packages and signs the bundle through `release-desktop.yml` checked
+  out at `main`, so packaging, native helpers, and the Electron/desktop dependencies come from `main`, not
   the PR. Only the version and the public T3 Connect identifiers in `.env.example` are read from the
   PR commit, as data, so the signed app's passkey entitlement matches the bundle. A PR that changes
   packaging must use the `channel=preview` release train above instead.
