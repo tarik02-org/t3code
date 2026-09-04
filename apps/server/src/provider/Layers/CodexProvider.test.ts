@@ -87,6 +87,28 @@ it("maps current Codex model capability fields", () => {
       ],
       currentValue: "258k",
     },
+    {
+      id: "defaultModeRequestUserInput",
+      label: "Default Mode Questions",
+      description: "Control whether Codex can ask questions while working in Default mode.",
+      type: "select",
+      options: [
+        {
+          id: "unset",
+          label: "Unset",
+          isDefault: true,
+        },
+        {
+          id: "allow",
+          label: "Allow",
+        },
+        {
+          id: "reject",
+          label: "Reject",
+        },
+      ],
+      currentValue: "unset",
+    },
   ]);
 });
 
@@ -125,6 +147,28 @@ it("uses standard routing when the catalog has no default service tier", () => {
         },
       ],
       currentValue: "default",
+    },
+    {
+      id: "defaultModeRequestUserInput",
+      label: "Default Mode Questions",
+      description: "Control whether Codex can ask questions while working in Default mode.",
+      type: "select",
+      options: [
+        {
+          id: "unset",
+          label: "Unset",
+          isDefault: true,
+        },
+        {
+          id: "allow",
+          label: "Allow",
+        },
+        {
+          id: "reject",
+          label: "Reject",
+        },
+      ],
+      currentValue: "unset",
     },
   ]);
 });

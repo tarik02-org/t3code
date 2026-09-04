@@ -41,6 +41,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import {
+  getCodexDefaultModeRequestUserInputConfigValue,
   getCodexServiceTierOptionValue,
   supportsCodexLongContext,
 } from "../../codexModelOptions.ts";
@@ -1732,6 +1733,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
+        const defaultModeRequestUserInput =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? getCodexDefaultModeRequestUserInputConfigValue(input.modelSelection)
+            : undefined;
         const useLongContext =
           input.modelSelection?.instanceId === boundInstanceId &&
           supportsCodexLongContext(input.modelSelection.model) &&
@@ -1768,6 +1773,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          ...(defaultModeRequestUserInput !== undefined ? { defaultModeRequestUserInput } : {}),
           ...(mcpSession
             ? {
                 environment: {
