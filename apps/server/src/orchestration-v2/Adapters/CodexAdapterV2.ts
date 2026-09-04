@@ -93,7 +93,11 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  getCodexDefaultModeRequestUserInputConfigValue,
+  getCodexServiceTierOptionValue,
+  supportsCodexLongContext,
+} from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import {
@@ -1295,6 +1299,7 @@ export interface CodexAppServerClientFactoryShape {
     readonly providerSessionId: OrchestrationV2ProviderSession["id"];
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly settings: CodexSettings;
+    readonly modelSelection?: ModelSelection;
     readonly environment: NodeJS.ProcessEnv;
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
@@ -1330,7 +1335,7 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 
 export function codexThreadRuntimeParams(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
-  readonly modelSelection?: { readonly model: string };
+  readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
   readonly cwd?: string;
@@ -1338,11 +1343,17 @@ export function codexThreadRuntimeParams(input: {
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const defaultModeRequestUserInput = getCodexDefaultModeRequestUserInputConfigValue(
+    input.modelSelection,
+  );
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...(defaultModeRequestUserInput === undefined
+        ? {}
+        : { "features.default_mode_request_user_input": defaultModeRequestUserInput }),
       ...(mcpSession === undefined
         ? {}
         : {
@@ -1548,9 +1559,19 @@ export const layerAppServerClientFactory: Layer.Layer<
           };
           const command = yield* makeCodexAppServerSpawnCommand({
             command: input.settings.binaryPath || "codex",
-            args: codexAppServerArgs(
-              resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-            ),
+            args: [
+              ...codexAppServerArgs(resolveCodexLaunchArgs(input.settings.launchArgs, input.environment)),
+              ...(input.modelSelection !== undefined &&
+              supportsCodexLongContext(input.modelSelection.model) &&
+              getModelSelectionStringOptionValue(input.modelSelection, "contextWindow") === "1m"
+                ? [
+                    "-c",
+                    "model_context_window=1000000",
+                    "-c",
+                    "model_auto_compact_token_limit=900000",
+                  ]
+                : []),
+            ],
             env: environment,
             threadId: input.threadId,
           }).pipe(Effect.provideService(AgentScope, agentScope));
@@ -1725,7 +1746,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
-    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    planSelectionTransition: ({ current, target }) =>
+      Effect.succeed(
+        (getModelSelectionStringOptionValue(current, "contextWindow") ?? "258k") !==
+          (getModelSelectionStringOptionValue(target, "contextWindow") ?? "258k") ||
+          getCodexDefaultModeRequestUserInputConfigValue(current) !==
+            getCodexDefaultModeRequestUserInputConfigValue(target)
+          ? { type: "restart_session" as const }
+          : turnScopedSelectionTransition(),
+      ),
     openSession: (input) =>
       Effect.gen(function* () {
         const scope = yield* Scope.Scope;
@@ -1747,6 +1776,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
+          modelSelection: input.modelSelection,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
         });
