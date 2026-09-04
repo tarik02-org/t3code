@@ -198,10 +198,7 @@ export function useProgressiveTimelineHistory({
   }, [historyTargetMessageId, onHistoryTargetReady, onManualNavigation, scheduleMinimapUpdate]);
 
   const handleScroll = useCallback(() => {
-    const localIsAtEnd = resolveTimelineIsAtEnd(
-      listRef.current?.getState(),
-      contentInsetEndAdjustment,
-    );
+    const localIsAtEnd = resolveTimelineIsAtEnd(listRef.current?.getState());
     if (localIsAtEnd !== undefined) {
       onIsAtEndChange(
         messageHistory === undefined ? localIsAtEnd : localIsAtEnd && !messageHistory.hasMoreAfter,

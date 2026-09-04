@@ -22,6 +22,7 @@ import {
   fetchSshEnvironmentDescriptor,
   fetchSshSessionState,
   issueSshWebSocketTicket,
+  resolveSshHost,
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
 import {
@@ -70,6 +71,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(clearConnectionCatalog);
 
   yield* ipc.handle(discoverSshHosts);
+  yield* ipc.handle(resolveSshHost);
   yield* ipc.handle(ensureSshEnvironment);
   yield* ipc.handle(disconnectSshEnvironment);
   yield* ipc.handle(fetchSshEnvironmentDescriptor);
@@ -103,4 +105,6 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }
+  yield* ipc.handle(PreviewIpc.listBrowserImportSources);
+  yield* ipc.handle(PreviewIpc.importBrowserCookies);
 });

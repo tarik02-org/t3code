@@ -53,6 +53,10 @@ jobs:
       - name: Typecheck
         run: vpr typecheck
 
+      - name: Install browser secret helper build libraries
+        if: github.event_name == 'pull_request'
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
       # Release Build Jobs performs this exact build on branch pushes. PRs still
       # exercise it here so broken build inputs never reach main.
       - name: Build desktop pipeline
@@ -113,6 +117,10 @@ jobs:
       - name: Ensure Electron runtime is installed
         if: matrix.shard == 'desktop'
         run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install browser secret helper build libraries
+        if: matrix.shard == 'desktop'
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
       - name: Test ${{ matrix.shard }}
         env:
