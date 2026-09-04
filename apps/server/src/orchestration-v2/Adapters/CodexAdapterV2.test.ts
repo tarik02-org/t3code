@@ -662,7 +662,11 @@ describe("CodexAdapterV2 process spawning", () => {
       assert.deepEqual(
         CodexAdapterV2.codexThreadRuntimeParams({
           threadId,
-          modelSelection: { model: "gpt-5.4" },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+            options: [{ id: "defaultModeRequestUserInput", value: "allow" }],
+          },
           runtimePolicy: {
             runtimeMode: "full-access",
             interactionMode: "default",
@@ -674,6 +678,7 @@ describe("CodexAdapterV2 process spawning", () => {
           model: "gpt-5.4",
           config: {
             "tools.update_plan.enabled": true,
+            "features.default_mode_request_user_input": true,
             mcp_servers: {
               "t3-code": {
                 url: "http://127.0.0.1:43123/mcp",
@@ -761,7 +766,7 @@ describe("CodexAdapterV2 process spawning", () => {
           ProviderEventLoggers.NoOpProviderEventLoggers,
         ),
       );
-      const open = (environment: NodeJS.ProcessEnv) =>
+      const open = (environment: NodeJS.ProcessEnv, modelSelection?: ModelSelection) =>
         factory
           .open({
             instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
@@ -777,15 +782,34 @@ describe("CodexAdapterV2 process spawning", () => {
               launchArgs: " --strict-config -c model_reasoning_summary=detailed ",
             },
             environment,
+            ...(modelSelection === undefined ? {} : { modelSelection }),
           })
           .pipe(Effect.scoped, Effect.exit);
 
       yield* open({});
       yield* open({ T3CODE_CODEX_LAUNCH_ARGS: " --enable env-feature " });
+      yield* open(
+        {},
+        {
+          instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          model: "gpt-6-astra",
+          options: [{ id: "contextWindow", value: "1m" }],
+        },
+      );
 
       assert.deepEqual(spawnedArgs, [
         ["app-server", "--strict-config", "-c", "model_reasoning_summary=detailed"],
         ["app-server", "--enable", "env-feature"],
+        [
+          "app-server",
+          "--strict-config",
+          "-c",
+          "model_reasoning_summary=detailed",
+          "-c",
+          "model_context_window=1000000",
+          "-c",
+          "model_auto_compact_token_limit=900000",
+        ],
       ]);
     }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
