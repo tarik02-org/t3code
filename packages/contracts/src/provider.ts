@@ -21,6 +21,7 @@ import {
   ProviderUserInputAnswers,
   UserInputAttachments,
   RuntimeMode,
+  ThreadGoalRequest,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
@@ -114,6 +115,12 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
   attachmentsByQuestionId: Schema.optional(UserInputAttachments),
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
+
+export const ProviderGoalRequestInput = Schema.Struct({
+  threadId: ThreadId,
+  request: ThreadGoalRequest,
+});
+export type ProviderGoalRequestInput = typeof ProviderGoalRequestInput.Type;
 
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
