@@ -132,23 +132,16 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   );
 }
 
-// A refresh reads each persisted summary source, so skip activities that cannot change the result.
-function shouldRefreshThreadShellSummary(event: OrchestrationEvent): boolean {
-  if (event.type !== "thread.activity-appended") {
-    return true;
+function isStalePendingUserInputFailureDetail(detail: string | null): boolean {
+  if (detail === null) {
+    return false;
   }
-
-  switch (event.payload.activity.kind) {
-    case "approval.requested":
-    case "approval.resolved":
-    case "provider.approval.respond.failed":
-    case "user-input.requested":
-    case "user-input.resolved":
-    case "provider.user-input.respond.failed":
-      return true;
-    default:
-      return false;
-  }
+  return (
+    detail.includes("stale pending user-input request") ||
+    detail.includes("unknown pending user-input request") ||
+    detail.includes("unknown pending user input request") ||
+    detail.includes("unknown pending codex user input request")
+  );
 }
 
 function derivePendingUserInputCountFromActivities(
@@ -184,11 +177,7 @@ function derivePendingUserInputCountFromActivities(
 
     if (
       activity.kind === "provider.user-input.respond.failed" &&
-      detail !== null &&
-      (detail.includes("stale pending user-input request") ||
-        detail.includes("unknown pending user-input request") ||
-        detail.includes("unknown pending user input request") ||
-        detail.includes("unknown pending codex user input request"))
+      isStalePendingUserInputFailureDetail(detail)
     ) {
       openRequestIds.delete(requestId);
     }
@@ -929,13 +918,76 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+
+          let latestUserMessageAt = existingRow.value.latestUserMessageAt;
+          let pendingApprovalCount = existingRow.value.pendingApprovalCount;
+          let pendingUserInputCount = existingRow.value.pendingUserInputCount;
+          let hasActionableProposedPlan = existingRow.value.hasActionableProposedPlan;
+
+          switch (event.type) {
+            case "thread.proposed-plan-upserted": {
+              const proposedPlans = yield* projectionThreadProposedPlanRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              });
+              hasActionableProposedPlan = deriveHasActionableProposedPlan({
+                latestTurnId: existingRow.value.latestTurnId,
+                proposedPlans,
+              })
+                ? 1
+                : 0;
+              break;
+            }
+
+            case "thread.activity-appended": {
+              if (
+                event.payload.activity.kind === "approval.requested" ||
+                event.payload.activity.kind === "approval.resolved" ||
+                event.payload.activity.kind === "provider.approval.respond.failed"
+              ) {
+                const pendingApprovals = yield* projectionPendingApprovalRepository.listByThreadId({
+                  threadId: event.payload.threadId,
+                });
+                pendingApprovalCount = pendingApprovals.filter(
+                  (approval) => approval.status === "pending",
+                ).length;
+              }
+
+              if (
+                event.payload.activity.kind === "user-input.requested" ||
+                event.payload.activity.kind === "user-input.resolved" ||
+                event.payload.activity.kind === "provider.user-input.respond.failed"
+              ) {
+                const activities =
+                  yield* projectionThreadActivityRepository.listUserInputLifecycleByThreadId({
+                    threadId: event.payload.threadId,
+                  });
+                pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
+              }
+              break;
+            }
+
+            case "thread.approval-response-requested": {
+              const pendingApprovals = yield* projectionPendingApprovalRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              });
+              pendingApprovalCount = pendingApprovals.filter(
+                (approval) => approval.status === "pending",
+              ).length;
+              break;
+            }
+
+            case "thread.user-input-response-requested":
+              break;
+          }
+
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             updatedAt: event.occurredAt,
+            latestUserMessageAt,
+            pendingApprovalCount,
+            pendingUserInputCount,
+            hasActionableProposedPlan,
           });
-          if (shouldRefreshThreadShellSummary(event)) {
-            yield* refreshThreadShellSummary(event.payload.threadId);
-          }
           return;
         }
 

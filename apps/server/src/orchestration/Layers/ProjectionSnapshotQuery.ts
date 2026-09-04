@@ -644,7 +644,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           tone,
           kind,
           summary,
-          payload_json AS "payload",
+          CASE
+            WHEN json_extract(payload_json, '$.itemType') = 'command_execution'
+              THEN json_remove(payload_json, '$.data.item.aggregatedOutput')
+            ELSE payload_json
+          END AS "payload",
           sequence,
           created_at AS "createdAt"
         FROM projection_thread_activities
