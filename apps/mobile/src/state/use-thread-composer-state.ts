@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import * as Cause from "effect/Cause";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert } from "react-native";
 
@@ -15,8 +16,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import {
-  codexFeedbackMessage,
   parseCodexGoalCommand,
   parseCodexFeedbackCommand,
   submitCodexFeedback,

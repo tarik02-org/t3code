@@ -895,10 +895,18 @@ export const make = Effect.gen(function* () {
   const dispatchRendererEvent = Effect.fn("desktop.window.dispatchRendererEvent")(function* (
     channel: string,
     payload: unknown,
-    { reveal = true }: { readonly reveal?: boolean } = {},
+    {
+      reveal = true,
+      allowBeforeBackendReady = false,
+    }: { readonly reveal?: boolean; readonly allowBeforeBackendReady?: boolean } = {},
   ) {
     const existingWindow = yield* reveal ? focusedMainWindow : electronWindow.main;
-    if (Option.isNone(existingWindow) && (!reveal || !(yield* Ref.get(backendReadyRef)))) return;
+    if (
+      Option.isNone(existingWindow) &&
+      (!reveal || (!allowBeforeBackendReady && !(yield* Ref.get(backendReadyRef))))
+    ) {
+      return;
+    }
     const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* ensureMain;
     if (targetWindow.isDestroyed()) return;
     const send = Effect.sync(() => {
@@ -932,6 +940,11 @@ export const make = Effect.gen(function* () {
         yield* electronWindow.reveal(existingWindow.value);
         return;
       }
+      const settings = yield* desktopSettings.get;
+      if (!settings.localBackendEnabled) {
+        yield* createMain;
+        return;
+      }
       // No real main window yet. While the backend is still cold-booting,
       // re-reveal the connecting splash so taskbar/dock activation brings it
       // back instead of doing nothing. Once the backend is ready we fall
@@ -962,7 +975,18 @@ export const make = Effect.gen(function* () {
     ),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action, options) {
       yield* Effect.annotateCurrentSpan({ action });
-      yield* dispatchRendererEvent(MENU_ACTION_CHANNEL, action, options);
+      const existingWindow = yield* focusedMainWindow;
+      if (Option.isNone(existingWindow)) {
+        const backendReady = yield* Ref.get(backendReadyRef);
+        const settings = yield* desktopSettings.get;
+        if (!backendReady && settings.localBackendEnabled) {
+          return;
+        }
+      }
+      yield* dispatchRendererEvent(MENU_ACTION_CHANNEL, action, {
+        ...options,
+        allowBeforeBackendReady: true,
+      });
     }),
     dispatchSnapShotEvent: Effect.fn("desktop.window.dispatchSnapShotEvent")(function* (event) {
       yield* Effect.annotateCurrentSpan({
