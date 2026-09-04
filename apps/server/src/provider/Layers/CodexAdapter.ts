@@ -66,6 +66,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
+  CodexSessionRuntimeGoalUnsupportedError,
   CodexSessionRuntimeThreadIdMissingError,
   describeMcpElicitation,
   makeCodexSessionRuntime,
@@ -1581,6 +1582,38 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "thread/goal/updated") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadGoalUpdatedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "thread.goal.updated",
+        payload: {
+          objective: payload.goal.objective,
+          status: payload.goal.status,
+          tokensUsed: payload.goal.tokensUsed,
+          tokenBudget: payload.goal.tokenBudget ?? null,
+          timeUsedSeconds: payload.goal.timeUsedSeconds,
+          createdAtEpochMsOrSeconds: payload.goal.createdAt,
+          updatedAtEpochMsOrSeconds: payload.goal.updatedAt,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/goal/cleared") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "thread.goal.cleared",
+        payload: {},
+      },
+    ];
+  }
+
   if (event.method === "turn/started") {
     const turnId = event.turnId;
     if (!turnId) {
@@ -2587,6 +2620,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const sendGoalRequest: NonNullable<CodexAdapterShape["sendGoalRequest"]> = (threadId, request) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => {
+        if (!session.runtime.sendGoalRequest) {
+          return Effect.fail(new CodexSessionRuntimeGoalUnsupportedError());
+        }
+        return session.runtime.sendGoalRequest(request);
+      }),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/goal", cause),
+      ),
+    );
+
   const compactThread = Effect.fn("compactThread")(function* (threadId: ThreadId) {
     const session = yield* requireSession(threadId);
     yield* session.runtime.compactThread.pipe(
@@ -2741,6 +2789,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     sendTurn,
     compaction: { type: "native", start: compactThread },
     interruptTurn,
+    sendGoalRequest,
     readThread,
     rollbackThread,
     uploadFeedback,
