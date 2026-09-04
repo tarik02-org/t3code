@@ -1,0 +1,19 @@
+name: Stable Release Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Package stable release
+    if: contains(github.event.head_commit.message, 'prepare stable release ')
+    uses: ./.github/workflows/release-build.yml
+    with:
+      channel: stable
+      release_ref: ${{ github.sha }}
