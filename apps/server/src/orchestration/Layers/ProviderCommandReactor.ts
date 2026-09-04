@@ -16,6 +16,7 @@ import {
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -65,6 +66,7 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { getCodexDefaultModeRequestUserInputConfigValue } from "../../codexModelOptions.ts";
 const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -120,6 +122,7 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+const PROVIDER_INTERRUPT_TIMEOUT = Duration.seconds(10);
 
 function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -772,6 +775,16 @@ const make = Effect.gen(function* () {
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
       const previousModelSelection = threadModelSelections.get(threadId);
+      const codexSessionConfigChanged =
+        preferredProvider === "codex" &&
+        requestedModelSelection !== undefined &&
+        (previousModelSelection === undefined ||
+          (getModelSelectionStringOptionValue(previousModelSelection, "contextWindow") ??
+            "258k") !==
+            (getModelSelectionStringOptionValue(requestedModelSelection, "contextWindow") ??
+              "258k") ||
+          getCodexDefaultModeRequestUserInputConfigValue(previousModelSelection) !==
+            getCodexDefaultModeRequestUserInputConfigValue(requestedModelSelection));
       const shouldRestartForModelSelectionChange =
         preferredProvider === "claudeAgent" &&
         requestedModelSelection !== undefined &&
@@ -782,6 +795,7 @@ const make = Effect.gen(function* () {
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
+        !codexSessionConfigChanged &&
         !shouldRestartForModelSelectionChange
       ) {
         yield* refreshWorkspaceSnapshot;
@@ -807,6 +821,7 @@ const make = Effect.gen(function* () {
         modelChanged,
         instanceChanged,
         shouldRestartForModelChange,
+        codexSessionConfigChanged,
         shouldRestartForModelSelectionChange,
         hasResumeCursor: resumeCursor !== undefined,
       });
@@ -1611,7 +1626,7 @@ const make = Effect.gen(function* () {
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService
       .interruptTurn({ threadId: event.payload.threadId })
-      .pipe(Effect.catchCause(recoverInterruptFailure));
+      .pipe(Effect.timeout(PROVIDER_INTERRUPT_TIMEOUT), Effect.catchCause(recoverInterruptFailure));
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
