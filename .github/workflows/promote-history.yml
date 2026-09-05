@@ -12,7 +12,7 @@ jobs:
   promote:
     if: >-
       github.event.issue.pull_request != null &&
-      github.event.comment.body == '/promote' &&
+      startsWith(github.event.comment.body, '/promote') &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -29,9 +29,14 @@ jobs:
         name: Resolve promotion request
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
+          if [[ "$(printf '%s' "$COMMENT_BODY" | tr -d '[:space:]')" != '/promote' ]]; then
+            echo 'Promotion command must be /promote.' >&2
+            exit 1
+          fi
           pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
           if [[ "$(jq -r .draft <<<"$pr_json")" != true ]]; then
             echo 'Promotion PR must remain a draft.' >&2
