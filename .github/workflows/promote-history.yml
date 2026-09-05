@@ -128,18 +128,20 @@ jobs:
       - name: Verify required PR checks
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
-          checks="$(gh pr checks "$PR_NUMBER" --json name,workflow,bucket,startedAt)"
+          checks="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100")"
           latest_checks="$(
             jq '
-              sort_by(.workflow, .name, .startedAt)
-              | group_by([.workflow, .name])
-              | map(max_by(.startedAt))
+              [.[].check_runs[]]
+              | sort_by(.name, .started_at)
+              | group_by(.name)
+              | map(max_by(.started_at))
             ' <<<"$checks"
           )"
-          if ! jq -e 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<<"$latest_checks" >/dev/null; then
+          if ! jq -e 'length > 0 and all(.[]; .status == "completed" and (.conclusion == "success" or .conclusion == "skipped"))' <<<"$latest_checks" >/dev/null; then
             echo 'All PR checks must be complete and successful before promotion.' >&2
             jq . <<<"$latest_checks" >&2
             exit 1
@@ -147,6 +149,7 @@ jobs:
 
       - name: Verify candidate history
         env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: node scripts/validate-fork-history.ts --ref HEAD --upstream-ref "refs/remotes/origin/$BASE_REF"
 
       - name: Verify validated main for release promotion
