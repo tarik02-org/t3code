@@ -76,6 +76,15 @@ jobs:
       - name: Fetch upstream main
         run: git fetch --no-tags https://github.com/pingdotgg/t3code.git main:refs/remotes/upstream/main
 
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
       - name: Verify main has not moved
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
