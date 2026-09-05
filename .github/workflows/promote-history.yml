@@ -57,11 +57,15 @@ jobs:
           fi
           base_ref="$(jq -r .base.ref <<<"$pr_json")"
           if [[ "$kind" == actualization ]]; then
-            if [[ ! "$base_ref" =~ ^upstream/main-[0-9a-f]{40}$ ]]; then
-              echo 'Actualization PR must target an immutable upstream/main snapshot.' >&2
+            if [[ "$base_ref" != upstream/main ]]; then
+              echo 'Actualization PR must target upstream/main.' >&2
               exit 1
             fi
-            expected_main_sha="${base_ref#upstream/main-}"
+            expected_main_sha="$(jq -r '.body // ""' <<<"$pr_json" | grep -oE '<!-- actualization-main-sha: [0-9a-f]{40} -->' | sed -E 's/.*: ([0-9a-f]{40}) -->/\1/' | head -n1 || true)"
+            if [[ ! "$expected_main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo 'Actualization PR is missing its main history marker.' >&2
+              exit 1
+            fi
           else
             if [[ "$base_ref" != main ]]; then
               echo 'Release PR must target main.' >&2
@@ -103,6 +107,8 @@ jobs:
       - name: Verify main has not moved
         env:
           EXPECTED_MAIN_SHA: ${{ steps.pr.outputs.expected_main_sha }}
+          KIND: ${{ steps.pr.outputs.kind }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         run: |
           set -euo pipefail
           git fetch origin main
@@ -110,6 +116,13 @@ jobs:
           if [[ "$current_main" != "$EXPECTED_MAIN_SHA" ]]; then
             echo "main moved from $EXPECTED_MAIN_SHA to $current_main; refresh the PR before promoting" >&2
             exit 1
+          fi
+          if [[ "$KIND" == actualization ]]; then
+            current_upstream="$(git rev-parse refs/remotes/origin/upstream/main)"
+            if [[ "$current_upstream" != "$BASE_SHA" ]]; then
+              echo "upstream/main moved from $BASE_SHA to $current_upstream; refresh the PR before promoting" >&2
+              exit 1
+            fi
           fi
 
       - name: Verify required PR checks
@@ -134,7 +147,6 @@ jobs:
 
       - name: Verify candidate history
         env:
-          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: node scripts/validate-fork-history.ts --ref HEAD --upstream-ref "refs/remotes/origin/$BASE_REF"
 
       - name: Verify validated main for release promotion
@@ -191,6 +203,3 @@ jobs:
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f state=closed >/dev/null
           fi
           gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$HEAD_REF" >/dev/null || true
-          if [[ "$KIND" == actualization ]]; then
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BASE_REF" >/dev/null || true
-          fi
