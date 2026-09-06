@@ -20,6 +20,7 @@ import {
   ProviderSandboxMode,
   ProviderUserInputAnswers,
   RuntimeMode,
+  ThreadGoalRequest,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
@@ -30,6 +31,14 @@ const ProviderSessionStatus = Schema.Literals([
   "error",
   "closed",
 ]);
+
+const ProviderEnvKey = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/)).check(
+  Schema.isMaxLength(128),
+);
+const ProviderEnvValue = Schema.String.check(Schema.isMaxLength(8_192));
+export const ProviderEnv = Schema.Record(ProviderEnvKey, ProviderEnvValue).check(
+  Schema.isMaxProperties(256),
+);
 
 export const ProviderSession = Schema.Struct({
   provider: ProviderDriverKind,
@@ -59,6 +68,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  env: Schema.optional(ProviderEnv),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
@@ -112,6 +122,12 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
   answers: ProviderUserInputAnswers,
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
+
+export const ProviderGoalRequestInput = Schema.Struct({
+  threadId: ThreadId,
+  request: ThreadGoalRequest,
+});
+export type ProviderGoalRequestInput = typeof ProviderGoalRequestInput.Type;
 
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,

@@ -25,6 +25,7 @@ const clientSettings: ClientSettings = {
   confirmQuit: "double-click",
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  contextMenuStyle: "default",
   confirmThreadUnpin: false,
   contextWindowMeterEnabled: false,
   composerCollapseOnBlur: false,
@@ -58,6 +59,8 @@ const clientSettings: ClientSettings = {
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
   legacySidebarEnabled: false,
+  loadBalancingEnabled: false,
+  loadBalancingWeights: { "environment-1": 75, "environment-2": 0 },
   timestampFormat: "24-hour",
   wordWrap: true,
 };

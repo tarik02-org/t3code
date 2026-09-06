@@ -12,7 +12,7 @@ export interface VersionMismatch {
   readonly hint: string;
 }
 
-export const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "t3code:version-mismatch-dismissals:v1";
+const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "t3code:version-mismatch-dismissals:v1";
 
 // Runtime failures retain their identity until the next attempt. Dismiss only
 // that attempt, across chat remounts, without clearing the error in Settings.
@@ -63,14 +63,15 @@ export function resolveVersionMismatch(
 
   const clientCore = versionCore(normalizedClientVersion);
   const serverCore = versionCore(normalizedServerVersion);
-  const compareNightlyBuilds =
-    parseSemver(normalizedClientVersion)?.prerelease[0] === "nightly" &&
-    parseSemver(normalizedServerVersion)?.prerelease[0] === "nightly";
+  const clientChannel = parseSemver(normalizedClientVersion)?.prerelease[0];
+  const serverChannel = parseSemver(normalizedServerVersion)?.prerelease[0];
+  const comparePrereleaseBuilds =
+    (clientChannel === "nightly" || clientChannel === "canary") && clientChannel === serverChannel;
   const serverIsBehind =
     parseSemver(clientCore) && parseSemver(serverCore)
       ? compareSemverVersions(
-          compareNightlyBuilds ? normalizedServerVersion : serverCore,
-          compareNightlyBuilds ? normalizedClientVersion : clientCore,
+          comparePrereleaseBuilds ? normalizedServerVersion : serverCore,
+          comparePrereleaseBuilds ? normalizedClientVersion : clientCore,
         ) < 0
       : normalizedServerVersion !== normalizedClientVersion;
   if (!serverIsBehind) {

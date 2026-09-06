@@ -103,6 +103,10 @@
       "types": "./src/projectScripts.ts",
       "import": "./src/projectScripts.ts"
     },
+    "./projectLaunchEnv": {
+      "types": "./src/projectLaunchEnv.ts",
+      "import": "./src/projectLaunchEnv.ts"
+    },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"
@@ -210,6 +214,10 @@
     "./filePreview": {
       "types": "./src/filePreview.ts",
       "import": "./src/filePreview.ts"
+    },
+    "./imageDimensions": {
+      "types": "./src/imageDimensions.ts",
+      "import": "./src/imageDimensions.ts"
     },
     "./video": {
       "types": "./src/video.ts",

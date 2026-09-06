@@ -42,6 +42,7 @@ export type UnsnoozeThreadInput = CommandInput<"thread.unsnooze">;
 export type PinThreadInput = CommandInput<"thread.pin">;
 export type UnpinThreadInput = CommandInput<"thread.unpin">;
 export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
+export type ReorderActiveThreadInput = CommandInput<"thread.active.reorder">;
 export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
@@ -51,6 +52,7 @@ export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
+export type RequestThreadGoalInput = CommandInput<"thread.goal.request">;
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
 type CommandEffect = Effect.Effect<
@@ -230,6 +232,16 @@ export const reorderPinnedThread: (input: ReorderPinnedThreadInput) => CommandEf
   });
 });
 
+export const reorderActiveThread: (input: ReorderActiveThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.reorderActiveThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.active.reorder",
+    commandId: yield* commandId(input),
+  });
+});
+
 export const updateThreadMetadata: (input: UpdateThreadMetadataInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.updateThreadMetadata",
 )(function* (input) {
@@ -327,6 +339,18 @@ export const stopThreadSession: (input: StopThreadSessionInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.session.stop",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const requestThreadGoal: (input: RequestThreadGoalInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.requestThreadGoal",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.goal.request",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

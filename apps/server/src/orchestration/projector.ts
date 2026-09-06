@@ -5,6 +5,8 @@ import {
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
+  ThreadGoalClearedPayload,
+  ThreadGoalUpdatedPayload,
 } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
 import * as Effect from "effect/Effect";
@@ -336,6 +338,7 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            branchPullRequest: null,
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -343,6 +346,7 @@ export function projectEvent(
             settledOverride: null,
             settledAt: null,
             unsettledAt: null,
+            activeOrderKey: null,
             snoozedUntil: null,
             snoozedAt: null,
             deletedAt: null,
@@ -405,6 +409,7 @@ export function projectEvent(
             settledOverride: "settled",
             settledAt: payload.settledAt,
             unsettledAt: null,
+            activeOrderKey: null,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -499,6 +504,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             ...(payload.title !== undefined ? { title: payload.title } : {}),
+            ...(payload.activeOrderKey !== undefined
+              ? { activeOrderKey: payload.activeOrderKey }
+              : {}),
             ...(payload.titleRegeneration !== undefined
               ? { titleRegeneration: payload.titleRegeneration }
               : {}),
@@ -509,6 +517,9 @@ export function projectEvent(
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
             ...(payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: payload.linkedPullRequest }
+              : {}),
+            ...(payload.branchPullRequest !== undefined
+              ? { branchPullRequest: payload.branchPullRequest }
               : {}),
             updatedAt: payload.updatedAt,
           }),
@@ -665,6 +676,28 @@ export function projectEvent(
           }),
         };
       });
+
+    case "thread.goal-updated":
+      return decodeForEvent(ThreadGoalUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            goal: payload.goal,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.goal-cleared":
+      return decodeForEvent(ThreadGoalClearedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            goal: null,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
 
     case "thread.proposed-plan-upserted":
       return Effect.gen(function* () {

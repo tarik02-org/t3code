@@ -80,7 +80,7 @@ export function remoteStateKey(target: DesktopSshEnvironmentTarget): string {
     .slice(0, 16);
 }
 
-export function buildSshHostSpec(target: DesktopSshEnvironmentTarget): string {
+function buildSshHostSpec(target: DesktopSshEnvironmentTarget): string {
   const destination = target.alias.trim() || target.hostname.trim();
   if (destination.length === 0) {
     throw new Error("SSH target is missing its alias/hostname.");
@@ -370,6 +370,9 @@ export function resolveRemoteT3CliPackageSpec(input: {
   readonly isDevelopment?: boolean;
 }): string {
   const appVersion = input.appVersion.trim();
+  if (!input.isDevelopment && appVersion.includes("-canary.")) {
+    return "t3@nightly";
+  }
   if (!input.isDevelopment && PUBLISHABLE_T3_VERSION_PATTERN.test(appVersion)) {
     return `t3@${appVersion}`;
   }
@@ -378,5 +381,5 @@ export function resolveRemoteT3CliPackageSpec(input: {
     return "t3@nightly";
   }
 
-  return input.updateChannel === "nightly" ? "t3@nightly" : "t3@latest";
+  return input.updateChannel === "latest" ? "t3@latest" : `t3@${input.updateChannel}`;
 }

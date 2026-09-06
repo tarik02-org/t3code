@@ -291,7 +291,7 @@ function titleCaseCommandSegment(segment: string): string {
   return words.join(" ");
 }
 
-export function normalizeShortcutKeyToken(key: string): string | null {
+function normalizeShortcutKeyToken(key: string): string | null {
   const normalized = key.toLowerCase();
   if (
     normalized === "meta" ||
@@ -338,7 +338,7 @@ export function keybindingFromKeyboardEvent(
   }
   if (event.altKey) parts.push("alt");
   if (event.shiftKey) parts.push("shift");
-  if (parts.length === 0) {
+  if (parts.length === 0 && !/^f\d{1,2}$/.test(keyToken)) {
     return null;
   }
   parts.push(keyToken);

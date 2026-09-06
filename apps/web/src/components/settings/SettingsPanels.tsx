@@ -1,10 +1,12 @@
-import { ArchiveIcon, ArchiveX, ChevronRightIcon, LoaderIcon, SettingsIcon } from "lucide-react";
+import { Spinner } from "~/components/ui/spinner";
+import { ArchiveIcon, ArchiveX, ChevronRightIcon, SettingsIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type BackgroundActivityProfile,
+  type ContextMenuStyle,
   type DesktopUpdateChannel,
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -172,6 +174,12 @@ const TIMESTAMP_FORMAT_LABELS = {
   "12-hour": "12-hour",
   "24-hour": "24-hour",
 } as const;
+
+const CONTEXT_MENU_STYLE_LABELS = {
+  default: "Default",
+  native: "Native",
+  custom: "Custom",
+} as const satisfies Record<ContextMenuStyle, string>;
 
 const COMPOSER_COLLAPSE_TRIGGER_LABELS = {
   blur: "On unfocus",
@@ -421,7 +429,7 @@ function AboutVersionSection() {
       {hasDesktopBridge ? (
         <SettingsRow
           title="Update track"
-          description="Use stable releases or nightly builds. Switch back anytime."
+          description="Use stable releases, nightly builds, or the experimental canary channel."
           control={
             <Select
               value={selectedUpdateChannel}
@@ -436,7 +444,11 @@ function AboutVersionSection() {
                 disabled={isChangingUpdateChannel}
               >
                 <SelectValue>
-                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
+                  {selectedUpdateChannel === "canary"
+                    ? "Canary"
+                    : selectedUpdateChannel === "nightly"
+                      ? "Nightly"
+                      : "Stable"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -445,6 +457,9 @@ function AboutVersionSection() {
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
                   Nightly
+                </SelectItem>
+                <SelectItem hideIndicator value="canary">
+                  Canary
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -473,6 +488,9 @@ function AboutVersionSection() {
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
                   Nightly
+                </SelectItem>
+                <SelectItem hideIndicator value="canary">
+                  Canary
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -520,6 +538,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
+        : []),
+      ...(settings.contextMenuStyle !== DEFAULT_UNIFIED_SETTINGS.contextMenuStyle
+        ? ["Context menu style"]
         : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
@@ -637,6 +658,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
+      settings.contextMenuStyle,
       settings.wordWrap,
       followSystem,
       theme,
@@ -709,6 +731,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     updateSettings({
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      contextMenuStyle: DEFAULT_UNIFIED_SETTINGS.contextMenuStyle,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
@@ -2247,6 +2270,45 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
+          title="Context menus"
+          description="Default uses native desktop menus on macOS and custom menus elsewhere."
+          resetAction={
+            settings.contextMenuStyle !== DEFAULT_UNIFIED_SETTINGS.contextMenuStyle ? (
+              <SettingResetButton
+                label="context menu style"
+                onClick={() =>
+                  updateSettings({ contextMenuStyle: DEFAULT_UNIFIED_SETTINGS.contextMenuStyle })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.contextMenuStyle}
+              onValueChange={(value) => {
+                if (value === "default" || value === "native" || value === "custom") {
+                  updateSettings({ contextMenuStyle: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Context menu style">
+                <SelectValue>{CONTEXT_MENU_STYLE_LABELS[settings.contextMenuStyle]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="default">
+                  {CONTEXT_MENU_STYLE_LABELS.default}
+                </SelectItem>
+                <SelectItem hideIndicator value="native">
+                  {CONTEXT_MENU_STYLE_LABELS.native}
+                </SelectItem>
+                <SelectItem hideIndicator value="custom">
+                  {CONTEXT_MENU_STYLE_LABELS.custom}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
           {...searchableSetting("hide-whitespace-changes")}
           description="Set whether the diff panel ignores whitespace-only edits by default."
           resetAction={
@@ -2556,55 +2618,24 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection id="projects-and-threads" title="Projects & threads">
         <SettingsRow
-          serverScoped
           {...searchableSetting("new-threads")}
-          description="Pick the default workspace mode for newly created draft threads."
-          resetAction={
-            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ||
-            settings.newWorktreesStartFromOrigin !==
-              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
-              <SettingResetButton
-                label="new threads"
-                onClick={() =>
-                  updateSettings({
-                    defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-                    newWorktreesStartFromOrigin:
-                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-                  })
-                }
-              />
-            ) : null
-          }
+          description="Choose the default model and workspace for all projects or a specific project."
           control={
-            <Select
-              value={settings.defaultThreadEnvMode}
-              onValueChange={(value) => {
-                if (value === "local" || value === "worktree") {
-                  updateSettings({ defaultThreadEnvMode: value });
-                }
-              }}
+            <Button
+              render={
+                <Link to="/settings/projects" search={{ project: undefined, machine: undefined }} />
+              }
+              size="sm"
+              variant="outline"
             >
-              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Default thread mode">
-                <SelectValue>
-                  {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="local">
-                  Local
-                </SelectItem>
-                <SelectItem hideIndicator value="worktree">
-                  New worktree
-                </SelectItem>
-              </SelectPopup>
-            </Select>
+              Project settings
+            </Button>
           }
         />
 
         <SettingsRow
           serverScoped
-          className="bg-muted/20 sm:pl-9"
-          title={searchableSetting("start-from-origin").title}
+          {...searchableSetting("start-from-origin")}
           description="Creates the worktree from the latest matching branch on origin instead of your local branch."
           resetAction={
             settings.newWorktreesStartFromOrigin !==
@@ -3029,7 +3060,7 @@ export function ArchivedThreadsPanel() {
             title={
               <span className="inline-flex items-center gap-2">
                 {isLoadingArchive ? (
-                  <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
+                  <Spinner className="size-3.5 text-muted-foreground" />
                 ) : (
                   <ArchiveIcon className="size-3.5 text-muted-foreground" />
                 )}

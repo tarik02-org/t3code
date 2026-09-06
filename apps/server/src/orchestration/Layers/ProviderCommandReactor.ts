@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -55,6 +56,8 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ProjectLaunchEnv } from "../../projectLaunchEnv/Services/ProjectLaunchEnv.ts";
+import { getCodexDefaultModeRequestUserInputConfigValue } from "../../codexModelOptions.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
@@ -70,6 +73,7 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
+      | "thread.goal-requested"
       | "thread.session-stop-requested"
       | "thread.settled";
   }
@@ -108,6 +112,7 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+const PROVIDER_INTERRUPT_TIMEOUT = Duration.seconds(10);
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
@@ -328,6 +333,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const projectLaunchEnv = yield* Effect.serviceOption(ProjectLaunchEnv);
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -355,6 +361,7 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
+      | "provider.goal.request.failed"
       | "provider.session.stop.failed";
     readonly summary: string;
     readonly detail: string;
@@ -712,6 +719,15 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
+    const providerProjectLaunchEnv =
+      project !== undefined && Option.isSome(projectLaunchEnv)
+        ? yield* projectLaunchEnv.value.resolve({
+            projectRoot: project.workspaceRoot,
+            projectId: project.id,
+            threadId,
+            worktreePath: thread.worktreePath,
+          })
+        : undefined;
     const refreshWorkspaceSnapshot = effectiveCwd
       ? providerRegistry
           .refreshWorkspaceSnapshot({ instanceId: desiredInstanceId, cwd: effectiveCwd })
@@ -728,6 +744,7 @@ const make = Effect.gen(function* () {
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+          ...(providerProjectLaunchEnv ? { env: providerProjectLaunchEnv } : {}),
           ...(thread.title ? { title: thread.title } : {}),
           modelSelection: desiredModelSelection,
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
@@ -779,6 +796,16 @@ const make = Effect.gen(function* () {
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
       const previousModelSelection = threadModelSelections.get(threadId);
+      const codexSessionConfigChanged =
+        preferredProvider === "codex" &&
+        requestedModelSelection !== undefined &&
+        (previousModelSelection === undefined ||
+          (getModelSelectionStringOptionValue(previousModelSelection, "contextWindow") ??
+            "258k") !==
+            (getModelSelectionStringOptionValue(requestedModelSelection, "contextWindow") ??
+              "258k") ||
+          getCodexDefaultModeRequestUserInputConfigValue(previousModelSelection) !==
+            getCodexDefaultModeRequestUserInputConfigValue(requestedModelSelection));
       const shouldRestartForModelSelectionChange =
         preferredProvider === "claudeAgent" &&
         requestedModelSelection !== undefined &&
@@ -789,6 +816,7 @@ const make = Effect.gen(function* () {
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
+        !codexSessionConfigChanged &&
         !shouldRestartForModelSelectionChange
       ) {
         yield* refreshWorkspaceSnapshot;
@@ -814,6 +842,7 @@ const make = Effect.gen(function* () {
         modelChanged,
         instanceChanged,
         shouldRestartForModelChange,
+        codexSessionConfigChanged,
         shouldRestartForModelSelectionChange,
         hasResumeCursor: resumeCursor !== undefined,
       });
@@ -1188,12 +1217,15 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const thread = yield* resolveThreadDetail(event.payload.threadId);
+    const thread = yield* resolveThreadShell(event.payload.threadId);
     if (!thread) {
       return;
     }
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    const turnStart = yield* projectionSnapshotQuery.getTurnStartMessage({
+      threadId: thread.id,
+      messageId: event.payload.messageId,
+    });
+    if (Option.isNone(turnStart) || turnStart.value.message.role !== "user") {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -1205,6 +1237,7 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+    const { message, hasOtherUserMessages } = turnStart.value;
     const appendTurnStartFailure = (summary: string, detail: string) =>
       appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -1297,10 +1330,7 @@ const make = Effect.gen(function* () {
     yield* ensureThreadWorktree(thread);
 
     const isCompactCommand = isCompactCommandMessage(message);
-    const nonCompactUserMessageCount = thread.messages.filter(
-      (entry) => entry.role === "user" && !isCompactCommandMessage(entry),
-    ).length;
-    if (nonCompactUserMessageCount === 1 && !isCompactCommand) {
+    if (!hasOtherUserMessages && !isCompactCommand) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({
@@ -1371,7 +1401,7 @@ const make = Effect.gen(function* () {
         ),
       );
     if (isCompactCommand) {
-      if (nonCompactUserMessageCount === 0) {
+      if (!hasOtherUserMessages) {
         return yield* appendTurnStartFailure(
           "Context compaction failed",
           "Context compaction requires an existing conversation.",
@@ -1536,7 +1566,56 @@ const make = Effect.gen(function* () {
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService
       .interruptTurn({ threadId: event.payload.threadId })
-      .pipe(Effect.catchCause(recoverInterruptFailure));
+      .pipe(Effect.timeout(PROVIDER_INTERRUPT_TIMEOUT), Effect.catchCause(recoverInterruptFailure));
+  });
+
+  const processGoalRequested = Effect.fn("processGoalRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.goal-requested" }>,
+  ) {
+    const thread = yield* resolveThreadShell(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+
+    const recoverGoalRequestFailure = (cause: Cause.Cause<unknown>) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.goal.request.failed",
+        summary: "Provider goal request failed",
+        detail: formatFailureDetail(cause),
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+
+    const ready = yield* ensureSessionForThread(
+      event.payload.threadId,
+      event.payload.createdAt,
+    ).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) => recoverGoalRequestFailure(cause).pipe(Effect.as(false))),
+    );
+    if (!ready) {
+      return;
+    }
+
+    if (!providerService.sendGoalRequest) {
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.goal.request.failed",
+        summary: "Provider goal request failed",
+        detail: "The active provider service does not support goal requests.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+      return;
+    }
+
+    yield* providerService
+      .sendGoalRequest({
+        threadId: event.payload.threadId,
+        request: event.payload.request,
+      })
+      .pipe(Effect.catchCause(recoverGoalRequestFailure));
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
@@ -1725,6 +1804,9 @@ const make = Effect.gen(function* () {
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
+      case "thread.goal-requested":
+        yield* processGoalRequested(event);
+        return;
       case "thread.approval-response-requested":
         yield* processApprovalResponseRequested(event);
         return;
@@ -1788,6 +1870,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.goal-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||

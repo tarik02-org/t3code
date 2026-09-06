@@ -46,7 +46,11 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  getCodexDefaultModeRequestUserInputConfigValue,
+  getCodexServiceTierOptionValue,
+  supportsCodexLongContext,
+} from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
@@ -62,6 +66,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
+  CodexSessionRuntimeGoalUnsupportedError,
   CodexSessionRuntimeThreadIdMissingError,
   describeMcpElicitation,
   makeCodexSessionRuntime,
@@ -71,6 +76,8 @@ import {
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { stripManagedRuntimeEnvKeys } from "@t3tools/shared/projectLaunchEnv";
+import { mergeProviderSessionEnvironment } from "../ProviderInstanceEnvironment.ts";
 import { codexRateLimitsToUpdate } from "./codexUsageLimits.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
@@ -2249,14 +2256,42 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
+        const defaultModeRequestUserInput =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? getCodexDefaultModeRequestUserInputConfigValue(input.modelSelection)
+            : undefined;
+        const useLongContext =
+          input.modelSelection?.instanceId === boundInstanceId &&
+          getModelSelectionStringOptionValue(input.modelSelection, "contextWindow") === "1m" &&
+          supportsCodexLongContext(input.modelSelection.model);
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const sessionEnvironment =
+          options?.environment === undefined && input.env === undefined
+            ? undefined
+            : mergeProviderSessionEnvironment(options?.environment, input.env);
+        const appServerArgs = [
+          ...(useLongContext
+            ? ["-c", "model_context_window=1000000", "-c", "model_auto_compact_token_limit=900000"]
+            : []),
+          ...(mcpSession
+            ? [
+                "-c",
+                `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
+                "-c",
+                'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+              ]
+            : []),
+        ];
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
-          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
-          ...(options?.environment ? { environment: options.environment } : {}),
+          launchArgs: resolveCodexLaunchArgs(
+            codexConfig.launchArgs,
+            sessionEnvironment ?? process.env,
+          ),
+          ...(sessionEnvironment ? { environment: sessionEnvironment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
@@ -2266,20 +2301,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          ...(defaultModeRequestUserInput !== undefined ? { defaultModeRequestUserInput } : {}),
           ...(mcpSession
             ? {
                 environment: {
-                  ...(options?.environment ?? process.env),
+                  ...(sessionEnvironment ?? stripManagedRuntimeEnvKeys(process.env)),
                   T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
                 },
-                appServerArgs: [
-                  "-c",
-                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
-                  "-c",
-                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-                ],
               }
             : {}),
+          ...(appServerArgs.length > 0 ? { appServerArgs } : {}),
         };
         const turnTokenUsage = makeCodexTurnTokenUsageState();
         const sessionScope = yield* Scope.make("sequential");
@@ -2504,14 +2535,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
-  const compactThread: NonNullable<CodexAdapterShape["compactThread"]> = Effect.fn("compactThread")(
-    function* (threadId) {
-      const session = yield* requireSession(threadId);
-      yield* session.runtime.compactThread.pipe(
-        Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/compact/start", cause)),
-      );
-    },
-  );
+  const sendGoalRequest: NonNullable<CodexAdapterShape["sendGoalRequest"]> = (threadId, request) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => {
+        if (!session.runtime.sendGoalRequest) {
+          return Effect.fail(new CodexSessionRuntimeGoalUnsupportedError());
+        }
+        return session.runtime.sendGoalRequest(request);
+      }),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/goal", cause),
+      ),
+    );
+
+  const compactThread = Effect.fn("compactThread")(function* (threadId: ThreadId) {
+    const session = yield* requireSession(threadId);
+    yield* session.runtime.compactThread.pipe(
+      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/compact/start", cause)),
+    );
+  });
 
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
@@ -2658,8 +2702,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     },
     startSession,
     sendTurn,
-    compactThread,
+    compaction: { type: "native", start: compactThread },
     interruptTurn,
+    sendGoalRequest,
     readThread,
     rollbackThread,
     uploadFeedback,

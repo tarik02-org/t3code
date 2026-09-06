@@ -3,7 +3,10 @@ import {
   appendCodexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
-import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
+import type {
+  CodexFeedbackSubmission,
+  EnvironmentThreadStatus,
+} from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import type { LegendListRef } from "@legendapp/list/react-native";
@@ -13,12 +16,15 @@ import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
+  OrchestrationThreadGoal,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
+  ThreadGoalRequest,
   ThreadId,
+  UsageLimitsReport,
   UserInputQuestion,
 } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
@@ -36,6 +42,8 @@ import {
   AppState,
   Keyboard,
   Platform,
+  Pressable,
+  Text,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -57,6 +65,7 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { collectProviderUsageLimits } from "@t3tools/shared/usageLimits";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
@@ -70,6 +79,8 @@ import type {
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
 import { PendingApprovalCard } from "./PendingApprovalCard";
+import { ComposerFeedback } from "./ComposerFeedback";
+import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import {
   FLOATING_WORKING_CONTROL_COVERAGE,
@@ -98,6 +109,8 @@ export interface ThreadDetailScreenProps {
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
+  readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
+  readonly onDismissFeedback: (id: MessageId) => void;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
   readonly activeWorkStartedAt: string | null;
   readonly isCompacting: boolean;
@@ -130,6 +143,7 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onRequestGoal: (request: ThreadGoalRequest) => Promise<unknown>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -227,6 +241,23 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
+function goalStatusLabel(status: OrchestrationThreadGoal["status"]): string {
+  switch (status) {
+    case "active":
+      return "Active";
+    case "paused":
+      return "Paused";
+    case "blocked":
+      return "Blocked";
+    case "usageLimited":
+      return "Usage limited";
+    case "budgetLimited":
+      return "Budget limited";
+    case "complete":
+      return "Complete";
+  }
+}
+
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -276,6 +307,23 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const lastScrolledSubmittedMessageIdRef = useRef<MessageId | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
+  );
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (props.selectedThread.goal === undefined || props.selectedThread.goal === null) {
+        return;
+      }
+      setPendingGoalAction(action);
+      try {
+        await props.onRequestGoal({ kind: "control", action });
+      } finally {
+        setPendingGoalAction(null);
+      }
+    },
+    [props.onRequestGoal, props.selectedThread.goal],
+  );
   const handleComposerFocusChange = useCallback(
     (focused: boolean) => {
       setComposerFocused(focused);
@@ -359,6 +407,68 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const [collapsedUserInputRequestId, setCollapsedUserInputRequestId] =
     useState<ApprovalRequestId | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
+  // The open /usage-limits panel for this thread, model and turn. Only the open
+  // moment is stored: the rows read live provider data, so a redeemed reset
+  // credit or refreshed probe shows through. Anything that spends quota closes
+  // it: a new turn from any source, or the agent resuming after an approval or
+  // answered question.
+  const [usageLimitsPanel, setUsageLimitsPanel] = useState<{
+    readonly key: string;
+    readonly threadKey: string;
+    readonly now: number;
+  } | null>(null);
+  // A pending approval or question is part of the key: once it is answered,
+  // from this client or any other, the agent resumes and spends quota.
+  const usageLimitsKey = [
+    selectedThreadKey,
+    props.selectedThread.modelSelection.instanceId,
+    props.selectedThread.latestTurn?.turnId ?? "",
+    props.activePendingApproval?.requestId ?? props.activePendingUserInput?.requestId ?? "",
+  ].join(":");
+  // Drop the snapshot as soon as the key changes so it cannot resurface stale.
+  if (usageLimitsPanel !== null && usageLimitsPanel.key !== usageLimitsKey) {
+    setUsageLimitsPanel(null);
+  }
+  const usageLimitsReport = useMemo(
+    () =>
+      usageLimitsPanel !== null && usageLimitsPanel.key === usageLimitsKey
+        ? collectProviderUsageLimits(
+            props.selectedThread.modelSelection.instanceId,
+            props.serverConfig?.providers ?? [],
+            props.serverConfig?.usageLimitSources ?? [],
+            usageLimitsPanel.now,
+          )
+        : null,
+    [
+      props.selectedThread.modelSelection.instanceId,
+      props.serverConfig,
+      usageLimitsKey,
+      usageLimitsPanel,
+    ],
+  );
+  const showUsageLimits = useCallback(
+    (report: UsageLimitsReport | null) =>
+      setUsageLimitsPanel(
+        report === null
+          ? null
+          : {
+              key: usageLimitsKey,
+              threadKey: selectedThreadKey,
+              now: Date.parse(report.createdAt),
+            },
+      ),
+    [selectedThreadKey, usageLimitsKey],
+  );
+  const dismissUsageLimits = useCallback(() => setUsageLimitsPanel(null), []);
+  // A send may resolve after navigating away, so only the originating
+  // thread's panel is cleared; a panel opened elsewhere in the meantime stays.
+  const clearUsageLimitsFor = useCallback(
+    (threadKey: string) =>
+      setUsageLimitsPanel((current) =>
+        current !== null && current.threadKey === threadKey ? null : current,
+      ),
+    [],
+  );
   const userInputCollapsed =
     activeUserInputRequestId !== null && collapsedUserInputRequestId === activeUserInputRequestId;
   // The card's height RESERVES keyboard space at all times instead of
@@ -623,6 +733,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       return messageId;
     }
 
+    // A sent message makes the snapshot stale; a refused send leaves it in place.
+    clearUsageLimitsFor(targetThreadKey);
+
     setSubmittedMessageId(messageId);
     setAnchorMessageId(
       resolveThreadFeedSubmissionAnchor({
@@ -637,6 +750,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     return messageId;
   }, [
     anchorMessageId,
+    clearUsageLimitsFor,
     props.onSendMessage,
     props.selectedThread.latestTurn,
     props.selectedThreadQueueCount,
@@ -778,6 +892,74 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {props.feedbackSubmissions.map((submission) => (
+                  <ComposerFeedback
+                    key={submission.id}
+                    submission={submission}
+                    onDismiss={() => props.onDismissFeedback(submission.id)}
+                  />
+                ))}
+                {usageLimitsReport && activeUserInputRequestId === null ? (
+                  <Animated.View
+                    className="shrink-0 px-4 pb-3"
+                    entering={FadeInDown.duration(220)}
+                    exiting={FadeOut.duration(140)}
+                  >
+                    <ComposerUsageLimits
+                      report={usageLimitsReport}
+                      environmentId={props.environmentId}
+                      onClose={dismissUsageLimits}
+                    />
+                  </Animated.View>
+                ) : null}
+                {props.selectedThread.goal ? (
+                  <View className="mx-4 mb-3 rounded-xl border border-adaptive-blue-300-a50-blue-400-a28 bg-adaptive-blue-50-blue-400-a14 p-3">
+                    <Text className="font-t3-medium text-sm text-foreground">
+                      Goal {goalStatusLabel(props.selectedThread.goal.status)}
+                    </Text>
+                    <Text numberOfLines={2} className="mt-1 text-sm text-secondary-label">
+                      {props.selectedThread.goal.objective}
+                    </Text>
+                    <View className="mt-2 flex-row gap-2">
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          props.selectedThread.goal.status === "active"
+                            ? "Pause Goal"
+                            : "Resume Goal"
+                        }
+                        disabled={pendingGoalAction !== null}
+                        onPress={() =>
+                          void handleGoalControl(
+                            props.selectedThread.goal?.status === "active" ? "pause" : "resume",
+                          )
+                        }
+                        className="rounded-md bg-secondary px-3 py-1.5"
+                      >
+                        <Text className="text-xs font-medium text-foreground">
+                          {pendingGoalAction === "pause"
+                            ? "Pausing..."
+                            : pendingGoalAction === "resume"
+                              ? "Resuming..."
+                              : props.selectedThread.goal.status === "active"
+                                ? "Pause"
+                                : "Resume"}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Clear Goal"
+                        disabled={pendingGoalAction !== null}
+                        onPress={() => void handleGoalControl("clear")}
+                        className="rounded-md px-3 py-1.5"
+                      >
+                        <Text className="text-xs font-medium text-secondary-label">
+                          {pendingGoalAction === "clear" ? "Clearing..." : "Clear"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
                 {props.activePendingApproval || props.activePendingUserInput ? (
                   <Animated.View
                     className="shrink-0 gap-3 px-4 pb-3"
@@ -846,6 +1028,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   onRemoveDraftImage={props.onRemoveDraftImage}
                   onStopThread={props.onStopThread}
                   onSendMessage={handleSendMessage}
+                  onShowUsageLimits={showUsageLimits}
                   onReconnectEnvironment={props.onReconnectEnvironment}
                   onUpdateModelSelection={props.onUpdateThreadModelSelection}
                   onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

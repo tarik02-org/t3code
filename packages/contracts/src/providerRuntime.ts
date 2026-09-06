@@ -103,7 +103,7 @@ const RuntimeErrorClass = Schema.Literals([
 ]);
 export type RuntimeErrorClass = typeof RuntimeErrorClass.Type;
 
-export const TOOL_LIFECYCLE_ITEM_TYPES = [
+const TOOL_LIFECYCLE_ITEM_TYPES = [
   "command_execution",
   "file_change",
   "mcp_tool_call",
@@ -157,6 +157,8 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.state.changed",
   "thread.metadata.updated",
   "thread.token-usage.updated",
+  "thread.goal.updated",
+  "thread.goal.cleared",
   "thread.realtime.started",
   "thread.realtime.item-added",
   "thread.realtime.audio.delta",
@@ -209,6 +211,8 @@ const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
 const ThreadMetadataUpdatedType = Schema.Literal("thread.metadata.updated");
 const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated");
+const ThreadGoalUpdatedType = Schema.Literal("thread.goal.updated");
+const ThreadGoalClearedType = Schema.Literal("thread.goal.cleared");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
 const ThreadRealtimeAudioDeltaType = Schema.Literal("thread.realtime.audio.delta");
@@ -336,6 +340,32 @@ const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: ThreadTokenUsageSnapshot,
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
+
+export const ProviderRuntimeThreadGoalStatus = Schema.Literals([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+export type ProviderRuntimeThreadGoalStatus = typeof ProviderRuntimeThreadGoalStatus.Type;
+
+const ProviderRuntimeThreadGoalUpdatedPayload = Schema.Struct({
+  objective: TrimmedNonEmptyStringSchema,
+  status: ProviderRuntimeThreadGoalStatus,
+  tokensUsed: NonNegativeInt,
+  tokenBudget: Schema.NullOr(NonNegativeInt),
+  timeUsedSeconds: NonNegativeInt,
+  createdAtEpochMsOrSeconds: Schema.Number,
+  updatedAtEpochMsOrSeconds: Schema.Number,
+});
+export type ProviderRuntimeThreadGoalUpdatedPayload =
+  typeof ProviderRuntimeThreadGoalUpdatedPayload.Type;
+
+const ProviderRuntimeThreadGoalClearedPayload = Schema.Struct({});
+export type ProviderRuntimeThreadGoalClearedPayload =
+  typeof ProviderRuntimeThreadGoalClearedPayload.Type;
 
 const ThreadRealtimeStartedPayload = Schema.Struct({
   realtimeSessionId: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -927,6 +957,22 @@ const ProviderRuntimeThreadTokenUsageUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeThreadTokenUsageUpdatedEvent =
   typeof ProviderRuntimeThreadTokenUsageUpdatedEvent.Type;
 
+const ProviderRuntimeThreadGoalUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadGoalUpdatedType,
+  payload: ProviderRuntimeThreadGoalUpdatedPayload,
+});
+export type ProviderRuntimeThreadGoalUpdatedEvent =
+  typeof ProviderRuntimeThreadGoalUpdatedEvent.Type;
+
+const ProviderRuntimeThreadGoalClearedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadGoalClearedType,
+  payload: ProviderRuntimeThreadGoalClearedPayload,
+});
+export type ProviderRuntimeThreadGoalClearedEvent =
+  typeof ProviderRuntimeThreadGoalClearedEvent.Type;
+
 const ProviderRuntimeThreadRealtimeStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ThreadRealtimeStartedType,
@@ -1235,6 +1281,8 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadStateChangedEvent,
   ProviderRuntimeThreadMetadataUpdatedEvent,
   ProviderRuntimeThreadTokenUsageUpdatedEvent,
+  ProviderRuntimeThreadGoalUpdatedEvent,
+  ProviderRuntimeThreadGoalClearedEvent,
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,
   ProviderRuntimeThreadRealtimeAudioDeltaEvent,
