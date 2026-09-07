@@ -53,6 +53,7 @@ jobs:
 
       - name: Open draft actualization PR
         env:
+          BASE_REF: ${{ steps.refs.outputs.base_ref }}
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           HEAD_BRANCH: ${{ inputs.head_branch }}
           UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
@@ -63,8 +64,8 @@ jobs:
           gh pr create \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
-            --base upstream/main \
+            --base "$BASE_REF" \
             --head "$HEAD_BRANCH" \
             --title "$TITLE" \
             --label actualization \
-            --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. Promote with /promote after the checks pass.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->'
+            --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. Promote with /promote after the checks pass.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->\n<!-- actualization-upstream-sha: '"${UPSTREAM_SHA}"$' -->'
