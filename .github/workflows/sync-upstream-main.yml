@@ -14,8 +14,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: sync-upstream-main
-  cancel-in-progress: true
+  group: fork-history-mutation
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -40,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
-          open_prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --base upstream/main --state open --label actualization --json number --jq length)"
+          open_prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label actualization --json number --jq length)"
           echo "has_open_actualization=$([[ "$open_prs" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
@@ -76,9 +76,11 @@ jobs:
           fi
           current_sha="$(git rev-parse refs/remotes/origin/upstream/main 2>/dev/null || true)"
           main_sha="$(git rev-parse refs/remotes/origin/main)"
-          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
-          echo "current_sha=$current_sha" >> "$GITHUB_OUTPUT"
-          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "upstream_sha=$upstream_sha"
+            echo "current_sha=$current_sha"
+            echo "main_sha=$main_sha"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update upstream main mirror
         if: >-
@@ -105,7 +107,7 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/upstream/main" \
             -f sha="$UPSTREAM_SHA" -F force=true >/dev/null
 
-      - name: Prepare conflict PR head
+      - name: Prepare actualization PR head
         if: steps.upstream.outputs.upstream_sha != steps.upstream.outputs.current_sha
         run: git push --force origin "refs/remotes/origin/main:refs/heads/actualization/incoming"
 
@@ -121,7 +123,7 @@ jobs:
           if [[ -n "$existing" ]]; then
             gh pr edit "$existing" \
               --title 'actualize fork on current upstream' \
-              --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. This PR intentionally starts with conflicts; rebuild its head manually before /promote.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->'
+              --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. This PR intentionally starts from the current main snapshot; rebuild its head before /promote.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->\n<!-- actualization-upstream-sha: '"${UPSTREAM_SHA}"$' -->'
           else
             gh pr create \
               --repo "$GITHUB_REPOSITORY" \
@@ -130,5 +132,5 @@ jobs:
               --head actualization/incoming \
               --title 'actualize fork on current upstream' \
               --label actualization \
-              --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. This PR intentionally starts with conflicts; rebuild its head manually before /promote.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->'
+              --body $'Actualizes the maintained history on upstream/main at '"${UPSTREAM_SHA}"$'. This PR intentionally starts from the current main snapshot; rebuild its head before /promote.\n\n<!-- actualization-main-sha: '"${MAIN_SHA}"$' -->\n<!-- actualization-upstream-sha: '"${UPSTREAM_SHA}"$' -->'
           fi

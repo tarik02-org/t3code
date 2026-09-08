@@ -23,7 +23,7 @@ one mutable release-state commit
 
 `upstream/main` is a protected mirror. The sync workflow imports upstream objects, updates the mirror, snapshots current `main` into `actualization/incoming`, and opens a Draft PR against `upstream/main`. The mirror is left unchanged while that PR is open.
 
-That PR is intentionally stale and normally conflicted: its first head is the current `main`, not a rebased result. Manual work rebuilds the head on the new mirror. Promotion then force-replaces `main` with the reviewed head.
+The PR intentionally starts conflicted so GitHub can run checks against the mirrored upstream base after its head is rebuilt. Manual work rebuilds the fork commits on that base. After checks pass, promotion pushes the first fork commit to a temporary base, retargets the PR there, and asks GitHub to rebase-merge the remaining reviewed commits. Only that complete staged result is force-pushed to `main`, guarded by a lease. The default branch never exposes incomplete history. GitHub assigns new commit IDs during the merge, so the resulting `main` tip differs from the reviewed PR head.
 
 The release-state commit contains package versions and any final generated lock/hash state. It is replaced during release preparation. Dependency declarations stay with the feature or fix that needs them. Intermediate lockfiles and Nix hashes are consolidated before release.
 
@@ -66,11 +66,11 @@ Actualization is a local rebuild followed by a Draft PR promoted into `main`.
 5. Remove the old release-state commit. Consolidate generated lockfile and Nix hash changes, then add one release-state commit with the last published stable version.
 6. Run `range-diff`, the full fork delta review, focused checks for every conflict area, `history/validated`, and the Nix runtime build.
 7. Push the temporary branch.
-8. The sync workflow opens a Draft `actualization/incoming -> upstream/main` PR with intentional conflicts because its head starts as current `main`.
+8. The sync workflow opens a Draft `actualization/incoming -> upstream/main` PR whose head starts as the current `main` snapshot.
 9. Rebuild that PR head manually on the current `upstream/main`, preserving the seven strata, then resolve the conflicts and push the head.
-10. After checks pass, comment `/promote`. Promotion validates the candidate against `upstream/main`, force-updates `main`, closes the PR, and deletes the temporary head.
+10. After checks pass, comment `/promote`. Promotion validates the candidate against `upstream/main`, pushes its first fork commit to a temporary base, and rebase-merges the PR there. It then force-pushes the complete merge result to `main` with a lease. GitHub records the PR as merged, and the workflow deletes both temporary branches.
 
-If `main` or `upstream/main` moves before promotion, refresh the actualization. Promotion uses a lease and refuses a stale base.
+If `main` or `upstream/main` moves before promotion, refresh the actualization. Sync and promotion share one concurrency group, so neither can change refs during the other's final checks and cleanup. The final `main` push uses a lease. A failed promotion leaves its PR and staging branch visible for manual recovery.
 
 ## Stable release
 
@@ -111,13 +111,13 @@ Pushes to `canary/*` run CI and history validation against the matching upstream
 ## Promotion rules
 
 - `/promote` is accepted only from repository members, collaborators, or the owner.
-- `actualization` replaces `main` with the exact reviewed PR head.
+- `actualization` rebase-merges on a temporary staging base, then moves `main` to the complete staged result with a lease.
 - `release` replaces only the old release-state commit with the reviewed release tree.
 - A stale base, failed check, non-linear history, unexpected release-state file, or mismatched package version blocks promotion.
 - The GitHub App bypasses the `main` non-fast-forward rule. Human stable approval remains a separate Environment gate.
 
 ## Completion
 
-An actualization is complete when its PR is closed by promotion, `main` points at the reviewed SHA, `history/validated` passes, and the temporary branch is gone.
+An actualization is complete when GitHub records its PR as merged, `main` points at the rebase-merge result, `history/validated` passes, and both temporary branches are gone.
 
 A release is complete when the stable Environment job publishes the tag and assets, the release body contains the upstream and manual sections, and the next Draft release PR reflects the new stable tag.

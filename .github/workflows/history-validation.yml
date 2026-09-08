@@ -40,6 +40,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
           DISPATCH_BASE_REF: ${{ inputs.base_ref }}
         run: |
           set -euo pipefail
@@ -50,7 +51,11 @@ jobs:
             echo "HISTORY_BASE_REF=refs/remotes/upstream/$upstream_branch" >> "$GITHUB_ENV"
             exit 0
           elif [[ "$EVENT_NAME" == pull_request ]]; then
-            base_ref="$PR_BASE_REF"
+            if [[ " $PR_LABELS " == *' actualization '* ]]; then
+              base_ref=upstream/main
+            else
+              base_ref="$PR_BASE_REF"
+            fi
           elif [[ -n "$DISPATCH_BASE_REF" ]]; then
             base_ref="$DISPATCH_BASE_REF"
           else
