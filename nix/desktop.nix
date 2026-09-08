@@ -48,6 +48,7 @@ stdenvNoCC.mkDerivation {
     profile_user="''${USER:-$(${lib.getExe' coreutils "id"} -un)}"
     export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$profile_user/bin:$PATH"
     export T3CODE_DISABLE_AUTO_UPDATE=1
+    export T3CODE_LINUX_DESKTOP_ENTRY_ICON=t3code
     exec ${lib.getExe electron_41} \
       --ozone-platform-hint=auto \
       --enable-features=WaylandWindowDecorations \

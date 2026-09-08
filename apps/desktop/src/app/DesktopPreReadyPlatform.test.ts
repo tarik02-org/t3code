@@ -82,6 +82,7 @@ describe("DesktopPreReadyPlatform", () => {
         vi.stubEnv("VITE_DEV_SERVER_URL", "");
         vi.stubEnv("XDG_DATA_HOME", "/xdg");
         vi.stubEnv("APPIMAGE", "/Applications/current.AppImage");
+        vi.stubEnv("T3CODE_LINUX_DESKTOP_ENTRY_ICON", "t3code");
         getSwitchValueMock.mockReturnValue("");
         let desktopName = "t3code.desktop";
         let desktopEntry = previousEntry;
@@ -103,6 +104,7 @@ describe("DesktopPreReadyPlatform", () => {
             const identity = yield* Effect.promise(() => portalIdentity);
             assert.equal(identity.desktopName, "com.t3tools.T3Code.desktop");
             assert.include(identity.desktopEntry ?? "", 'Exec="/Applications/current.AppImage" %U');
+            assert.include(identity.desktopEntry ?? "", "Icon=t3code");
             assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Alpha)");
             assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/t3code;");
           }),
