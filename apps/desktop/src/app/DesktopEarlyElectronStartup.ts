@@ -28,6 +28,7 @@ type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
 
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
+  readonly linuxDesktopEntryIcon: string | null;
   readonly linuxWmClass: string;
   readonly linuxDesktopEntryName: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
@@ -90,6 +91,7 @@ export function resolveEarlyLinuxElectronOptions(
   const isDevelopment = isDevelopmentEnvironment(input.env);
   return {
     isDevelopment,
+    linuxDesktopEntryIcon: trimNonEmpty(input.env.T3CODE_LINUX_DESKTOP_ENTRY_ICON),
     linuxWmClass: isDevelopment
       ? "t3code-dev"
       : isCanaryDesktopVersion(input.appVersion)

@@ -78,6 +78,7 @@ export const make = Effect.gen(function* () {
               appVersion: Electron.app.getVersion(),
             }).displayName,
             execTarget: process.env.APPIMAGE?.trim() || process.execPath,
+            iconName: linux.linuxDesktopEntryIcon,
             scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
           }),
           "utf8",

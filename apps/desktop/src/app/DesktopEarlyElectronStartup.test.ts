@@ -75,6 +75,7 @@ describe("DesktopEarlyElectronStartup", () => {
       env: {
         T3CODE_HOME: "/home/user/.t3-test",
         XDG_CURRENT_DESKTOP: "niri",
+        T3CODE_LINUX_DESKTOP_ENTRY_ICON: " t3code ",
         VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
       },
       homeDirectory: "/home/user",
@@ -87,6 +88,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
     assert.deepEqual(options, {
       isDevelopment: true,
+      linuxDesktopEntryIcon: "t3code",
       linuxWmClass: "t3code-dev",
       linuxDesktopEntryName: "com.t3tools.T3Code.Development.desktop",
       passwordStore: "gnome-libsecret",
