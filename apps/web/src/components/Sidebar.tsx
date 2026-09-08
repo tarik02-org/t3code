@@ -30,6 +30,7 @@ import {
   type EnvironmentId,
   type EnvironmentMachineKind,
   type ProjectIconOverride,
+  type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -83,14 +84,17 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
   shouldShowThreadJumpHintsForModifiers,
+  type ShortcutMatchContext,
   threadJumpCommandForIndex,
   threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
 } from "../keybindings";
 import { useShortcutModifierState } from "../shortcutModifierState";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
+import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
+import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { isMacPlatform } from "~/lib/utils";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
@@ -1029,6 +1033,7 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
+  keybindings: ResolvedKeybindingsConfig;
   variant: "card" | "slim";
   // Slim rows are either settled (action: un-settle) or merely quiet
   // (seen Ready threads — action: settle).
@@ -1069,6 +1074,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   projectDisplayName: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   timestampFormat: TimestampFormat;
+  getCurrentShortcutContext: () => ShortcutMatchContext;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
@@ -1086,7 +1092,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
 }) {
   const {
+    getCurrentShortcutContext,
     isRenaming,
+    keybindings,
     onCancelRename,
     onCommitRename,
     onContextMenu,
@@ -1313,12 +1321,29 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
+      const command = resolveShortcutCommand(event, keybindings, {
+        platform: navigator.platform,
+        context: getCurrentShortcutContext(),
+      });
+      if (command === "thread.rename") {
+        event.preventDefault();
+        event.stopPropagation();
+        onStartRename(threadRef, thread.title);
+        return;
+      }
       if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       onThreadActivate(threadRef);
     },
-    [onThreadActivate, threadRef],
+    [
+      getCurrentShortcutContext,
+      keybindings,
+      onStartRename,
+      onThreadActivate,
+      thread.title,
+      threadRef,
+    ],
   );
   const handleDoubleClick = useCallback(
     (event: ReactMouseEvent) => {
@@ -1332,6 +1357,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     [isRenaming, onStartRename, thread.title, threadRef],
   );
   const renameCommittedRef = useRef(false);
+  const rowElementRef = useRef<HTMLDivElement>(null);
+  const setRowElementRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      rowElementRef.current = element;
+      rowRef(element);
+    },
+    [rowRef],
+  );
   useEffect(() => {
     if (isRenaming) renameCommittedRef.current = false;
   }, [isRenaming]);
@@ -1343,10 +1376,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         event.preventDefault();
         renameCommittedRef.current = true;
         onCommitRename(threadRef, renamingTitle, thread.title);
+        window.requestAnimationFrame(() => rowElementRef.current?.focus());
       } else if (event.key === "Escape") {
         event.preventDefault();
         renameCommittedRef.current = true;
         onCancelRename();
+        window.requestAnimationFrame(() => rowElementRef.current?.focus());
       }
     },
     [onCancelRename, onCommitRename, renamingTitle, thread.title, threadRef],
@@ -1622,9 +1657,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           <TooltipTrigger
             render={
               <div
-                ref={rowRef}
+                ref={setRowElementRef}
                 role="button"
                 tabIndex={0}
+                data-thread-row
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
@@ -1781,9 +1817,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         <TooltipTrigger
           render={
             <div
-              ref={rowRef}
+              ref={setRowElementRef}
               role="button"
               tabIndex={0}
+              data-thread-row
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
@@ -2324,6 +2361,8 @@ export default function Sidebar() {
   // the command was in flight, completing it must not yank them away.
   const routeThreadKeyRef = useRef(routeThreadKey);
   routeThreadKeyRef.current = routeThreadKey;
+  const routeThreadRefForShortcuts = useRef(routeThreadRef);
+  routeThreadRefForShortcuts.current = routeThreadRef;
 
   const environmentLabelById = useMemo(
     () =>
@@ -4269,6 +4308,24 @@ export default function Sidebar() {
       ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
       : false,
   );
+  const getCurrentSidebarShortcutContext = useCallback((): ShortcutMatchContext => {
+    const activeThreadRef = routeThreadRefForShortcuts.current;
+    return {
+      terminalFocus: isTerminalFocused(),
+      terminalOpen: activeThreadRef
+        ? selectThreadTerminalUiState(
+            useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+            activeThreadRef,
+          ).terminalOpen
+        : false,
+      previewFocus: isPreviewFocused(),
+      previewOpen: activeThreadRef
+        ? selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, activeThreadRef) ===
+          "preview"
+        : false,
+      modelPickerOpen: isModelPickerOpen(),
+    };
+  }, []);
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || isCommandPaletteOpen() || isModelPickerOpen()) {
@@ -4276,11 +4333,7 @@ export default function Sidebar() {
       }
       const command = resolveShortcutCommand(event, keybindings, {
         platform: navigator.platform,
-        context: {
-          terminalFocus: isTerminalFocused(),
-          terminalOpen: routeTerminalOpen,
-          modelPickerOpen: isModelPickerOpen(),
-        },
+        context: getCurrentSidebarShortcutContext(),
       });
       const navigateToThreadKey = (targetThreadKey: string | null) => {
         if (!targetThreadKey) return false;
@@ -4309,10 +4362,10 @@ export default function Sidebar() {
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
+    getCurrentSidebarShortcutContext,
     keybindings,
     navigateToThread,
     orderedThreadKeys,
-    routeTerminalOpen,
     routeThreadKey,
     threadByKey,
   ]);
@@ -4757,6 +4810,7 @@ export default function Sidebar() {
                             // sortable wrapper keeps its identity during a drag.
                             key={`${threadKey}:${rowVariant}`}
                             thread={thread}
+                            keybindings={keybindings}
                             variant={rowVariant}
                             // Snoozed rows wake, settled rows un-settle, and cards settle.
                             variantAction={
@@ -4840,6 +4894,7 @@ export default function Sidebar() {
                               EMPTY_PROVIDER_ENTRIES
                             }
                             timestampFormat={timestampFormat}
+                            getCurrentShortcutContext={getCurrentSidebarShortcutContext}
                             onThreadClick={handleThreadClick}
                             onThreadActivate={navigateToThreadFromSidebar}
                             onStartRename={startThreadRename}
