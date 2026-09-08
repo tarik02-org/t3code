@@ -28,7 +28,7 @@ type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
 
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
-  readonly linuxDesktopEntryIcon: string | null;
+  readonly linuxDesktopEntryManaged: boolean;
   readonly linuxWmClass: string;
   readonly linuxDesktopEntryName: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
@@ -45,6 +45,8 @@ const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : null;
 };
+
+const isManagedDesktopEntryFlag = Schema.is(Schema.Literal("true"));
 
 const EarlyDesktopSettingsJson = fromLenientJson(
   Schema.Struct({
@@ -91,7 +93,9 @@ export function resolveEarlyLinuxElectronOptions(
   const isDevelopment = isDevelopmentEnvironment(input.env);
   return {
     isDevelopment,
-    linuxDesktopEntryIcon: trimNonEmpty(input.env.T3CODE_LINUX_DESKTOP_ENTRY_ICON),
+    linuxDesktopEntryManaged: isManagedDesktopEntryFlag(
+      input.env.T3CODE_LINUX_DESKTOP_ENTRY_MANAGED,
+    ),
     linuxWmClass: isDevelopment
       ? "t3code-dev"
       : isCanaryDesktopVersion(input.appVersion)

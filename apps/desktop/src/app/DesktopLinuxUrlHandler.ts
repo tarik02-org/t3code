@@ -68,14 +68,12 @@ export function escapeDesktopEntryExecArgument(value: string): string {
 export function renderUrlHandlerDesktopEntry(input: {
   readonly displayName: string;
   readonly execTarget: string;
-  readonly iconName: string | null;
   readonly scheme: string;
 }): string {
   return [
     "[Desktop Entry]",
     "Type=Application",
     `Name=${escapeDesktopEntryString(input.displayName)}`,
-    ...(input.iconName === null ? [] : [`Icon=${escapeDesktopEntryString(input.iconName)}`]),
     `Exec=${escapeDesktopEntryExecArgument(input.execTarget)} %U`,
     "Terminal=false",
     "NoDisplay=true",
@@ -111,7 +109,6 @@ export const make = Effect.gen(function* () {
     const content = renderUrlHandlerDesktopEntry({
       displayName: environment.displayName,
       execTarget,
-      iconName: Option.getOrNull(environment.linuxDesktopEntryIcon),
       scheme,
     });
     // Pre-ready setup normally wrote this already. Avoid truncating a valid
@@ -168,7 +165,7 @@ export const make = Effect.gen(function* () {
   );
 
   const register = Effect.gen(function* () {
-    if (environment.platform !== "linux") {
+    if (environment.platform !== "linux" || environment.linuxDesktopEntryManaged) {
       return;
     }
     yield* writeDesktopEntry;

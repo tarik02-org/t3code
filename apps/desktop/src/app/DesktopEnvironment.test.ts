@@ -47,7 +47,7 @@ describe("DesktopEnvironment", () => {
         {
           T3CODE_HOME: " /tmp/t3 ",
           T3CODE_COMMIT_HASH: " 0123456789abcdef ",
-          T3CODE_LINUX_DESKTOP_ENTRY_ICON: " t3code ",
+          T3CODE_LINUX_DESKTOP_ENTRY_MANAGED: "true",
           T3CODE_PORT: "4949",
           VITE_DEV_SERVER_URL: "http://localhost:5173",
           T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH: " /remote/server.mjs ",
@@ -75,7 +75,7 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assert.equal(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
-      assert.deepEqual(environment.linuxDesktopEntryIcon, Option.some("t3code"));
+      assert.equal(environment.linuxDesktopEntryManaged, true);
       assert.equal(environment.linuxWmClass, "t3code-dev");
       assert.equal(environment.linuxDesktopEntryName, "com.t3tools.T3Code.Development.desktop");
       assert.deepEqual(

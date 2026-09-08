@@ -82,7 +82,6 @@ describe("DesktopPreReadyPlatform", () => {
         vi.stubEnv("VITE_DEV_SERVER_URL", "");
         vi.stubEnv("XDG_DATA_HOME", "/xdg");
         vi.stubEnv("APPIMAGE", "/Applications/current.AppImage");
-        vi.stubEnv("T3CODE_LINUX_DESKTOP_ENTRY_ICON", "t3code");
         getSwitchValueMock.mockReturnValue("");
         let desktopName = "t3code.desktop";
         let desktopEntry = previousEntry;
@@ -104,7 +103,6 @@ describe("DesktopPreReadyPlatform", () => {
             const identity = yield* Effect.promise(() => portalIdentity);
             assert.equal(identity.desktopName, "com.t3tools.T3Code.desktop");
             assert.include(identity.desktopEntry ?? "", 'Exec="/Applications/current.AppImage" %U');
-            assert.include(identity.desktopEntry ?? "", "Icon=t3code");
             assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Alpha)");
             assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/t3code;");
           }),
@@ -112,6 +110,22 @@ describe("DesktopPreReadyPlatform", () => {
       },
     );
   }
+
+  it.effect("uses a package-managed Linux desktop entry without overwriting it", () => {
+    vi.stubEnv("T3CODE_LINUX_DESKTOP_ENTRY_MANAGED", "true");
+    getSwitchValueMock.mockReturnValue("");
+
+    return Effect.gen(function* () {
+      yield* Layer.build(
+        DesktopPreReadyPlatform.layer.pipe(
+          Layer.provide(Layer.succeed(HostProcessPlatform, "linux")),
+        ),
+      );
+
+      assert.deepEqual(setDesktopNameMock.mock.calls, [["com.t3tools.T3Code.desktop"]]);
+      assert.equal(writeFileSyncMock.mock.calls.length, 0);
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+  });
 
   it.effect("keeps startup available when the early desktop entry cannot be written", () => {
     getSwitchValueMock.mockReturnValue("");

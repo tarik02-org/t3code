@@ -74,7 +74,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly branding: DesktopAppBranding;
     readonly displayName: string;
     readonly appUserModelId: string;
-    readonly linuxDesktopEntryIcon: Option.Option<string>;
+    readonly linuxDesktopEntryManaged: boolean;
     readonly linuxDesktopEntryName: string;
     readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
@@ -238,7 +238,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () => appUserModelId),
-    linuxDesktopEntryIcon: config.linuxDesktopEntryIcon,
+    linuxDesktopEntryManaged: config.linuxDesktopEntryManaged,
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, input.appVersion),
     linuxWmClass: userDataDirName,
     linuxApplicationsDir,
