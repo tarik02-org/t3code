@@ -22,6 +22,8 @@ export interface SidebarThreadHeaderProps {
   newThreadShortcutLabel: string | null | undefined;
   newThreadInProjectShortcutLabel: string | null | undefined;
   showNewThreadInProjectHint: boolean;
+  /** Optional control rendered alongside the project and thread actions. */
+  trailingControl?: ReactNode;
   searchInputRef: RefObject<HTMLInputElement | null>;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
@@ -42,6 +44,7 @@ export function SidebarThreadHeader({
   newThreadShortcutLabel,
   newThreadInProjectShortcutLabel,
   showNewThreadInProjectHint,
+  trailingControl,
   searchInputRef,
   searchQuery,
   onSearchQueryChange,
@@ -132,6 +135,7 @@ export function SidebarThreadHeader({
         >
           <SquarePenIcon />
         </SidebarHeaderIconButton>
+        {trailingControl}
       </div>
     </div>
   );

@@ -20,7 +20,7 @@ export interface NightlyReleaseMetadata {
 }
 
 const DateSchema = Schema.String.check(Schema.isPattern(/^\d{8}$/));
-const PrereleaseChannel = Schema.Literals(["nightly", "canary"]);
+const PrereleaseChannel = Schema.Literals(["nightly", "preview", "canary"]);
 type PrereleaseChannel = typeof PrereleaseChannel.Type;
 const RunNumberSchema = Schema.FiniteFromString.check(
   Schema.isInt(),
@@ -107,7 +107,12 @@ export const resolveNightlyReleaseMetadata = (
 ) => {
   const shortSha = sha.slice(0, 12);
   const version = `${baseVersion}-${channel}.${date}.${runNumber}`;
-  const label = channel === "canary" ? "Canary" : "Nightly";
+  const label =
+    channel === "canary"
+      ? "Canary"
+      : channel === "preview"
+        ? "Preview (maintainer test build, do not install)"
+        : "Nightly";
   return {
     baseVersion,
     version,
@@ -222,7 +227,7 @@ const command = Command.make(
       ),
       Effect.flatMap((metadata) => writeNightlyReleaseOutput(metadata, githubOutput)),
     ),
-).pipe(Command.withDescription("Resolve nightly or canary release version metadata."));
+).pipe(Command.withDescription("Resolve nightly, preview, or canary release version metadata."));
 
 if (import.meta.main) {
   Command.run(command, { version: "0.0.0" }).pipe(
