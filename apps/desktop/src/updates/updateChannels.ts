@@ -20,5 +20,5 @@ export function isCanaryDesktopVersion(version: string): boolean {
 
 export function resolveDefaultDesktopUpdateChannel(appVersion: string): DesktopUpdateChannel {
   if (isCanaryDesktopVersion(appVersion)) return "canary";
-  return isNightlyDesktopVersion(appVersion) ? "nightly" : "latest";
+  return NIGHTLY_VERSION_PATTERN.test(appVersion) ? "nightly" : "latest";
 }
