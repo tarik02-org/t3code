@@ -1,4 +1,8 @@
 import { useMemo } from "react";
+import type {
+  EnvironmentProject,
+  EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/shell";
 
 import { orderItemsByPreferredIds, sortSidebarV2ProjectGroups } from "../components/Sidebar.logic";
 import { getProjectOrderKey, selectProjectGroupingSettings } from "../logicalProject";
@@ -8,10 +12,19 @@ import { useProjects, useThreadShells } from "../state/entities";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
 
-/** The sidebar's project groups, in the order the sidebar shows them. */
-export function useSidebarProjectGroups() {
-  const projects = useProjects();
-  const threads = useThreadShells();
+/**
+ * The sidebar's project groups, in the order the sidebar shows them. The
+ * sidebar passes its environment-filtered projects and threads; other callers
+ * group everything.
+ */
+export function useSidebarProjectGroups(visible?: {
+  readonly projects: ReadonlyArray<EnvironmentProject>;
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+}) {
+  const allProjects = useProjects();
+  const allThreads = useThreadShells();
+  const projects = visible?.projects ?? allProjects;
+  const threads = visible?.threads ?? allThreads;
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const sortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);

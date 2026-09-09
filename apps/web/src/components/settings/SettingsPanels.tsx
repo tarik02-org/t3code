@@ -9,6 +9,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type BackgroundActivityProfile,
+  type ContextMenuStyle,
   type DesktopUpdateChannel,
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -205,6 +206,12 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, string> = {
   wide: "Wide",
   full: "Full",
 };
+
+const CONTEXT_MENU_STYLE_LABELS = {
+  default: "Default",
+  native: "Native",
+  custom: "Custom",
+} as const satisfies Record<ContextMenuStyle, string>;
 
 const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
   stacked: "Stacked",
