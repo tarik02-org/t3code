@@ -114,7 +114,10 @@ import {
 } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import {
@@ -231,7 +234,7 @@ const CODEX_CLIENT_CAPABILITIES = {
 
 export const CodexProviderCapabilitiesV2 = {
   sessions: {
-    supportsMultipleProviderThreadsPerSession: true,
+    supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,
     supportsProviderSwitchingViaHandoff: true,
     supportsRuntimeModeSwitchInSession: true,
@@ -1531,7 +1534,9 @@ export const layerAppServerClientFactory: Layer.Layer<
           const command = yield* makeCodexAppServerSpawnCommand({
             command: input.settings.binaryPath || "codex",
             args: [
-              ...codexAppServerArgs(resolveCodexLaunchArgs(input.settings.launchArgs, input.environment)),
+              ...codexAppServerArgs(
+                resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+              ),
               ...(input.modelSelection !== undefined &&
               supportsCodexLongContext(input.modelSelection.model) &&
               getModelSelectionStringOptionValue(input.modelSelection, "contextWindow") === "1m"
@@ -1749,7 +1754,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           runtimePolicy: input.runtimePolicy,
           modelSelection: input.modelSelection,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          environment: mergeProviderSessionEnvironment(
+            resolvedRuntime?.environment ?? adapterOptions.environment,
+            input.environment,
+          ),
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<

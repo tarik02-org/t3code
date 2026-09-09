@@ -62,7 +62,10 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "@t3tools/provider-core/server/driver";
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "@t3tools/provider-core/server/instanceEnvironment";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { discoverAntigravitySkills, resolveAntigravityUserHome } from "./AntigravitySkills.ts";
 
@@ -168,7 +171,9 @@ export const AntigravityDriver: ProviderDriver<
         );
 
       const makeRuntime = Effect.fn("AntigravityDriver.makeRuntime")(function* (
-        input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
+        input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner"> & {
+          readonly environment?: NodeJS.ProcessEnv;
+        },
       ): Effect.fn.Return<
         AcpSessionRuntime.AcpSessionRuntime["Service"],
         AcpError | ProviderSetupError,
@@ -181,8 +186,12 @@ export const AntigravityDriver: ProviderDriver<
             detail: authConfigIssue,
           });
         }
+        const sessionEnvironment = mergeProviderSessionEnvironment(
+          processEnvironment,
+          input.environment,
+        );
         const executable = yield* installation
-          .acquire(settings.binaryPath, processEnvironment)
+          .acquire(settings.binaryPath, sessionEnvironment)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -196,7 +205,7 @@ export const AntigravityDriver: ProviderDriver<
           );
         const profile = yield* prepareAntigravityProfile({
           profileDirectory,
-          baseEnv: processEnvironment,
+          baseEnv: sessionEnvironment,
           auth,
           userHome,
           tempDirectory: directories.runtimeTemp,
@@ -249,7 +258,7 @@ export const AntigravityDriver: ProviderDriver<
             installation: executable,
             profile,
             cwd: input.cwd,
-            baseEnv: withAgentDeviceEnvironment(processEnvironment, input),
+            baseEnv: withAgentDeviceEnvironment(sessionEnvironment, input),
             auth,
             runtimeTempDirectory,
           }),
