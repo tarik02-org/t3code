@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type BackgroundActivityProfile,
+  type ContextMenuStyle,
   type DesktopUpdateChannel,
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -175,6 +176,17 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
+const CONTEXT_MENU_STYLE_LABELS = {
+  default: "Default",
+  native: "Native",
+  custom: "Custom",
+} as const satisfies Record<ContextMenuStyle, string>;
+
+const COMPOSER_COLLAPSE_TRIGGER_LABELS = {
+  blur: "On unfocus",
+  scroll: "On scroll",
+} as const;
+type ComposerCollapseTrigger = keyof typeof COMPOSER_COLLAPSE_TRIGGER_LABELS;
 const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
   stacked: "Stacked",
   split: "Split",
@@ -417,7 +429,7 @@ function AboutVersionSection() {
       {hasDesktopBridge ? (
         <SettingsRow
           title="Update track"
-          description="Use stable releases or nightly builds. Switch back anytime."
+          description="Use stable releases, nightly builds, or the experimental canary channel."
           control={
             <Select
               value={selectedUpdateChannel}
@@ -432,7 +444,11 @@ function AboutVersionSection() {
                 disabled={isChangingUpdateChannel}
               >
                 <SelectValue>
-                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
+                  {selectedUpdateChannel === "canary"
+                    ? "Canary"
+                    : selectedUpdateChannel === "nightly"
+                      ? "Nightly"
+                      : "Stable"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -441,6 +457,9 @@ function AboutVersionSection() {
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
                   Nightly
+                </SelectItem>
+                <SelectItem hideIndicator value="canary">
+                  Canary
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -469,6 +488,9 @@ function AboutVersionSection() {
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
                   Nightly
+                </SelectItem>
+                <SelectItem hideIndicator value="canary">
+                  Canary
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -519,6 +541,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
+        : []),
+      ...(settings.contextMenuStyle !== DEFAULT_UNIFIED_SETTINGS.contextMenuStyle
+        ? ["Context menu style"]
         : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
@@ -636,6 +661,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
+      settings.contextMenuStyle,
       settings.wordWrap,
       followSystem,
       theme,
@@ -709,6 +735,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      contextMenuStyle: DEFAULT_UNIFIED_SETTINGS.contextMenuStyle,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       persistComposerContextStrip: DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
@@ -2333,6 +2360,45 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="24-hour">
                   {TIMESTAMP_FORMAT_LABELS["24-hour"]}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Context menus"
+          description="Default uses native desktop menus on macOS and custom menus elsewhere."
+          resetAction={
+            settings.contextMenuStyle !== DEFAULT_UNIFIED_SETTINGS.contextMenuStyle ? (
+              <SettingResetButton
+                label="context menu style"
+                onClick={() =>
+                  updateSettings({ contextMenuStyle: DEFAULT_UNIFIED_SETTINGS.contextMenuStyle })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.contextMenuStyle}
+              onValueChange={(value) => {
+                if (value === "default" || value === "native" || value === "custom") {
+                  updateSettings({ contextMenuStyle: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Context menu style">
+                <SelectValue>{CONTEXT_MENU_STYLE_LABELS[settings.contextMenuStyle]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="default">
+                  {CONTEXT_MENU_STYLE_LABELS.default}
+                </SelectItem>
+                <SelectItem hideIndicator value="native">
+                  {CONTEXT_MENU_STYLE_LABELS.native}
+                </SelectItem>
+                <SelectItem hideIndicator value="custom">
+                  {CONTEXT_MENU_STYLE_LABELS.custom}
                 </SelectItem>
               </SelectPopup>
             </Select>
