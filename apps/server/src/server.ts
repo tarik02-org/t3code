@@ -61,6 +61,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { ProjectLaunchEnvLive } from "./projectLaunchEnv/Layers/ProjectLaunchEnvLive.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
@@ -405,9 +406,16 @@ const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDr
 
 const layerPortScanner = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
+const layerProjectLaunchEnv = ProjectLaunchEnvLive.pipe(
+  Layer.provideMerge(ProjectionStoreV2.layer),
+  Layer.provideMerge(RuntimeLayer.layerProjectService),
+  Layer.provideMerge(layerPersistence),
+);
+
 const layerTerminal = TerminalManager.layer.pipe(
   Layer.provide(layerPtyAdapter),
   Layer.provide(layerPortScanner),
+  Layer.provide(layerProjectLaunchEnv),
   Layer.provide(layerNativeTelemetry),
 );
 
@@ -597,6 +605,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // built-in drivers' layer provides alongside the registry.
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
+  Layer.provideMerge(layerProjectLaunchEnv),
   Layer.provideMerge(layerVcs),
   Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
   Layer.provideMerge(layerPersistence),

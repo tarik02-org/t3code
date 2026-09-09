@@ -89,6 +89,7 @@ const operationOf = (
     );
     const input = { sessionID, ...query, ...Object.fromEntries(fields) };
     if (method === "GET" && rest === "") return { type: "session.get", input };
+    if (method === "PUT" && rest === "/environment") return { type: "session.environment", input };
     if (method === "DELETE" && rest === "") return { type: "session.remove", input };
     if (method === "PATCH" && rest === "") return { type: "session.update", input };
     if (method === "POST" && rest === "/prompt") return { type: "session.prompt", input };
@@ -142,8 +143,12 @@ const operationOf = (
 const replayHttpClient = (
   controller: OpenCodeReplayController,
   replayGate: ProviderReplayGate | undefined,
-) =>
-  HttpClient.make((request, url) =>
+  signal: AbortSignal,
+) => {
+  const subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  let eventPump: Promise<void> | undefined;
+  const encoder = new TextEncoder();
+  return HttpClient.make((request, url) =>
     Effect.tryPromise({
       try: async () => {
         if (controller.exited && controller.finished) {
@@ -166,14 +171,29 @@ const replayHttpClient = (
         await controller.expectOutbound(operation);
         if (operation.type === "event.subscribe") {
           controller.exited = false;
-          const encoder = new TextEncoder();
-          const events = controller.events(undefined, replayGate?.beforeEmit);
-          const frames = events[Symbol.asyncIterator]();
+          let subscriber: ReadableStreamDefaultController<Uint8Array> | undefined;
+          // A real server broadcasts its events to every runtime connection.
           const body = new ReadableStream<Uint8Array>({
-            async pull(stream) {
-              const next = await frames.next();
-              if (next.done === true) stream.close();
-              else stream.enqueue(encoder.encode(`data: ${encodeJson(next.value)}\n\n`));
+            start(stream) {
+              subscriber = stream;
+              subscribers.add(stream);
+              eventPump ??= (async () => {
+                try {
+                  for await (const event of controller.events(signal, replayGate?.beforeEmit)) {
+                    const frame = encoder.encode(`data: ${encodeJson(event)}\n\n`);
+                    for (const subscriber of subscribers) subscriber.enqueue(frame);
+                  }
+                  for (const subscriber of subscribers) subscriber.close();
+                } catch (cause) {
+                  for (const subscriber of subscribers) subscriber.error(cause);
+                } finally {
+                  subscribers.clear();
+                  eventPump = undefined;
+                }
+              })();
+            },
+            cancel() {
+              if (subscriber !== undefined) subscribers.delete(subscriber);
             },
           });
           return new Response(body, { headers: { "content-type": "text/event-stream" } });
@@ -198,6 +218,7 @@ const replayHttpClient = (
         }),
     }).pipe(Effect.map((response) => HttpClientResponse.fromWeb(request, response))),
   );
+};
 
 /**
  * An OpenCode 2 server that answers from `transcript`, checking at scope close
@@ -214,8 +235,10 @@ export const replayServer = (
 ) =>
   Effect.gen(function* () {
     const controller = new OpenCodeReplayController(transcript);
+    const eventAbort = new AbortController();
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
+        eventAbort.abort();
         options?.replayGate?.releaseAll();
         controller.assertComplete();
       }),
@@ -223,7 +246,7 @@ export const replayServer = (
     const opencode = yield* OpenCode2Client.make.pipe(
       Effect.provideService(
         HttpClient.HttpClient,
-        replayHttpClient(controller, options?.replayGate),
+        replayHttpClient(controller, options?.replayGate, eventAbort.signal),
       ),
     );
     const connection = {
@@ -290,6 +313,7 @@ export const openCode2ReplayRuntime = (
     readonly external?: boolean;
     readonly borrowers?: { current: number };
     readonly replayGate?: ProviderReplayGate;
+    readonly environment?: Readonly<Record<string, string>>;
   },
 ) =>
   Effect.gen(function* () {
@@ -306,6 +330,7 @@ export const openCode2ReplayRuntime = (
     return yield* adapter.openSession({
       threadId: ThreadId.make("thread:opencode2-adapter"),
       providerSessionId: ProviderSessionId.make("provider-session:opencode2-adapter"),
+      ...(options?.environment === undefined ? {} : { environment: options.environment }),
       modelSelection: {
         instanceId: ProviderInstanceId.make("opencode"),
         model: "opencode/big-pickle",
