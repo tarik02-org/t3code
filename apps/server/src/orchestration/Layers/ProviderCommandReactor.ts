@@ -67,6 +67,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
+import { ProjectLaunchEnv } from "../../projectLaunchEnv/Services/ProjectLaunchEnv.ts";
 import { getCodexDefaultModeRequestUserInputConfigValue } from "../../codexModelOptions.ts";
 const isProviderAdapterProcessError = Schema.is(ProviderAdapterProcessError);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
@@ -238,6 +239,7 @@ const make = Effect.gen(function* () {
     return resolveProjectSettings(settings, Option.isSome(thread) ? thread.value.projectId : null)
       .settings;
   });
+  const projectLaunchEnv = yield* Effect.serviceOption(ProjectLaunchEnv);
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -715,6 +717,15 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
+    const providerProjectLaunchEnv =
+      project !== undefined && Option.isSome(projectLaunchEnv)
+        ? yield* projectLaunchEnv.value.resolve({
+            projectRoot: project.workspaceRoot,
+            projectId: project.id,
+            threadId,
+            worktreePath: thread.worktreePath,
+          })
+        : undefined;
     const refreshWorkspaceSnapshot = effectiveCwd
       ? providerRegistry
           .refreshWorkspaceSnapshot({ instanceId: desiredInstanceId, cwd: effectiveCwd })
@@ -740,6 +751,7 @@ const make = Effect.gen(function* () {
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+          ...(providerProjectLaunchEnv ? { env: providerProjectLaunchEnv } : {}),
           ...(sessionTitle ? { title: sessionTitle } : {}),
           modelSelection: desiredModelSelection,
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
