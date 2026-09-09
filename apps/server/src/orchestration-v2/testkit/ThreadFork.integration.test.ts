@@ -17,7 +17,10 @@ import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
-import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
+import {
+  CodexOrchestratorReplayHarness,
+  makeCodexProviderAdapterRegistryReplayLayer,
+} from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
@@ -42,6 +45,7 @@ const CLAUDE_MODEL_SELECTION = {
   model: "claude-sonnet-4-6",
 } as const;
 const TRANSCRIPT_PATH = `${import.meta.dirname}/fixtures/thread_fork_native/codex_transcript.ndjson`;
+const decodeReplayFrame = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown));
 const PRIOR_TURN_TRANSCRIPT_PATH = `${import.meta.dirname}/fixtures/thread_fork_native_prior_turn/codex_transcript.ndjson`;
 const CLAUDE_TRANSCRIPT_PATH = `${import.meta.dirname}/fixtures/thread_fork_native/claude_transcript.ndjson`;
 const CLAUDE_PRIOR_TURN_TRANSCRIPT_PATH = `${import.meta.dirname}/fixtures/thread_fork_native_prior_turn/claude_transcript.ndjson`;
@@ -140,7 +144,7 @@ function userAndAssistantText(
 
 describe("orchestration V2 thread fork", () => {
   it.effect(
-    "creates an idle app fork and resolves it with Codex native thread/fork on first dispatch",
+    "creates an idle app fork and resolves it with Codex native thread/fork in an isolated runtime",
     () =>
       Effect.gen(function* () {
         const rawTranscript = yield* readTranscript();
@@ -240,6 +244,43 @@ describe("orchestration V2 thread fork", () => {
           };
         }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
 
+        const forkIndex = transcript.entries.findIndex(
+          (entry) => entry.type === "expect_outbound" && entry.label === "thread/fork",
+        );
+        assert.isAbove(forkIndex, 0);
+        const sourceTranscript = {
+          ...transcript,
+          entries: transcript.entries.slice(0, forkIndex),
+        };
+        // A separate transport starts its RPC ids again after its own handshake.
+        const targetTranscript = {
+          ...transcript,
+          entries: [
+            ...transcript.entries.slice(0, 3),
+            ...transcript.entries.slice(forkIndex).map((entry) => {
+              if (entry.type === "runtime_exit") return entry;
+              const frame = decodeReplayFrame(entry.frame);
+              return {
+                ...entry,
+                frame: {
+                  ...frame,
+                  ...(frame.id === 4 ? { id: 2 } : frame.id === 5 ? { id: 3 } : {}),
+                },
+              };
+            }),
+          ],
+        };
+        const isolatedHarness = {
+          ...CodexOrchestratorReplayHarness,
+          makeProviderAdapterRegistryLayer: () =>
+            makeCodexProviderAdapterRegistryReplayLayer({
+              transcript,
+              transcriptsByThread: new Map([
+                [materialized.sourceThreadId, sourceTranscript],
+                [materialized.targetThreadId, targetTranscript],
+              ]),
+            }),
+        };
         const result = yield* runOrchestratorV2ProviderReplayScenario(
           {
             name: "thread_fork_native/codex",
@@ -258,7 +299,7 @@ describe("orchestration V2 thread fork", () => {
             projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
             runtimePolicyOverride: { cwd },
           },
-          CodexOrchestratorReplayHarness,
+          isolatedHarness,
         ).pipe(provideDeterministicTestRuntime);
 
         const sourceProjection = result.projections.get(materialized.sourceThreadId);
@@ -268,6 +309,10 @@ describe("orchestration V2 thread fork", () => {
         assert.equal(targetProjection.thread.lineage.parentThreadId, materialized.sourceThreadId);
         assert.equal(targetProjection.thread.lineage.relationshipToParent, "fork");
         assert.lengthOf(targetProjection.providerSessions, 1);
+        assert.notEqual(
+          targetProjection.providerSessions[0]?.id,
+          sourceProjection.providerSessions[0]?.id,
+        );
         assert.lengthOf(targetProjection.providerThreads, 1);
         assert.equal(
           targetProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
