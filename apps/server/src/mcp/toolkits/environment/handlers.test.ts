@@ -98,3 +98,45 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
     );
   }),
 );
+
+it.effect(
+  "reports the calling credential's identity without shell variables or optional capabilities",
+  () =>
+    Effect.gen(function* () {
+      for (const provider of ["cursor", "opencode", "codex"]) {
+        const layerDependencies = Layer.mergeAll(
+          ThreadCommandExecutor.layer,
+          Layer.succeed(McpInvocationContext.McpInvocationContext, {
+            environmentId: EnvironmentId.make("environment:identity"),
+            thread: {
+              threadId: ThreadId.make(`thread:${provider}`),
+              providerInstanceId: ProviderInstanceId.make(provider),
+              providerSessionId: `session:${provider}`,
+            },
+            client: undefined,
+            requestNamespace: `session:${provider}`,
+            capabilities: new Set<McpInvocationContext.McpCapability>(),
+            issuedAt: 0,
+          }),
+          Layer.mock(Environment.ServerEnvironment)({}),
+          Layer.mock(ThreadManagement.ThreadManagementService)({}),
+          Layer.mock(Settings.ServerSettingsService)({}),
+        );
+        const result = yield* Effect.gen(function* () {
+          const toolkit = yield* EnvironmentToolkit;
+          return yield* toolkit.handle("t3_identity", {}).pipe(Stream.unwrap, Stream.runCollect);
+        }).pipe(
+          Effect.provide(
+            McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+              Layer.provideMerge(layerDependencies),
+            ),
+          ),
+        );
+        expect(result.at(-1)?.result).toEqual({
+          environmentId: "environment:identity",
+          threadId: `thread:${provider}`,
+          providerInstanceId: provider,
+        });
+      }
+    }),
+);

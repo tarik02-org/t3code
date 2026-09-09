@@ -1,5 +1,7 @@
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { mergeResolvedProjectLaunchEnv } from "@t3tools/shared/projectLaunchEnv";
+import { ServerConfig } from "../config.ts";
 import {
   ModelSelection,
   OrchestrationV2DomainEvent,
@@ -349,6 +351,7 @@ export const layerWithOptions = (
        */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
+      const serverConfig = yield* Effect.serviceOption(ServerConfig);
       const eventSink = yield* EventSink.EventSinkV2;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
@@ -2066,6 +2069,30 @@ export const layerWithOptions = (
                     }),
                 ),
               );
+              const launchEnvironment = yield* Effect.gen(function* () {
+                if (Option.isNone(serverConfig) || Option.isNone(projectService)) return undefined;
+                const thread = yield* projectionStore.getThread(input.threadId);
+                const project = yield* projectService.value.getById(thread.projectId);
+                if (Option.isNone(project)) return undefined;
+                return mergeResolvedProjectLaunchEnv({
+                  t3Home: serverConfig.value.baseDir,
+                  context: {
+                    projectRoot: project.value.workspaceRoot,
+                    projectId: thread.projectId,
+                    threadId: input.threadId,
+                    worktreePath: thread.worktreePath ?? undefined,
+                  },
+                });
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               const prepared = yield* prepareMcpSession(
                 input.threadId,
                 input.modelSelection.instanceId,
@@ -2085,6 +2112,7 @@ export const layerWithOptions = (
               const sessionScope = yield* Scope.fork(sessionScopes);
               const runtime = yield* adapter
                 .openSession({
+                  ...(launchEnvironment === undefined ? {} : { environment: launchEnvironment }),
                   threadId: input.threadId,
                   providerSessionId: input.providerSessionId,
                   modelSelection: input.modelSelection,

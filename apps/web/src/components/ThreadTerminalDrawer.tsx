@@ -24,6 +24,7 @@ import {
   AuthTerminalOperateScope,
   type ContextMenuItem,
   type ProviderInstanceId,
+  type ProjectId,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
@@ -332,6 +333,7 @@ interface TerminalViewportProps {
   advancedTypography: boolean;
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
+  projectId?: ProjectId;
   terminalId: string;
   terminalLabel: string;
   cwd: string;
@@ -358,6 +360,7 @@ export function TerminalViewport({
   advancedTypography,
   threadRef,
   threadId,
+  projectId,
   terminalId,
   terminalLabel,
   cwd,
@@ -437,6 +440,7 @@ export function TerminalViewport({
     terminal: {
       threadId,
       terminalId,
+      ...(projectId !== undefined ? { projectId } : {}),
       cwd,
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runtimeEnv ? { env: runtimeEnv } : {}),
@@ -990,7 +994,9 @@ export function TerminalViewport({
         mount.focus({ preventScroll: true });
       }
     };
-  }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+    // autoFocus is intentionally omitted;
+    // it is only read at mount time and must not trigger terminal teardown/recreation.
+  }, [cwd, environmentId, projectId, runtimeEnvKey, terminalId, threadId, worktreePath]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1057,6 +1063,7 @@ interface ThreadTerminalDrawerProps {
   mode?: "drawer" | "panel";
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
+  projectId: ProjectId;
   cwd: string;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
@@ -1133,6 +1140,7 @@ export default function ThreadTerminalDrawer({
   mode = "drawer",
   threadRef,
   threadId,
+  projectId,
   cwd,
   worktreePath,
   runtimeEnv,
@@ -1629,6 +1637,7 @@ export default function ThreadTerminalDrawer({
                           advancedTypography={advancedTypography}
                           threadRef={threadRef}
                           threadId={threadId}
+                          projectId={projectId}
                           terminalId={terminalId}
                           terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
                           cwd={terminalLaunchLocation.cwd}
@@ -1659,6 +1668,7 @@ export default function ThreadTerminalDrawer({
                   key={resolvedActiveTerminalId}
                   threadRef={threadRef}
                   threadId={threadId}
+                  projectId={projectId}
                   terminalId={resolvedActiveTerminalId}
                   terminalLabel={terminalLabelById.get(resolvedActiveTerminalId) ?? "Terminal"}
                   cwd={activeTerminalLaunchLocation.cwd}
