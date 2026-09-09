@@ -11,7 +11,7 @@ import * as String from "effect/String";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const ReleaseChannel = Schema.Literals(["stable", "nightly", "canary"]);
+const ReleaseChannel = Schema.Literals(["stable", "nightly", "preview", "canary"]);
 type ReleaseChannel = typeof ReleaseChannel.Type;
 type PrereleaseChannel = Exclude<ReleaseChannel, "stable">;
 
@@ -152,7 +152,11 @@ const parseStableTag = (tag: string): StableVersion | undefined => {
   if (!major || !minor || !patch) return undefined;
 
   const prereleaseIdentifiers = prerelease ? prerelease.split(".") : [];
-  if (prereleaseIdentifiers[0] === "nightly" || prereleaseIdentifiers[0] === "canary") {
+  if (
+    prereleaseIdentifiers[0] === "nightly" ||
+    prereleaseIdentifiers[0] === "preview" ||
+    prereleaseIdentifiers[0] === "canary"
+  ) {
     return undefined;
   }
 

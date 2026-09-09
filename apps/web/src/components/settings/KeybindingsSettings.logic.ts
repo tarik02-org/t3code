@@ -19,10 +19,22 @@ const usageCommandOrder = new Map<KeybindingCommand, number>(
   [...METRIC_OPTIONS, ...WINDOW_OPTIONS].map((option, index) => [option.command, index]),
 );
 
-function compareUsageCommands(left: KeybindingCommand, right: KeybindingCommand): number | null {
+const USAGE_ORDER_ANCHOR = METRIC_OPTIONS[0].command;
+
+// Usage page commands sort as one block, in page order, at the position of the
+// block's first command. Keeping the order total makes the result independent
+// of the input order and of the sort algorithm.
+function compareCommands(
+  left: KeybindingCommand,
+  right: KeybindingCommand,
+  name: (command: KeybindingCommand) => string,
+): number {
   const leftIndex = usageCommandOrder.get(left);
   const rightIndex = usageCommandOrder.get(right);
-  return leftIndex !== undefined && rightIndex !== undefined ? leftIndex - rightIndex : null;
+  const nameCompare = name(leftIndex === undefined ? left : USAGE_ORDER_ANCHOR).localeCompare(
+    name(rightIndex === undefined ? right : USAGE_ORDER_ANCHOR),
+  );
+  return nameCompare !== 0 ? nameCompare : (leftIndex ?? -1) - (rightIndex ?? -1);
 }
 
 export type KeybindingSource = "Default" | "Custom" | "Project";
@@ -215,9 +227,7 @@ export function buildKeybindingRows(
   });
 
   rowsWithConflicts.sort((left, right) => {
-    const commandCompare =
-      compareUsageCommands(left.command, right.command) ??
-      left.command.localeCompare(right.command);
+    const commandCompare = compareCommands(left.command, right.command, (command) => command);
     if (commandCompare !== 0) return commandCompare;
     return left.key.localeCompare(right.key);
   });
@@ -290,10 +300,7 @@ export function buildKeybindingCommandOptions(
   for (const binding of keybindings) {
     commands.add(binding.command);
   }
-  return [...commands].toSorted(
-    (left, right) =>
-      compareUsageCommands(left, right) ?? commandLabel(left).localeCompare(commandLabel(right)),
-  );
+  return [...commands].toSorted((left, right) => compareCommands(left, right, commandLabel));
 }
 
 export function commandLabel(command: KeybindingCommand): string {
@@ -366,7 +373,7 @@ export function keybindingFromKeyboardEvent(
   }
   if (event.altKey) parts.push("alt");
   if (event.shiftKey) parts.push("shift");
-  if (parts.length === 0) {
+  if (parts.length === 0 && !/^f\d{1,2}$/.test(keyToken)) {
     return null;
   }
   parts.push(keyToken);
