@@ -45,6 +45,21 @@ const access = (writable = false) =>
     return { ...context, descriptor, settings: yield* Settings.ServerSettingsService };
   });
 export const EnvironmentHandlersLive = EnvironmentToolkit.toLayer({
+  t3_identity: () =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      if (scope.thread === undefined) {
+        return yield* new OrchestratorMcpFailure({
+          code: "thread_credential_required",
+          message: "Thread identity requires an agent running inside T3 Code.",
+        });
+      }
+      return {
+        environmentId: scope.environmentId,
+        threadId: scope.thread.threadId,
+        providerInstanceId: scope.thread.providerInstanceId,
+      };
+    }),
   t3_environment_read: () =>
     Effect.gen(function* () {
       const { descriptor, settings } = yield* access();

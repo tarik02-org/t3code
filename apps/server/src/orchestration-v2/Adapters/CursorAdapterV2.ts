@@ -53,7 +53,10 @@ import {
   hasCursorSkillMention,
   rewriteCursorSkillMentions,
 } from "../../provider/Drivers/CursorSkills.ts";
-import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "../../provider/ProviderInstanceEnvironment.ts";
 import { t3OrchestrationPromptForFirstRun } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as IdAllocator from "../IdAllocator.ts";
@@ -2115,7 +2118,7 @@ export function makeCursorAdapterV2(
           if (hasCursorSkillMention(rawText) && cursorSkillNames === undefined) {
             const skills = yield* discoverCursorSkills(
               turnInput.runtimePolicy.cwd ?? undefined,
-              adapterOptions.environment,
+              mergeProviderSessionEnvironment(adapterOptions.environment, input.environment),
             ).pipe(
               Effect.provideService(FileSystem.FileSystem, fileSystem),
               Effect.provideService(Path.Path, path),
