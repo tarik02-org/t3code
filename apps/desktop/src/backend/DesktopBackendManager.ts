@@ -15,7 +15,7 @@
 //     so each instance can resolve its own start config — the primary wires
 //     `configuration.resolvePrimary`, the WSL orchestrator wires a
 //     `configuration.resolveWsl({ port, distro })` closure.
-//   - onReady / onShutdown drive UI side effects (window auto-open,
+//   - onReady / onShutdown drive UI side effects (window recovery,
 //     readiness latch) only for instances that want them — the primary's
 //     spec passes the window's handleBackendReady/handleBackendNotReady,
 //     other pool instances pass nothing.
