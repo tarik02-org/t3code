@@ -52,7 +52,9 @@ import {
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
 import {
+  type EnvironmentId,
   type EnvironmentMachineKind,
+  type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -71,6 +73,7 @@ import {
   FolderIcon,
   GitBranchIcon,
   MessageCircleQuestionIcon,
+  Globe2Icon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
@@ -97,7 +100,6 @@ import {
 } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
 
-import { useRightPanelStore } from "../rightPanelStore";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -109,13 +111,16 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
   shouldShowThreadJumpHintsForModifiers,
+  type ShortcutMatchContext,
   threadJumpCommandForIndex,
   threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
 } from "../keybindings";
 import { useShortcutModifierState } from "../shortcutModifierState";
+import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
+import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { isMacPlatform } from "~/lib/utils";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
@@ -263,10 +268,20 @@ import {
   ComboboxTrigger,
   useComboboxFilter,
 } from "./ui/combobox";
-import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
+import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { useSidebarActiveThreadScroll } from "./sidebar/useSidebarActiveThreadScroll";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuShortcut,
+  MenuTrigger,
+} from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import {
@@ -295,6 +310,78 @@ const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
 // Working beta: when this client saw each thread leave the Working shelf.
 // Module scope keeps the inbox order across routes that unmount the sidebar.
 const inboxReturns = createInboxReturnTracker();
+
+interface SidebarEnvironmentVisibilityOption {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly visible: boolean;
+  readonly projectCount: number;
+}
+
+function EnvironmentVisibilityMenu(props: {
+  readonly environments: readonly SidebarEnvironmentVisibilityOption[];
+  readonly onVisibilityChange: (environmentId: EnvironmentId, visible: boolean) => void;
+}) {
+  if (props.environments.length <= 1) return null;
+  const visibleEnvironmentCount = props.environments.filter(
+    (environment) => environment.visible,
+  ).length;
+  const hiddenCount = props.environments.length - visibleEnvironmentCount;
+  return (
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={
+                <SidebarMenuButton
+                  size="icon"
+                  focusRingOffset="sidebar"
+                  type="button"
+                  aria-label="Choose sidebar environments"
+                  className="relative shrink-0"
+                />
+              }
+            />
+          }
+        >
+          <Globe2Icon />
+        </TooltipTrigger>
+        <TooltipPopup side="right">
+          {hiddenCount > 0
+            ? `${hiddenCount} hidden environment${hiddenCount === 1 ? "" : "s"}`
+            : "Sidebar environments"}
+        </TooltipPopup>
+      </Tooltip>
+      <MenuPopup align="end" side="bottom" className="min-w-56">
+        <MenuGroup>
+          {props.environments.map((environment) => {
+            const isLastVisibleEnvironment = environment.visible && visibleEnvironmentCount === 1;
+            return (
+              <MenuCheckboxItem
+                key={environment.environmentId}
+                checked={environment.visible}
+                disabled={isLastVisibleEnvironment}
+                variant="switch"
+                onCheckedChange={(checked) => {
+                  if (isLastVisibleEnvironment && checked !== true) return;
+                  props.onVisibilityChange(environment.environmentId, checked === true);
+                }}
+              >
+                <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                  <span className="truncate">{environment.label}</span>
+                  <span className="text-muted-foreground/60">
+                    {environment.projectCount} project{environment.projectCount === 1 ? "" : "s"}
+                  </span>
+                </span>
+              </MenuCheckboxItem>
+            );
+          })}
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
 
 function compactSidebarTimeLabel(label: string): string {
   if (label === "just now") return "now";
@@ -933,6 +1020,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectByKey: ReadonlyMap<string, EnvironmentProject>;
   projectDisplayNameByKey: ReadonlyMap<string, string>;
   scopedProjectKeys: ReadonlySet<string> | null;
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId>;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
   onDraftContextMenu: (draftId: DraftId, position: { x: number; y: number }) => void;
@@ -972,6 +1060,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       if (session.promotedTo != null) {
         continue;
       }
+      if (props.hiddenEnvironmentIds.has(session.environmentId)) continue;
       if (
         props.scopedProjectKeys !== null &&
         !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -1001,6 +1090,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenActive,
     props.routeDraftId,
     props.scopedProjectKeys,
+    props.hiddenEnvironmentIds,
   ]);
   if (drafts.length === 0) {
     return null;
@@ -1073,6 +1163,7 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
+  keybindings: ResolvedKeybindingsConfig;
   variant: "card" | "slim";
   // Settled rows un-settle, snoozed rows wake, and cards settle.
   variantAction: SidebarSweepAction;
@@ -1116,6 +1207,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   projectDisplayName: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   timestampFormat: TimestampFormat;
+  getCurrentShortcutContext: () => ShortcutMatchContext;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
@@ -1144,9 +1236,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   ) => void;
 }) {
   const {
+    getCurrentShortcutContext,
     isRenaming,
     changeRequestSnapshot,
     onChangeRequestSnapshot,
+    keybindings,
     onCancelRename,
     onCommitRename,
     onContextMenu,
@@ -1379,12 +1473,29 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
+      const command = resolveShortcutCommand(event, keybindings, {
+        platform: navigator.platform,
+        context: getCurrentShortcutContext(),
+      });
+      if (command === "thread.rename") {
+        event.preventDefault();
+        event.stopPropagation();
+        onStartRename(threadRef, thread.title);
+        return;
+      }
       if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       onThreadActivate(threadRef);
     },
-    [onThreadActivate, threadRef],
+    [
+      getCurrentShortcutContext,
+      keybindings,
+      onStartRename,
+      onThreadActivate,
+      thread.title,
+      threadRef,
+    ],
   );
   const handleDoubleClick = useCallback(
     (event: ReactMouseEvent) => {
@@ -1418,6 +1529,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     return () => window.removeEventListener("dragend", clearFileDrag);
   }, [isFileDragOver]);
   const renameCommittedRef = useRef(false);
+  const rowElementRef = useRef<HTMLDivElement>(null);
+  const setRowElementRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      rowElementRef.current = element;
+      rowRef(element);
+    },
+    [rowRef],
+  );
   useEffect(() => {
     if (isRenaming) renameCommittedRef.current = false;
   }, [isRenaming]);
@@ -1429,10 +1548,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         event.preventDefault();
         renameCommittedRef.current = true;
         onCommitRename(threadRef, renamingTitle, thread.title);
+        window.requestAnimationFrame(() => rowElementRef.current?.focus());
       } else if (event.key === "Escape") {
         event.preventDefault();
         renameCommittedRef.current = true;
         onCancelRename();
+        window.requestAnimationFrame(() => rowElementRef.current?.focus());
       }
     },
     [onCancelRename, onCommitRename, renamingTitle, thread.title, threadRef],
@@ -1743,6 +1864,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     return (
       <li
         data-thread-item={threadKey}
+        data-sidebar-thread-key={threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
@@ -1755,11 +1877,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           <TooltipTrigger
             render={
               <div
-                ref={rowRef}
+                ref={setRowElementRef}
                 role="button"
                 tabIndex={0}
                 aria-label={accessibility.label}
                 aria-current={accessibility.current}
+                data-thread-row
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
@@ -1908,6 +2031,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   return (
     <li
       data-thread-item={threadKey}
+      data-sidebar-thread-key={threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
       className={cn(
@@ -1920,11 +2044,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         <TooltipTrigger
           render={
             <div
-              ref={rowRef}
+              ref={setRowElementRef}
               role="button"
               tabIndex={0}
               aria-label={accessibility.label}
               aria-current={accessibility.current}
+              data-thread-row
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
@@ -2322,9 +2447,15 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 });
 
 export default function Sidebar() {
-  const projects = useProjects();
+  const allProjects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const threads = useThreadShells();
+  const allThreads = useThreadShells();
+  const sidebarEnvironmentHiddenById = useUiStateStore(
+    (store) => store.sidebarEnvironmentHiddenById,
+  );
+  const setSidebarEnvironmentVisible = useUiStateStore(
+    (store) => store.setSidebarEnvironmentVisible,
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -2415,11 +2546,55 @@ export default function Sidebar() {
   const environments = useEnvironmentIdentities();
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environmentVisibilityOptions = useMemo<SidebarEnvironmentVisibilityOption[]>(() => {
+    const projectCounts = new Map<EnvironmentId, number>();
+    for (const project of allProjects) {
+      projectCounts.set(project.environmentId, (projectCounts.get(project.environmentId) ?? 0) + 1);
+    }
+    return environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      visible:
+        environments.length <= 1 ||
+        sidebarEnvironmentHiddenById[environment.environmentId] !== true,
+      projectCount: projectCounts.get(environment.environmentId) ?? 0,
+    }));
+  }, [allProjects, environments, sidebarEnvironmentHiddenById]);
+  const hiddenEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        environmentVisibilityOptions
+          .filter((environment) => !environment.visible)
+          .map((environment) => environment.environmentId),
+      ),
+    [environmentVisibilityOptions],
+  );
+  const visibleEnvironmentKey = environmentVisibilityOptions
+    .filter((environment) => environment.visible)
+    .map((environment) => environment.environmentId)
+    .join("\0");
+  const projects = useMemo(
+    () =>
+      environments.length <= 1
+        ? allProjects
+        : allProjects.filter((project) => !hiddenEnvironmentIds.has(project.environmentId)),
+    [allProjects, environments.length, hiddenEnvironmentIds],
+  );
+  const threads = useMemo(
+    () =>
+      environments.length <= 1
+        ? allThreads
+        : allThreads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId)),
+    [allThreads, environments.length, hiddenEnvironmentIds],
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
   const rangeSelectTo = useThreadSelectionStore((s) => s.rangeSelectTo);
   const acknowledgeWoke = useAcknowledgeThreadWoke();
+  useEffect(() => {
+    clearSelection();
+  }, [clearSelection, visibleEnvironmentKey]);
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -2432,6 +2607,10 @@ export default function Sidebar() {
     [routeDraftThread, routeTarget],
   );
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const markSidebarThreadNavigation = useSidebarActiveThreadScroll({
+    hasThreadRoute: routeTarget !== null,
+    routeThreadKey,
+  });
   const routeTargetRef = useRef(routeTarget);
   routeTargetRef.current = routeTarget;
   // Post-settle navigation validates against the CURRENT route, not the one
@@ -2439,6 +2618,8 @@ export default function Sidebar() {
   // the command was in flight, completing it must not yank them away.
   const routeThreadKeyRef = useRef(routeThreadKey);
   routeThreadKeyRef.current = routeThreadKey;
+  const routeThreadRefForShortcuts = useRef(routeThreadRef);
+  routeThreadRefForShortcuts.current = routeThreadRef;
 
   const environmentLabelById = useMemo(
     () =>
@@ -3083,6 +3264,13 @@ export default function Sidebar() {
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
+  const navigateToThreadFromSidebar = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      markSidebarThreadNavigation(scopedThreadKey(threadRef));
+      navigateToThread(threadRef);
+    },
+    [markSidebarThreadNavigation, navigateToThread],
+  );
 
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
@@ -3231,9 +3419,9 @@ export default function Sidebar() {
       if (isTrailingDoubleClick(event.detail)) {
         return;
       }
-      navigateToThread(threadRef);
+      navigateToThreadFromSidebar(threadRef);
     },
-    [navigateToThread, rangeSelectTo, toggleThreadSelection],
+    [navigateToThreadFromSidebar, rangeSelectTo, toggleThreadSelection],
   );
 
   // A settle per thread at a time: double clicks and repeated menu picks
@@ -4714,6 +4902,26 @@ export default function Sidebar() {
       ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
       : false,
   );
+  const getCurrentSidebarShortcutContext = useCallback((): ShortcutMatchContext => {
+    const activeThreadRef = routeThreadRefForShortcuts.current;
+    return {
+      terminalFocus: isTerminalFocused(),
+      terminalOpen: activeThreadRef
+        ? selectThreadTerminalUiState(
+            useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+            activeThreadRef,
+          ).terminalOpen
+        : false,
+      previewFocus: isPreviewFocused(),
+      previewOpen: activeThreadRef
+        ? selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, activeThreadRef) ===
+          "preview"
+        : false,
+      modelPickerOpen: isModelPickerOpen(),
+      isWeb: !isElectron,
+      isDesktop: isElectron,
+    };
+  }, []);
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || isCommandPaletteOpen() || isModelPickerOpen()) {
@@ -4721,13 +4929,7 @@ export default function Sidebar() {
       }
       const command = resolveShortcutCommand(event, keybindings, {
         platform: navigator.platform,
-        context: {
-          terminalFocus: isTerminalFocused(),
-          terminalOpen: routeTerminalOpen,
-          modelPickerOpen: isModelPickerOpen(),
-          isWeb: !isElectron,
-          isDesktop: isElectron,
-        },
+        context: getCurrentSidebarShortcutContext(),
       });
       const navigateToThreadKey = (targetThreadKey: string | null) => {
         if (!targetThreadKey) return false;
@@ -4756,10 +4958,10 @@ export default function Sidebar() {
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
+    getCurrentSidebarShortcutContext,
     keybindings,
     navigateToThread,
     orderedThreadKeys,
-    routeTerminalOpen,
     routeThreadKey,
     threadByKey,
   ]);
@@ -4969,6 +5171,12 @@ export default function Sidebar() {
                   </ComboboxPopup>
                 </Combobox>
               }
+              trailingControl={
+                <EnvironmentVisibilityMenu
+                  environments={environmentVisibilityOptions}
+                  onVisibilityChange={setSidebarEnvironmentVisible}
+                />
+              }
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
               newThreadDisabled={projects.length === 0}
@@ -5119,6 +5327,7 @@ export default function Sidebar() {
                             // sortable wrapper keeps its identity during a drag.
                             key={`${threadKey}:${rowVariant}`}
                             thread={thread}
+                            keybindings={keybindings}
                             variant={rowVariant}
                             // Snoozed rows wake, settled rows un-settle, and cards settle.
                             variantAction={
@@ -5191,8 +5400,9 @@ export default function Sidebar() {
                               EMPTY_PROVIDER_ENTRIES
                             }
                             timestampFormat={timestampFormat}
+                            getCurrentShortcutContext={getCurrentSidebarShortcutContext}
                             onThreadClick={handleThreadClick}
-                            onThreadActivate={navigateToThread}
+                            onThreadActivate={navigateToThreadFromSidebar}
                             onStartRename={startThreadRename}
                             onRenameTitleChange={setRenamingTitle}
                             onCommitRename={commitThreadRename}
@@ -5245,6 +5455,7 @@ export default function Sidebar() {
                           projectByKey={projectByKey}
                           projectDisplayNameByKey={projectDisplayNameByKey}
                           scopedProjectKeys={scopedProjectKeys}
+                          hiddenEnvironmentIds={hiddenEnvironmentIds}
                           routeDraftId={routeDraftIdForRows}
                           onNavigateToDraft={navigateToDraft}
                           onDraftContextMenu={handleDraftContextMenu}
