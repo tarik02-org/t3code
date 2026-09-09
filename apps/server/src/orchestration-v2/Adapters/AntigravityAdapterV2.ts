@@ -71,7 +71,9 @@ export interface AntigravityAdapterV2Options {
   readonly serverConfig: ServerConfig["Service"];
   /** Spawns the official agent with the instance's Google profile. */
   readonly makeRuntime: (
-    input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
+    input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner"> & {
+      readonly environment?: NodeJS.ProcessEnv;
+    },
   ) => Effect.Effect<
     AcpSessionRuntime.AcpSessionRuntime["Service"],
     EffectAcpErrors.AcpError | ProviderSetupError,
@@ -137,6 +139,9 @@ export function makeAntigravityAcpAdapterFlavor(
         Scope.close(scope, Exit.void),
         options.makeRuntime({
           ...input,
+          ...(input.processEnvironment === undefined
+            ? {}
+            : { environment: input.processEnvironment }),
           clientFileSystem: true,
           additionalDirectories: [options.serverConfig.attachmentsDir],
         }),

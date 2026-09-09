@@ -41,6 +41,15 @@ const access = (writable = false) =>
     return { ...context, descriptor, settings: yield* Settings.ServerSettingsService };
   });
 export const EnvironmentHandlersLive = EnvironmentToolkit.toLayer({
+  t3_identity: () =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      return {
+        environmentId: scope.environmentId,
+        threadId: scope.threadId,
+        providerInstanceId: scope.providerInstanceId,
+      };
+    }),
   t3_environment_read: () =>
     Effect.gen(function* () {
       const { descriptor, settings } = yield* access();
