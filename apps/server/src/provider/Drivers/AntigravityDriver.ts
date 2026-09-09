@@ -1,4 +1,3 @@
-import { withAgentDeviceEnvironment } from "../../mcp/McpProviderSession.ts";
 import { AntigravitySettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Crypto from "effect/Crypto";
@@ -49,7 +48,10 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "../ProviderInstanceEnvironment.ts";
 import { withInstanceIdentity } from "./instanceIdentity.ts";
 import { discoverAntigravitySkills, resolveAntigravityUserHome } from "./AntigravitySkills.ts";
 
@@ -120,7 +122,9 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         );
 
       const makeRuntime = Effect.fn("AntigravityDriver.makeRuntime")(function* (
-        input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
+        input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner"> & {
+          readonly environment?: NodeJS.ProcessEnv;
+        },
       ): Effect.fn.Return<
         AcpSessionRuntime["Service"],
         AcpError | ProviderSetupError,
@@ -133,8 +137,12 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             detail: authConfigIssue,
           });
         }
+        const sessionEnvironment = mergeProviderSessionEnvironment(
+          processEnvironment,
+          input.environment,
+        );
         const executable = yield* installation
-          .acquire(settings.binaryPath, processEnvironment)
+          .acquire(settings.binaryPath, sessionEnvironment)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -147,7 +155,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           );
         const profile = yield* prepareAntigravityProfile({
           profileDirectory,
-          baseEnv: processEnvironment,
+          baseEnv: sessionEnvironment,
           auth,
           userHome,
         }).pipe(
@@ -163,7 +171,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             installation: executable,
             profile,
             cwd: input.cwd,
-            baseEnv: withAgentDeviceEnvironment(processEnvironment, input),
+            baseEnv: sessionEnvironment,
             auth,
           }),
         }).pipe(Effect.provideService(Crypto.Crypto, crypto));
