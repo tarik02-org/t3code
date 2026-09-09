@@ -1,7 +1,7 @@
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { type ProviderReplayTranscript } from "@t3tools/contracts";
+import { type ProviderReplayTranscript, type ThreadId } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";
@@ -15,7 +15,10 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "../IdAllocator.ts";
-import { ProviderAdapterOpenSessionError } from "../ProviderAdapter.ts";
+import {
+  ProviderAdapterOpenSessionError,
+  type ProviderAdapterV2OpenSessionInput,
+} from "../ProviderAdapter.ts";
 import { ProviderAdapterDriverCreateError } from "../ProviderAdapterDriver.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
@@ -184,6 +187,7 @@ export function makeReplayServerConfig(
 export function layer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
+  readonly transcriptsByThread?: ReadonlyMap<ThreadId, CodexReplay.CodexAppServerReplayTranscript>;
 }) {
   const layerReplay =
     input.driver === undefined
@@ -192,7 +196,10 @@ export function layer(input: {
   const layerReplayClientFactory = Layer.succeed(CodexAdapterV2.CodexAppServerClientFactory, {
     open: (openInput) =>
       Effect.gen(function* () {
-        const context = yield* Layer.build(layerReplay).pipe(
+        const threadTranscript = input.transcriptsByThread?.get(openInput.threadId);
+        const context = yield* Layer.build(
+          threadTranscript === undefined ? layerReplay : CodexReplay.layerReplay(threadTranscript),
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new ProviderAdapterOpenSessionError({
@@ -213,7 +220,36 @@ export function layer(input: {
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
   const layerRegistry = ProviderAdapterRegistry.layerFromDrivers({
-    drivers: [CodexAdapterV2.CodexAdapterV2Driver],
+    // These recordings multiplex native threads over one app-server connection.
+    drivers: [
+      {
+        ...CodexAdapterV2.CodexAdapterV2Driver,
+        create: (createInput) =>
+          CodexAdapterV2.CodexAdapterV2Driver.create(createInput).pipe(
+            Effect.map((adapter) => {
+              const capabilities = {
+                ...CodexAdapterV2.CodexProviderCapabilitiesV2,
+                sessions: {
+                  ...CodexAdapterV2.CodexProviderCapabilitiesV2.sessions,
+                  supportsMultipleProviderThreadsPerSession: true,
+                },
+              };
+              if (input.transcriptsByThread !== undefined) return adapter;
+              return {
+                ...adapter,
+                getCapabilities: () => Effect.succeed(capabilities),
+                openSession: (input: ProviderAdapterV2OpenSessionInput) =>
+                  adapter.openSession(input).pipe(
+                    Effect.map((runtime) => ({
+                      ...runtime,
+                      providerSession: { ...runtime.providerSession, capabilities },
+                    })),
+                  ),
+              };
+            }),
+          ),
+      },
+    ],
     configMap: {
       [CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID]: {
         driver: CodexAdapterV2.CODEX_DRIVER_KIND,
