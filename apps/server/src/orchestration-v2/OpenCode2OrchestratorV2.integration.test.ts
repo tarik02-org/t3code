@@ -394,6 +394,7 @@ describe("OpenCode 2 through the orchestrator", () => {
           ...createdSession(before, name),
           ...instructionsWritten,
           ...answeredPrompt("FIRST"),
+          out("event.subscribe"),
           ...directoryModels(after),
           out("session.get", { sessionID: SESSION }),
           reply("session.get", sessionInfo(before, t3Rules(name), name)),
@@ -438,6 +439,7 @@ describe("OpenCode 2 through the orchestrator", () => {
           ...createdSession(before, name),
           ...instructionsWritten,
           ...answeredPrompt("FIRST"),
+          out("event.subscribe"),
           ...directoryModels(after),
 
           out("session.get", { sessionID: SESSION }),
@@ -609,7 +611,23 @@ describe("OpenCode 2 through the orchestrator", () => {
       );
 
       const transcript = yield* OpenCode2OrchestratorReplayHarness.decodeTranscript(
-        withDirectory(recorded, cwd),
+        withDirectory(
+          {
+            ...recorded,
+            entries: recorded.entries.flatMap((entry) =>
+              entry.type === "expect_outbound" && entry.label === "message.list"
+                ? [
+                    out("event.subscribe"),
+                    ...directoryModels(cwd),
+                    out("session.active"),
+                    reply("session.active", { data: {} }),
+                    entry,
+                  ]
+                : [entry],
+            ),
+          },
+          cwd,
+        ),
       );
       const source = threadCommands({ name, worktreePath: cwd });
       const target = ThreadId.make(`thread:${name}:target`);

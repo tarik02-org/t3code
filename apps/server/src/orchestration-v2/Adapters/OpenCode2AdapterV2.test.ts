@@ -304,6 +304,7 @@ const resumed = (
     readonly external?: boolean;
     readonly supervised?: boolean;
     readonly replayGate?: ProviderReplayGate;
+    readonly environment?: Readonly<Record<string, string>>;
   },
 ) =>
   Effect.gen(function* () {
@@ -312,6 +313,12 @@ const resumed = (
         ...opening,
         out("session.get", { sessionID: SESSION }),
         replyData("session.get", sessionInfo()),
+        ...(options?.environment === undefined
+          ? []
+          : [
+              out("session.environment", { sessionID: SESSION, variables: options.environment }),
+              reply("session.environment", null),
+            ]),
         ...noOpenRequests,
         ...(options?.supervised === true
           ? [
@@ -326,6 +333,7 @@ const resumed = (
       {
         ...(options?.external === undefined ? {} : { external: options.external }),
         ...(options?.replayGate === undefined ? {} : { replayGate: options.replayGate }),
+        ...(options?.environment === undefined ? {} : { environment: options.environment }),
       },
     );
     const thread = yield* runtime.resumeThread({
@@ -397,6 +405,36 @@ const history = {
 };
 
 it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
+  it.effect("restores the thread launch environment when resuming a native session", () =>
+    Effect.gen(function* () {
+      const environment = {
+        T3CODE_HOME: "/isolated/t3",
+        T3CODE_PROJECT_ROOT: WORK,
+        T3CODE_PROJECT_ID: "project:launch",
+        T3CODE_THREAD_ID: String(threadId),
+      };
+      const runtime = yield* openCode2ReplayRuntime(
+        [
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+          out("session.environment", { sessionID: SESSION, variables: environment }),
+          reply("session.environment", null),
+          ...noOpenRequests,
+        ],
+        { environment },
+      );
+      const thread = yield* runtime.resumeThread({
+        providerThread: providerThread(yield* DateTime.now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+      });
+      assert.equal(thread.appThreadId, threadId);
+      assert.equal(thread.nativeThreadRef?.nativeId, SESSION);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("switches the session's model and variant before a turn that changed them", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
@@ -4186,22 +4224,32 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     Effect.gen(function* () {
       const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
       const target = "/work/opencode2-fork-target";
-      const { runtime, thread } = yield* resumed([
-        out("session.fork", { sessionID: SESSION }),
-        replyData("session.fork", sessionInfo({ id: FORK })),
-        out("session.update", {
-          sessionID: FORK,
-          permissions: [
-            { action: "*", resource: "*", effect: "allow" },
-            { action: "t3-code-*", resource: "*", effect: "deny" },
-            { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
-          ],
-        }),
-        reply("session.update", null),
-        // OpenCode makes the fork where its source runs; the target thread runs elsewhere.
-        out("session.move", { sessionID: FORK, directory: target }),
-        reply("session.move", null),
-      ]);
+      const environment = {
+        T3CODE_THREAD_ID: "thread:opencode2-adapter:fork",
+        T3CODE_WORKTREE_PATH: target,
+      };
+      const { runtime, thread } = yield* resumed(
+        [
+          out("session.fork", { sessionID: SESSION }),
+          replyData("session.fork", sessionInfo({ id: FORK })),
+          out("session.environment", { sessionID: FORK, variables: environment }),
+          reply("session.environment", null),
+          // The fork's T3 MCP server is the target thread's.
+          out("session.update", {
+            sessionID: FORK,
+            permissions: [
+              { action: "*", resource: "*", effect: "allow" },
+              { action: "t3-code-*", resource: "*", effect: "deny" },
+              { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
+            ],
+          }),
+          reply("session.update", null),
+          // OpenCode makes the fork where its source runs; the target thread runs elsewhere.
+          out("session.move", { sessionID: FORK, directory: target }),
+          reply("session.move", null),
+        ],
+        { environment },
+      );
       const forked = yield* runtime.forkThread({
         sourceProviderThread: thread,
         targetThreadId: ThreadId.make("thread:opencode2-adapter:fork"),

@@ -1165,7 +1165,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   );
 
   const splitTerminal = useCallback(() => {
-    if (!hasTerminalWriteAccess() || !cwd) {
+    if (!hasTerminalWriteAccess() || !cwd || !project) {
       return;
     }
     const terminalId = allocateTerminalId();
@@ -1176,6 +1176,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       input: {
         threadId,
         terminalId,
+        projectId: project.id,
         cwd,
         ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
         env: runtimeEnv,
@@ -1186,6 +1187,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     bumpFocusRequestId,
     cwd,
     effectiveWorktreePath,
+    project,
     runtimeEnv,
     storeSplitTerminal,
     threadId,
@@ -1194,7 +1196,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     hasTerminalWriteAccess,
   ]);
   const splitTerminalVertical = useCallback(() => {
-    if (!hasTerminalWriteAccess() || !cwd) {
+    if (!hasTerminalWriteAccess() || !cwd || !project) {
       return;
     }
     const terminalId = allocateTerminalId();
@@ -1205,6 +1207,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       input: {
         threadId,
         terminalId,
+        projectId: project.id,
         cwd,
         ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
         env: runtimeEnv,
@@ -1217,6 +1220,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     effectiveWorktreePath,
     openTerminal,
     hasTerminalWriteAccess,
+    project,
     runtimeEnv,
     storeSplitTerminalVertical,
     threadId,
@@ -1224,7 +1228,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   ]);
 
   const createNewTerminal = useCallback(() => {
-    if (!hasTerminalWriteAccess() || !cwd) {
+    if (!hasTerminalWriteAccess() || !cwd || !project) {
       return;
     }
     const terminalId = allocateTerminalId();
@@ -1235,6 +1239,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       input: {
         threadId,
         terminalId,
+        projectId: project.id,
         cwd,
         ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
         env: runtimeEnv,
@@ -1251,6 +1256,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     threadRef,
     openTerminal,
     hasTerminalWriteAccess,
+    project,
   ]);
 
   const activateTerminal = useCallback(
@@ -1330,6 +1336,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         <ThreadTerminalDrawer
           threadRef={threadRef}
           threadId={threadId}
+          projectId={project.id}
           cwd={cwd}
           worktreePath={effectiveWorktreePath}
           runtimeEnv={runtimeEnv}
@@ -1499,6 +1506,7 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
       visible={visible}
       threadRef={threadRef}
       threadId={threadRef.threadId}
+      projectId={project.id}
       cwd={cwd}
       worktreePath={worktreePath}
       runtimeEnv={runtimeEnv}
@@ -4699,6 +4707,7 @@ export default function ChatView(props: ChatViewProps) {
         input: {
           threadId: activeThreadId,
           terminalId,
+          projectId: activeProject.id,
           cwd: cwdForOpen,
           ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
           env: projectScriptRuntimeEnv({
@@ -4738,6 +4747,7 @@ export default function ChatView(props: ChatViewProps) {
       input: {
         threadId: activeThreadId,
         terminalId,
+        projectId: activeProject.id,
         cwd: cwdForOpen,
         ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
         env: projectScriptRuntimeEnv({
@@ -4764,6 +4774,7 @@ export default function ChatView(props: ChatViewProps) {
       input: {
         threadId: activeThreadId,
         terminalId,
+        projectId: activeProject.id,
         cwd: cwdForOpen,
         ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
         env: projectScriptRuntimeEnv({
@@ -4852,6 +4863,7 @@ export default function ChatView(props: ChatViewProps) {
       ? {
           threadId: activeThreadId,
           terminalId: targetTerminalId,
+          projectId: activeProject.id,
           cwd: targetCwd,
           ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
           env: runtimeEnv,
@@ -4861,6 +4873,7 @@ export default function ChatView(props: ChatViewProps) {
       : {
           threadId: activeThreadId,
           terminalId: targetTerminalId,
+          projectId: activeProject.id,
           cwd: targetCwd,
           ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
           env: runtimeEnv,
@@ -5670,6 +5683,7 @@ export default function ChatView(props: ChatViewProps) {
       input: {
         threadId: activeThreadId,
         terminalId,
+        projectId: activeProject.id,
         cwd,
         ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
         env: projectScriptRuntimeEnv({
@@ -5702,6 +5716,7 @@ export default function ChatView(props: ChatViewProps) {
       input: {
         threadId: activeThreadId,
         terminalId,
+        projectId: activeProject.id,
         cwd,
         ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
         env: projectScriptRuntimeEnv({
