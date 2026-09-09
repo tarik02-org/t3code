@@ -80,6 +80,7 @@ import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstra
 import { isElectron } from "../env";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
+import { isPreviewFocused } from "../lib/previewFocus";
 import { releaseProjectDraftUploads } from "../lib/composerDraftUploads";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isMacPlatform } from "../lib/utils";
@@ -106,11 +107,13 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
   shouldShowThreadJumpHintsForModifiers,
+  type ShortcutMatchContext,
   threadJumpCommandForIndex,
   threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
 } from "../keybindings";
 import { isModelPickerOpen } from "../modelPickerVisibility";
+import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useShortcutModifierState } from "../shortcutModifierState";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -316,6 +319,8 @@ function buildThreadJumpLabelMap(input: {
 
 interface SidebarThreadRowProps {
   thread: SidebarThreadSummary;
+  keybindings: ResolvedKeybindingsConfig;
+  getCurrentShortcutContext: () => ShortcutMatchContext;
   orderedProjectThreadKeys: readonly string[];
   isActive: boolean;
   openPullRequestsInRightPanel: boolean;
@@ -359,6 +364,8 @@ interface SidebarThreadRowProps {
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
   const {
+    getCurrentShortcutContext,
+    keybindings,
     orderedProjectThreadKeys,
     isActive,
     openPullRequestsInRightPanel,
@@ -535,11 +542,29 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const handleRowKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      const command = resolveShortcutCommand(event, keybindings, {
+        platform: navigator.platform,
+        context: getCurrentShortcutContext(),
+      });
+      if (command === "thread.rename") {
+        event.preventDefault();
+        event.stopPropagation();
+        startThreadRename(threadKey, thread.title);
+        return;
+      }
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       navigateToThread(threadRef);
     },
-    [navigateToThread, threadRef],
+    [
+      keybindings,
+      getCurrentShortcutContext,
+      navigateToThread,
+      startThreadRename,
+      thread.title,
+      threadKey,
+      threadRef,
+    ],
   );
   const handleRowContextMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -624,6 +649,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     },
     [renamingInputRef],
   );
+  const rowElementRef = useRef<HTMLDivElement>(null);
   const handleRenameInputChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       setRenamingTitle(event.target.value);
@@ -637,10 +663,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         event.preventDefault();
         renamingCommittedRef.current = true;
         void commitRename(threadRef, renamingTitle, thread.title);
+        window.requestAnimationFrame(() => rowElementRef.current?.focus());
       } else if (event.key === "Escape") {
         event.preventDefault();
         renamingCommittedRef.current = true;
         cancelRename();
+        window.requestAnimationFrame(() => rowElementRef.current?.focus());
       }
     },
     [cancelRename, commitRename, renamingCommittedRef, renamingTitle, thread.title, threadRef],
@@ -713,8 +741,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {/* A thread row is the legacy sidebar's own control (a focusable div that hosts nested
           links and buttons), not a SidebarMenuSubButton, so it owns its look here. */}
       <div
+        ref={rowElementRef}
         role="button"
         tabIndex={0}
+        data-thread-row
         data-active={isActive}
         data-slot="sidebar-menu-sub-button"
         data-sidebar="menu-sub-button"
@@ -954,6 +984,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 });
 
 interface SidebarProjectThreadListProps {
+  keybindings: ResolvedKeybindingsConfig;
+  getCurrentShortcutContext: () => ShortcutMatchContext;
   projectKey: string;
   projectExpanded: boolean;
   hasOverflowingThreads: boolean;
@@ -1010,6 +1042,8 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
   props: SidebarProjectThreadListProps,
 ) {
   const {
+    keybindings,
+    getCurrentShortcutContext,
     projectKey,
     projectExpanded,
     hasOverflowingThreads,
@@ -1071,6 +1105,8 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
             <SidebarThreadRow
               key={threadKey}
               thread={thread}
+              keybindings={keybindings}
+              getCurrentShortcutContext={getCurrentShortcutContext}
               orderedProjectThreadKeys={orderedProjectThreadKeys}
               isActive={activeRouteThreadKey === threadKey}
               openPullRequestsInRightPanel={openPullRequestsInRightPanel}
@@ -1136,6 +1172,8 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
 
 interface SidebarProjectItemProps {
   project: SidebarProjectSnapshot;
+  keybindings: ResolvedKeybindingsConfig;
+  getCurrentShortcutContext: () => ShortcutMatchContext;
   isThreadListExpanded: boolean;
   activeRouteThreadKey: string | null;
   openPullRequestsInRightPanel: boolean;
@@ -1158,6 +1196,8 @@ interface SidebarProjectItemProps {
 const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjectItemProps) {
   const {
     project,
+    keybindings,
+    getCurrentShortcutContext,
     isThreadListExpanded,
     activeRouteThreadKey,
     openPullRequestsInRightPanel,
@@ -2474,6 +2514,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       </div>
 
       <SidebarProjectThreadList
+        keybindings={keybindings}
+        getCurrentShortcutContext={getCurrentShortcutContext}
         projectKey={project.projectKey}
         projectExpanded={projectExpanded}
         hasOverflowingThreads={hasOverflowingThreads}
@@ -2871,6 +2913,8 @@ function SortableProjectItem({
 }
 
 interface SidebarProjectsContentProps {
+  keybindings: ResolvedKeybindingsConfig;
+  getCurrentShortcutContext: () => ShortcutMatchContext;
   showArm64IntelBuildWarning: boolean;
   arm64IntelBuildWarningDescription: string | null;
   desktopUpdateButtonAction: "download" | "install" | "none";
@@ -2914,6 +2958,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
   props: SidebarProjectsContentProps,
 ) {
   const {
+    keybindings,
+    getCurrentShortcutContext,
     showArm64IntelBuildWarning,
     arm64IntelBuildWarningDescription,
     desktopUpdateButtonAction,
@@ -3066,6 +3112,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                     {(dragHandleProps) => (
                       <SidebarProjectItem
                         project={project}
+                        keybindings={keybindings}
+                        getCurrentShortcutContext={getCurrentShortcutContext}
                         isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
                         activeRouteThreadKey={
                           activeRouteProjectKey === project.projectKey ? routeThreadKey : null
@@ -3100,6 +3148,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               <SidebarProjectListRow
                 key={project.projectKey}
                 project={project}
+                keybindings={keybindings}
+                getCurrentShortcutContext={getCurrentShortcutContext}
                 isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
                 activeRouteThreadKey={
                   activeRouteProjectKey === project.projectKey ? routeThreadKey : null
@@ -3159,6 +3209,8 @@ export default function LegacySidebar() {
     [routeDraftThread, routeTarget],
   );
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const routeThreadRefForShortcuts = useRef(routeThreadRef);
+  routeThreadRefForShortcuts.current = routeThreadRef;
   const routeTerminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
       ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
@@ -3309,14 +3361,26 @@ export default function LegacySidebar() {
     }
     return next;
   }, [sidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
-  const getCurrentSidebarShortcutContext = useCallback(
-    () => ({
+  const getCurrentSidebarShortcutContext = useCallback((): ShortcutMatchContext => {
+    const activeThreadRef = routeThreadRefForShortcuts.current;
+    return {
       terminalFocus: isTerminalFocused(),
-      terminalOpen: routeTerminalOpen,
+      terminalOpen: activeThreadRef
+        ? selectThreadTerminalUiState(
+            useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+            activeThreadRef,
+          ).terminalOpen
+        : false,
+      previewFocus: isPreviewFocused(),
+      previewOpen: activeThreadRef
+        ? selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, activeThreadRef) ===
+          "preview"
+        : false,
       modelPickerOpen: isModelPickerOpen(),
-    }),
-    [routeTerminalOpen],
-  );
+      isWeb: !isElectron,
+      isDesktop: isElectron,
+    };
+  }, []);
   const newThreadShortcutLabelOptions = useMemo(
     () => ({
       platform,
@@ -3777,6 +3841,8 @@ export default function LegacySidebar() {
       <SidebarChromeHeader isElectron={isElectron} />
 
       <SidebarProjectsContent
+        keybindings={keybindings}
+        getCurrentShortcutContext={getCurrentSidebarShortcutContext}
         showArm64IntelBuildWarning={showArm64IntelBuildWarning}
         arm64IntelBuildWarningDescription={arm64IntelBuildWarningDescription}
         desktopUpdateButtonAction={desktopUpdateButtonAction}
