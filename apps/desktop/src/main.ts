@@ -134,7 +134,7 @@ const layerElectron = Layer.mergeAll(
   ElectronSafeStorage.layer,
   ElectronShell.layer,
   ElectronTheme.layer,
-  ElectronUpdater.layer,
+  ElectronUpdater.layer.pipe(Layer.provide(NodeServices.layer)),
   ElectronWindow.layer,
   DesktopIpc.layer(Electron.ipcMain),
 );
