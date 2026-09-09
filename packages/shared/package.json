@@ -115,6 +115,10 @@
       "types": "./src/projectSettings.ts",
       "import": "./src/projectSettings.ts"
     },
+    "./projectLaunchEnv": {
+      "types": "./src/projectLaunchEnv.ts",
+      "import": "./src/projectLaunchEnv.ts"
+    },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"
