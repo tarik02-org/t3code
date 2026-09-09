@@ -127,7 +127,13 @@ const makeFlakyReleaseEventSinkLayer = (flaky: FlakyReleaseWrites) =>
     }),
   ).pipe(Layer.provide(TestEventSinkLayer));
 
-const CodexCapabilities: OrchestrationV2ProviderCapabilities = CodexProviderCapabilitiesV2;
+const CodexCapabilities: OrchestrationV2ProviderCapabilities = {
+  ...CodexProviderCapabilitiesV2,
+  sessions: {
+    ...CodexProviderCapabilitiesV2.sessions,
+    supportsMultipleProviderThreadsPerSession: true,
+  },
+};
 const ExclusiveCapabilities: OrchestrationV2ProviderCapabilities = {
   ...CodexCapabilities,
   sessions: {

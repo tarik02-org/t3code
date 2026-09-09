@@ -55,6 +55,7 @@ import {
   type RuntimeRequestId,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
+import { mergeProviderSessionEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -98,8 +99,8 @@ import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
 
 const OpenCode2ProviderCapabilities = {
   sessions: {
-    // One server serves every location, so one session runtime owns them all.
-    supportsMultipleProviderThreadsPerSession: true,
+    // The server is shared, but each runtime carries one thread's launch identity.
+    supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,
     supportsProviderSwitchingViaHandoff: true,
     // A mode change rewrites the session's rules when its next turn resumes it.
@@ -813,7 +814,10 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
  * The adapter for one provider instance. It talks to the instance's
  * {@link OpenCode2Server.OpenCode2Server}, which the driver builds from the instance's settings.
  */
-export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: ProviderInstanceId) {
+export const make = Effect.fn("OpenCode2Adapter.make")(function* (
+  instanceId: ProviderInstanceId,
+  environment?: NodeJS.ProcessEnv,
+) {
   const server = yield* OpenCode2Server.OpenCode2Server;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -847,10 +851,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     let connection = initial.connection;
     // Replaced when the session reconnects to a restarted server.
     let client = connection.client;
+    const sessionEnvironment =
+      input.environment === undefined
+        ? undefined
+        : mergeProviderSessionEnvironment(environment, input.environment);
     const sessionScope = yield* Effect.scope;
     // Context windows by directory, then `provider/model`: a project's own
-    // OpenCode config can change a model's limits, and this one runtime serves
-    // the instance's threads in every directory.
+    // OpenCode config can change a model's limits after a worktree move.
     const contextWindows = new Map<string, Map<string, number>>();
     /** A thread without a worktree runs where T3 does, as its session is created. */
     const directoryOf = (cwd: string | null | undefined) => cwd ?? serverConfig.cwd;
@@ -2824,6 +2831,15 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       client = next.client;
       currentScope = scope;
       yield* Scope.close(previous, Exit.void);
+      if (sessionEnvironment !== undefined) {
+        for (const state of threads.values()) {
+          if (state.subagent !== undefined) continue;
+          yield* client.session.environment({
+            sessionID: Session.ID.make(state.sessionId),
+            variables: sessionEnvironment,
+          });
+        }
+      }
       // A restarted server forgot T3's MCP servers; the next turn adds them again.
       for (const state of threads.values()) state.mcp = undefined;
       yield* lock.withPermit(reconcile).pipe(Effect.timeout(RECONCILE_TIMEOUT));
@@ -3595,6 +3611,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             model,
             permissions,
           });
+          if (sessionEnvironment !== undefined) {
+            yield* client.session.environment({
+              sessionID: created.id,
+              variables: sessionEnvironment,
+            });
+          }
           const createdAt = yield* DateTime.now;
           const providerThread: OrchestrationV2ProviderThread = {
             ...(threadInput.existingProviderThread ?? {
@@ -3642,6 +3664,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // 1.x session ids survive the upgrade; a server without this session
           // fails the resume, so T3 recreates the thread with a handoff.
           const native = yield* client.session.get({ sessionID: Session.ID.make(sessionId) });
+          if (sessionEnvironment !== undefined) {
+            yield* client.session.environment({
+              sessionID: Session.ID.make(sessionId),
+              variables: sessionEnvironment,
+            });
+          }
           const providerThread: OrchestrationV2ProviderThread = {
             ...threadInput.providerThread,
             providerSessionId: input.providerSessionId,
@@ -4186,6 +4214,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             sessionID: Session.ID.make(sourceId),
             ...(before === null ? {} : { before: SessionMessage.ID.make(before) }),
           });
+          if (sessionEnvironment !== undefined) {
+            yield* client.session.environment({
+              sessionID: forked.id,
+              variables: sessionEnvironment,
+            });
+          }
           const createdAt = yield* DateTime.now;
           const providerThread: OrchestrationV2ProviderThread = {
             id: idAllocator.derive.providerThread({ driver, nativeThreadId: forked.id }),

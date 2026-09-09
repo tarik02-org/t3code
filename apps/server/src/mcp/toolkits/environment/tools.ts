@@ -5,6 +5,9 @@ import {
   OrchestratorMcpFailure,
   ServerSettings,
   ServerSettingsPatch,
+  EnvironmentId,
+  ThreadId,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
@@ -51,6 +54,20 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
+export const IdentityTool = Tool.make("t3_identity", {
+  description:
+    "Read your authenticated T3 Code thread, environment and provider instance IDs. No shell environment variables are required. Use t3_thread_read with the returned threadId for thread and project details.",
+  success: Schema.Struct({
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  }),
+  dependencies: [McpInvocationContext.McpInvocationContext],
+})
+  .annotate(Tool.Title, "Get your T3 Code identity")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
@@ -64,4 +81,8 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
   }),
   success: Schema.Struct(PreferenceFields),
 }).annotate(Tool.Destructive, true);
-export const EnvironmentToolkit = Toolkit.make(EnvironmentReadTool, EnvironmentPreferencesTool);
+export const EnvironmentToolkit = Toolkit.make(
+  IdentityTool,
+  EnvironmentReadTool,
+  EnvironmentPreferencesTool,
+);

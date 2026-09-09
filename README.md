@@ -21,7 +21,7 @@ This repository is the `tarik02-org` fork of [T3 Code](https://github.com/pingdo
 
 - Frontmatter rendering in web and mobile previews.
 - Unsigned macOS updates and isolated canary desktop state.
-- Thread-scoped launch environment identity for providers and terminals.
+- Thread-scoped launch environment identity for providers and terminals, with a read-only `t3_identity` MCP tool when shell environment injection is unavailable, such as Cursor's local SDK.
 - Nix packaging and stable, nightly, and manually managed canary releases.
 
 ## Installation
