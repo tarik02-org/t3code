@@ -39,6 +39,8 @@ export interface SidebarThreadHeaderProps {
   newThreadInProjectShortcutLabel: string | null | undefined;
   /** Shift+click only matters once there is more than one project to pick. */
   showNewThreadInProjectHint: boolean;
+  /** Optional control rendered alongside the project and thread actions. */
+  trailingControl?: ReactNode;
   searchInputRef: RefObject<HTMLInputElement | null>;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
@@ -59,6 +61,7 @@ export function SidebarThreadHeader({
   newThreadShortcutLabel,
   newThreadInProjectShortcutLabel,
   showNewThreadInProjectHint,
+  trailingControl,
   searchInputRef,
   searchQuery,
   onSearchQueryChange,
@@ -152,6 +155,7 @@ export function SidebarThreadHeader({
         >
           <SquarePenIcon />
         </SidebarHeaderIconButton>
+        {trailingControl}
       </div>
     </div>
   );
