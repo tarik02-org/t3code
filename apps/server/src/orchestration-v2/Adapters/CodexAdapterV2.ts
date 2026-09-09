@@ -110,7 +110,10 @@ import {
   codexAppServerArgs,
   resolveCodexLaunchArgs,
 } from "../../provider/Layers/codexLaunchArgs.ts";
-import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "../../provider/ProviderInstanceEnvironment.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterDriverCreateError,
@@ -240,7 +243,7 @@ const CODEX_CLIENT_CAPABILITIES = {
 
 export const CodexProviderCapabilitiesV2 = {
   sessions: {
-    supportsMultipleProviderThreadsPerSession: true,
+    supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,
     supportsProviderSwitchingViaHandoff: true,
     supportsRuntimeModeSwitchInSession: true,
@@ -1408,7 +1411,9 @@ export const codexAppServerClientFactoryFromSettingsLayer: Layer.Layer<
           const command = yield* makeCodexAppServerSpawnCommand({
             command: input.settings.binaryPath || "codex",
             args: [
-              ...codexAppServerArgs(resolveCodexLaunchArgs(input.settings.launchArgs, input.environment)),
+              ...codexAppServerArgs(
+                resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+              ),
               ...(input.modelSelection !== undefined &&
               supportsCodexLongContext(input.modelSelection.model) &&
               getModelSelectionStringOptionValue(input.modelSelection, "contextWindow") === "1m"
@@ -1606,7 +1611,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           runtimePolicy: input.runtimePolicy,
           modelSelection: input.modelSelection,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          environment: mergeProviderSessionEnvironment(
+            resolvedRuntime?.environment ?? adapterOptions.environment,
+            input.environment,
+          ),
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<
