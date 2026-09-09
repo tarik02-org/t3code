@@ -626,7 +626,7 @@ const TYPE_TO_FOCUS_INTERACTIVE_SELECTOR = [
   "button",
   "a[href]",
   "summary",
-  '[role="button"]',
+  '[role="button"]:not([data-thread-row])',
   '[role="checkbox"]',
   '[role="menuitem"]',
   '[role="option"]',
@@ -679,6 +679,7 @@ function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
   if (event.isComposing) return false;
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
+  if (event.key === " " && eventPathContainsSelector(event, "[data-thread-row]")) return false;
   if (!shouldRedirectInputToComposer(event)) return false;
 
   // The right-panel surface launcher claims its shortcut letters while it is
@@ -5703,6 +5704,15 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     if (!activeThread?.id || terminalUiState.terminalOpen) return;
     const frame = window.requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLElement &&
+        activeElement.isConnected &&
+        activeElement.matches(":focus-visible") &&
+        activeElement.closest("[data-thread-item]") !== null
+      ) {
+        return;
+      }
       focusComposer();
     });
     return () => {
@@ -7577,7 +7587,6 @@ export default function ChatView(props: ChatViewProps) {
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0
         ? parseCodexGoalCommand(trimmed)
