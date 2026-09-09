@@ -23,7 +23,7 @@ export { shouldBundleCliDependency };
 const repoEnv = loadRepoEnv();
 const cliBuildChannel = packageJson.version.includes("-canary.")
   ? "canary"
-  : packageJson.version.includes("-nightly.")
+  : /-(?:nightly|preview)\./.test(packageJson.version)
     ? "nightly"
     : "latest";
 
