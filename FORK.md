@@ -33,4 +33,4 @@ Read [MAINTENANCE.md](./MAINTENANCE.md) before actualizing, backporting, deliver
 - Unsigned macOS updates, canary channel identities, and fork packaging.
 - Headless release archives for macOS arm64, Linux x64, and Windows x64.
 - Provider compatibility policies match the shipped upstream provider generation, not the fork CalVer.
-- Thread-scoped launch environment identity for providers and terminals.
+- Thread-scoped launch environment identity for providers and terminals. Cursor's local SDK does not accept shell environment variables; every provider can read its authenticated thread, environment, and provider-instance IDs with `t3_identity` over MCP.
