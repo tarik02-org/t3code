@@ -666,6 +666,9 @@ const sidebarMenuButtonVariants = cva(
       variant: "default",
     },
     variants: {
+      focusRingOffset: {
+        sidebar: "focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+      },
       size: {
         default:
           "h-8 rounded-[var(--control-radius)] px-[var(--sidebar-row-content-inset)] py-1.5 text-sm",
@@ -685,6 +688,7 @@ function SidebarMenuButton({
   isActive = false,
   variant = "default",
   size = "default",
+  focusRingOffset,
   tooltip,
   className,
   render,
@@ -696,7 +700,7 @@ function SidebarMenuButton({
   const { isMobile, state } = useSidebar();
 
   const defaultProps = {
-    className: cn(sidebarMenuButtonVariants({ size, variant }), className),
+    className: cn(sidebarMenuButtonVariants({ size, variant, focusRingOffset }), className),
     "data-active": isActive,
     "data-sidebar": "menu-button",
     "data-size": size,
