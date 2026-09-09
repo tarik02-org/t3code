@@ -401,6 +401,7 @@ describe("OpenCode 2 through the orchestrator", () => {
           ...createdSession(before, name),
           ...instructionsWritten,
           ...answeredPrompt("FIRST"),
+          out("event.subscribe"),
           ...directoryModels(after),
           out("session.get", { sessionID: SESSION }),
           reply("session.get", sessionInfo(before, t3Rules(name))),
@@ -445,6 +446,7 @@ describe("OpenCode 2 through the orchestrator", () => {
           ...createdSession(before, name),
           ...instructionsWritten,
           ...answeredPrompt("FIRST"),
+          out("event.subscribe"),
           ...directoryModels(after),
           // Reopened after a worktree change, the session reports the rules an
           // older build gave it, which denied subagents; they are replaced
@@ -615,7 +617,23 @@ describe("OpenCode 2 through the orchestrator", () => {
       // The recording scrubbed its directory to `<work>`; the fork it answers
       // runs where its source does, which is this test's workspace.
       const transcript = yield* OpenCode2OrchestratorReplayHarness.decodeTranscript(
-        withDirectory(recorded, cwd),
+        withDirectory(
+          {
+            ...recorded,
+            entries: recorded.entries.flatMap((entry) =>
+              entry.type === "expect_outbound" && entry.label === "message.list"
+                ? [
+                    out("event.subscribe"),
+                    ...directoryModels(cwd),
+                    out("session.active"),
+                    reply("session.active", { data: {} }),
+                    entry,
+                  ]
+                : [entry],
+            ),
+          },
+          cwd,
+        ),
       );
       const source = threadCommands({ name, worktreePath: cwd });
       const target = ThreadId.make(`thread:${name}:target`);

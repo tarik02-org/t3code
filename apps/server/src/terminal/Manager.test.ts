@@ -9,6 +9,7 @@ import {
   type TerminalRestartInput,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProjectId,
   ServerSettingsError,
   TerminalProviderInstanceNotFoundError,
 } from "@t3tools/contracts";
@@ -42,6 +43,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "./Manager.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
+import { ProjectLaunchEnv } from "../projectLaunchEnv/Services/ProjectLaunchEnv.ts";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -221,6 +223,7 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  projectLaunchEnv?: ProjectLaunchEnv["Service"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
@@ -271,6 +274,9 @@ const createManager = (
         logsDir,
         historyLineLimit,
         ptyAdapter,
+        ...(options.projectLaunchEnv === undefined
+          ? {}
+          : { projectLaunchEnv: options.projectLaunchEnv }),
         ...(options.historyByteLimit !== undefined
           ? { historyByteLimit: options.historyByteLimit }
           : {}),
@@ -420,6 +426,32 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect("resolves launch identity without a client-supplied project ID", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        projectLaunchEnv: ProjectLaunchEnv.of({
+          resolve: () => Effect.die("unused"),
+          resolveForThread: (input) =>
+            Effect.succeed({
+              projectId: ProjectId.make("project:mobile"),
+              env: {
+                T3CODE_HOME: "/isolated/t3",
+                T3CODE_PROJECT_ROOT: process.cwd(),
+                T3CODE_PROJECT_ID: "project:mobile",
+                T3CODE_THREAD_ID: String(input.threadId),
+              },
+            }),
+        }),
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.spawnInputs[0]?.env).toMatchObject({
+        T3CODE_HOME: "/isolated/t3",
+        T3CODE_PROJECT_ID: "project:mobile",
+        T3CODE_THREAD_ID: "thread-1",
+      });
+    }),
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

@@ -2017,9 +2017,10 @@ export function makeAcpAdapterV2(
             runtimePolicy: input.runtimePolicy,
             mcpServers: mcpContext.servers,
             acpMcpServers: mcpContext.acpServers,
-            ...(mcpContext.processEnvironment === undefined
-              ? {}
-              : { processEnvironment: mcpContext.processEnvironment }),
+            processEnvironment: {
+              ...input.environment,
+              ...mcpContext.processEnvironment,
+            },
             ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
             interruptPromptOnCancel: flavor.interruptPromptOnCancel ?? false,
             clientCapabilities: {

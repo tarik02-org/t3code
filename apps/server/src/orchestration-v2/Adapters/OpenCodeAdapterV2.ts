@@ -63,7 +63,10 @@ import {
   structuralProtocolMethod,
   summarizeNativeProtocolPayload,
 } from "../../provider/NativeProtocolLogging.ts";
-import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
+import {
+  mergeProviderInstanceEnvironment,
+  mergeProviderSessionEnvironment,
+} from "../../provider/ProviderInstanceEnvironment.ts";
 import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as OpenCodeRuntime from "../../provider/opencodeRuntime.ts";
@@ -958,7 +961,7 @@ export function makeOpenCodeAdapterV2(
           binaryPath: options.settings.binaryPath,
           directory: cwd,
           serverUrl: options.settings.serverUrl,
-          environment: options.environment,
+          environment: mergeProviderSessionEnvironment(options.environment, input.environment),
         });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,

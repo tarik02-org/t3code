@@ -62,6 +62,7 @@ import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { ProjectLaunchEnvLive } from "./projectLaunchEnv/Layers/ProjectLaunchEnvLive.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
@@ -389,9 +390,16 @@ const CheckpointStoreLayerLive = CheckpointStore.layer.pipe(
 
 const PortScannerLayerLive = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
+const ProjectLaunchEnvLayerLive = ProjectLaunchEnvLive.pipe(
+  Layer.provideMerge(ProjectionStoreV2.layer),
+  Layer.provideMerge(ProjectServiceLayerLive),
+  Layer.provideMerge(PersistenceLayerLive),
+);
+
 const TerminalLayerLive = TerminalManager.layer.pipe(
   Layer.provide(PtyAdapterLive),
   Layer.provide(PortScannerLayerLive),
+  Layer.provide(ProjectLaunchEnvLayerLive),
   Layer.provide(NativeTelemetryLayerLive),
 );
 
@@ -535,6 +543,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   // The asset route uses the registry's GitHub credential for private PR media.
   Layer.provideMerge(Layer.mergeAll(SourceControlProviderRegistryLayerLive, GitHubCli.layer)),
   Layer.provideMerge(GitLayerLive),
+  Layer.provideMerge(ProjectLaunchEnvLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
