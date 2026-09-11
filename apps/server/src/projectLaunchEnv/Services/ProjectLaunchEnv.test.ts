@@ -43,6 +43,7 @@ const makeThread = (
   interactionMode: "default",
   branch: null,
   worktreePath: "/repo/worktrees/a",
+  pullRequests: [],
   latestTurn: null,
   createdAt: NOW,
   updatedAt: NOW,

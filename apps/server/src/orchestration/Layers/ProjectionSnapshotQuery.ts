@@ -2241,7 +2241,6 @@ pending_approval_requests AS (
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
-                ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
               }));
 
               const threads: ReadonlyArray<OrchestrationThread> = threadRows.map((row) => ({
@@ -2273,6 +2272,7 @@ pending_approval_requests AS (
                 activeOrderKey: row.activeOrderKey ?? null,
                 titleRegeneration: mapTitleRegeneration(row),
                 deletedAt: row.deletedAt,
+                ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                 activities: activitiesByThread.get(row.threadId) ?? [],
@@ -2410,7 +2410,6 @@ pending_approval_requests AS (
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
-                  ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                 });
               }
               for (let index = 0; index < threadRows.length; index += 1) {
@@ -2519,6 +2518,7 @@ pending_approval_requests AS (
                   activeOrderKey: row.activeOrderKey ?? null,
                   titleRegeneration: mapTitleRegeneration(row),
                   deletedAt: row.deletedAt,
+                  ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                   messages: [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   activities: [],
