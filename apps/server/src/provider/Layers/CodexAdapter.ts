@@ -1584,6 +1584,38 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "thread/goal/updated") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadGoalUpdatedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "thread.goal.updated",
+        payload: {
+          objective: payload.goal.objective,
+          status: payload.goal.status,
+          tokensUsed: payload.goal.tokensUsed,
+          tokenBudget: payload.goal.tokenBudget ?? null,
+          timeUsedSeconds: payload.goal.timeUsedSeconds,
+          createdAtEpochMsOrSeconds: payload.goal.createdAt,
+          updatedAtEpochMsOrSeconds: payload.goal.updatedAt,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/goal/cleared") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "thread.goal.cleared",
+        payload: {},
+      },
+    ];
+  }
+
   if (event.method === "turn/started") {
     const turnId = event.turnId;
     if (!turnId) {
