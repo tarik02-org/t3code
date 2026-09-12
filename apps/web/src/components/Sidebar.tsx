@@ -87,7 +87,6 @@ import {
 } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
 
-import { useRightPanelStore } from "../rightPanelStore";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -105,7 +104,6 @@ import {
   threadTraversalDirectionFromCommand,
 } from "../keybindings";
 import { useShortcutModifierState } from "../shortcutModifierState";
-import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
