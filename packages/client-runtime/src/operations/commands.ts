@@ -22,6 +22,7 @@ import {
   type RuntimeMode,
   type RuntimeRequestId,
   type ThreadId,
+  type ThreadGoalRequest,
   type ThreadEnvMode,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
@@ -201,6 +202,10 @@ export interface RevertThreadCheckpointInput extends ThreadCommandInput {
 }
 
 export type StopThreadSessionInput = ThreadCommandInput;
+
+export interface RequestThreadGoalInput extends ThreadCommandInput {
+  readonly request: ThreadGoalRequest;
+}
 
 export interface ForkThreadFromRunInput extends CommandMetadata {
   readonly sourceThreadId: ThreadId;
@@ -853,6 +858,17 @@ export const stopThreadSession = Effect.fn("EnvironmentCommands.stopThreadSessio
     });
   }
   return result;
+});
+
+export const requestThreadGoal = Effect.fn("EnvironmentCommands.requestThreadGoal")(function* (
+  input: RequestThreadGoalInput,
+) {
+  return yield* dispatch({
+    type: "thread.goal.request",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    request: input.request,
+  });
 });
 
 export const forkThreadFromRun = Effect.fn("EnvironmentCommands.forkThreadFromRun")(function* (

@@ -388,6 +388,8 @@ export function routeProviderEvent(
         },
       ];
     }
+    case "app_thread.updated":
+      return [event.appThread.id === input.threadId || ownsChildThread(event.appThread.id), state];
     case "provider_thread.updated": {
       const belongs =
         state.ownedProviderThreadIds.has(event.providerThread.id) ||

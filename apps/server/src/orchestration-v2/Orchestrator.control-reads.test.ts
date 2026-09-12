@@ -88,6 +88,30 @@ it.effect(
         threadId,
         modelSelection: { ...modelSelection, model: "gpt-6" },
       });
+      yield* orchestrator.dispatch({
+        type: "thread.goal.request",
+        commandId: CommandId.make("goal-create-control"),
+        threadId,
+        request: { kind: "set", objective: "Port goals to orchestration v2" },
+      });
+      const activeGoal = (yield* projections.getThreadShell(threadId))?.goal;
+      assert.equal(activeGoal?.objective, "Port goals to orchestration v2");
+      assert.equal(activeGoal?.status, "active");
+      assert.equal(activeGoal?.tokensUsed, 0);
+      yield* orchestrator.dispatch({
+        type: "thread.goal.request",
+        commandId: CommandId.make("goal-pause-control"),
+        threadId,
+        request: { kind: "control", action: "pause" },
+      });
+      assert.equal((yield* projections.getThread(threadId)).goal?.status, "paused");
+      yield* orchestrator.dispatch({
+        type: "thread.goal.request",
+        commandId: CommandId.make("goal-clear-control"),
+        threadId,
+        request: { kind: "control", action: "clear" },
+      });
+      assert.isNull((yield* projections.getThreadShell(threadId))?.goal ?? null);
       const sessionId = ProviderSessionId.make("session:control-dispatch");
       yield* projections.apply({
         id: EventId.make("attach-control"),

@@ -3499,6 +3499,46 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           }).pipe(Effect.orDie),
         );
 
+        yield* client.handleServerNotification("thread/goal/updated", (payload) =>
+          Effect.gen(function* () {
+            const context = (yield* Ref.get(activeTurns)).get(payload.goal.threadId);
+            if (context === undefined) return;
+            yield* emitProviderEvent({
+              type: "app_thread.updated",
+              driver: CODEX_PROVIDER,
+              appThread: {
+                ...context.projectionAppThread,
+                goal: {
+                  objective: payload.goal.objective,
+                  status: payload.goal.status,
+                  tokensUsed: payload.goal.tokensUsed,
+                  tokenBudget: payload.goal.tokenBudget ?? null,
+                  timeUsedSeconds: payload.goal.timeUsedSeconds,
+                  createdAt: DateTime.formatIso(codexTimestamp(payload.goal.createdAt)),
+                  updatedAt: DateTime.formatIso(codexTimestamp(payload.goal.updatedAt)),
+                },
+                updatedAt: codexTimestamp(payload.goal.updatedAt),
+              },
+            });
+          }).pipe(Effect.orDie),
+        );
+
+        yield* client.handleServerNotification("thread/goal/cleared", (payload) =>
+          Effect.gen(function* () {
+            const context = (yield* Ref.get(activeTurns)).get(payload.threadId);
+            if (context === undefined) return;
+            yield* emitProviderEvent({
+              type: "app_thread.updated",
+              driver: CODEX_PROVIDER,
+              appThread: {
+                ...context.projectionAppThread,
+                goal: null,
+                updatedAt: DateTime.nowUnsafe(),
+              },
+            });
+          }).pipe(Effect.orDie),
+        );
+
         yield* client.handleServerNotification("account/rateLimits/updated", (payload) =>
           Effect.gen(function* () {
             const update = codexRateLimitsToUpdate(payload.rateLimits);
@@ -5505,6 +5545,40 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       requestId: requestInput.requestId,
                       cause,
                     }),
+              ),
+            ),
+          requestGoal: ({ providerThread, request }) =>
+            Effect.gen(function* () {
+              const threadId = yield* getNativeThreadId(providerThread);
+              switch (request.kind) {
+                case "status":
+                  yield* client.request("thread/goal/get", { threadId });
+                  break;
+                case "set":
+                  yield* client.request("thread/goal/set", {
+                    threadId,
+                    objective: request.objective,
+                  });
+                  break;
+                case "control":
+                  if (request.action === "clear") {
+                    yield* client.request("thread/goal/clear", { threadId });
+                  } else {
+                    yield* client.request("thread/goal/set", {
+                      threadId,
+                      status: request.action === "pause" ? "paused" : "active",
+                    });
+                  }
+                  break;
+              }
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterProtocolError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Codex goal request failed.",
+                    payload: cause,
+                  }),
               ),
             ),
           uploadFeedback: (feedbackInput) =>

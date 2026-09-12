@@ -349,6 +349,17 @@ export const layer: Layer.Layer<
                 payload: input.event.appThread,
               }),
             ];
+          case "app_thread.updated":
+            return [
+              yield* makeDomainEvent(input, {
+                type:
+                  input.event.appThread.goal === null
+                    ? "thread.goal-cleared"
+                    : "thread.goal-updated",
+                threadId: input.event.appThread.id,
+                payload: input.event.appThread,
+              }),
+            ];
           case "provider_session.updated":
             return [
               yield* makeDomainEvent(input, {

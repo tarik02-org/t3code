@@ -305,6 +305,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "provider.switch":
+    case "thread.goal.request":
       return command.threadId;
     case "delegated_task.request":
     case "delegated_task.wake-policy":
@@ -1526,7 +1527,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.runtime-mode.set"
           | "thread.interaction-mode.set"
           | "thread.model-selection.set"
-          | "provider.switch";
+          | "provider.switch"
+          | "thread.goal.request";
       }
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -1742,6 +1744,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : null;
 
     const now = yield* DateTime.now;
+    if (command.type === "thread.goal.request" && thread.activeProviderThreadId !== null) {
+      const projection = yield* loadProjectionForCommand(command);
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+      );
+      const providerSessionId = providerThread?.providerSessionId;
+      if (
+        providerThread !== undefined &&
+        providerSessionId !== null &&
+        providerSessionId !== undefined
+      ) {
+        const runtime = yield* providerSessions
+          .get(providerSessionId)
+          .pipe(mapDispatchError(command));
+        if (Option.isSome(runtime) && runtime.value.requestGoal !== undefined) {
+          yield* runtime.value
+            .requestGoal({ providerThread, request: command.request })
+            .pipe(mapDispatchError(command));
+        }
+      }
+    }
     let snoozedUntil: DateTime.Utc | null = null;
     if (command.type === "thread.snooze") {
       const projection = yield* loadProjectionForCommand(command);
@@ -2078,6 +2101,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             modelSelection: command.modelSelection,
             updatedAt: now,
           };
+        case "thread.goal.request": {
+          if (command.request.kind === "status") return thread;
+          if (command.request.kind === "control" && command.request.action === "clear") {
+            return { ...thread, goal: null, updatedAt: now };
+          }
+          if (command.request.kind === "set") {
+            return {
+              ...thread,
+              goal: {
+                objective: command.request.objective,
+                status: "active",
+                tokensUsed: 0,
+                tokenBudget: null,
+                timeUsedSeconds: 0,
+                createdAt: DateTime.formatIso(now),
+                updatedAt: DateTime.formatIso(now),
+              },
+              updatedAt: now,
+            };
+          }
+          if (thread.goal === null || thread.goal === undefined) return thread;
+          return {
+            ...thread,
+            goal: {
+              ...thread.goal,
+              status: command.request.action === "pause" ? "paused" : "active",
+              updatedAt: DateTime.formatIso(now),
+            },
+            updatedAt: now,
+          };
+        }
       }
     })();
     const eventType = (() => {
@@ -2122,6 +2176,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : ("thread.provider-switched" as const);
         case "provider.switch":
           return "thread.provider-switched" as const;
+        case "thread.goal.request":
+          return updatedThread.goal === null
+            ? ("thread.goal-cleared" as const)
+            : ("thread.goal-updated" as const);
       }
     })();
     yield* emit(
@@ -7686,6 +7744,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.interaction-mode.set":
       case "thread.model-selection.set":
       case "provider.switch":
+      case "thread.goal.request":
         yield* dispatchThreadMutation(command, events, effects);
         break;
       case "provider-session.detach":

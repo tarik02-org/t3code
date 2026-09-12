@@ -198,6 +198,27 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const OrchestrationThreadGoalStatus = Schema.Literals([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+export type OrchestrationThreadGoalStatus = typeof OrchestrationThreadGoalStatus.Type;
+
+export const OrchestrationThreadGoal = Schema.Struct({
+  objective: TrimmedNonEmptyString,
+  status: OrchestrationThreadGoalStatus,
+  tokensUsed: NonNegativeInt,
+  tokenBudget: Schema.NullOr(NonNegativeInt),
+  timeUsedSeconds: NonNegativeInt,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -361,6 +382,7 @@ export const OrchestrationThread = Schema.Struct({
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   deletedAt: Schema.NullOr(IsoDateTime),
+  goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -855,6 +877,19 @@ const ThreadCheckpointRevertCommand = Schema.Struct({
   turnCount: NonNegativeInt,
   createdAt: IsoDateTime,
 });
+
+export const ThreadGoalRequest = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("status") }),
+  Schema.Struct({
+    kind: Schema.Literal("control"),
+    action: Schema.Literals(["pause", "resume", "clear"]),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("set"),
+    objective: TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)),
+  }),
+]);
+export type ThreadGoalRequest = typeof ThreadGoalRequest.Type;
 
 const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),

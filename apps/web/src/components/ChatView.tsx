@@ -64,6 +64,7 @@ import {
   submitCodexFeedback,
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
+import { parseCodexGoalCommand } from "@t3tools/client-runtime/state/threads";
 import { resolveThreadLastVisitedAt } from "./Sidebar.logic";
 import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
 import {
@@ -1428,6 +1429,7 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, { reportFailure: false });
   const uploadThreadFeedback = useAtomCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
@@ -6392,6 +6394,60 @@ export default function ChatView(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
+  );
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (!activeThread || !isServerThread || pendingGoalAction !== null) return;
+      setPendingGoalAction(action);
+      const result = await requestThreadGoal({
+        environmentId: activeThread.environmentId,
+        input: { threadId: activeThread.id, request: { kind: "control", action } },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        setThreadError(activeThread.id, "Could not update the thread goal.");
+      }
+      setPendingGoalAction(null);
+    },
+    [activeThread, isServerThread, pendingGoalAction, requestThreadGoal, setThreadError],
+  );
+  const goalBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    const goal = activeThread?.goal;
+    if (!goal || !isServerThread) return null;
+    const primaryAction = goal.status === "active" ? "pause" : "resume";
+    return {
+      id: `goal:${activeThread.id}`,
+      variant: "info",
+      icon: <CheckCircle2Icon />,
+      title: `Goal ${goal.status}`,
+      description: `${goal.objective} · ${goal.tokensUsed.toLocaleString()} tokens · ${goal.timeUsedSeconds}s`,
+      actions: (
+        <span className="flex gap-1">
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={pendingGoalAction !== null}
+            onClick={() => void handleGoalControl(primaryAction)}
+          >
+            {pendingGoalAction === primaryAction
+              ? "Working..."
+              : primaryAction === "pause"
+                ? "Pause"
+                : "Resume"}
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={pendingGoalAction !== null}
+            onClick={() => void handleGoalControl("clear")}
+          >
+            {pendingGoalAction === "clear" ? "Clearing..." : "Clear"}
+          </Button>
+        </span>
+      ),
+    };
+  }, [activeThread, handleGoalControl, isServerThread, pendingGoalAction]);
   // Session-scoped dismissals, one key per (thread, snapshot). A set rather
   // than a single slot so dismissing the banner on one thread does not
   // resurface it on another thread dismissed earlier.
@@ -6526,6 +6582,7 @@ export default function ChatView(props: ChatViewProps) {
       resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
+    const goalItems = goalBannerItem === null ? [] : [goalBannerItem];
     // The user asked for this one, so it leads the notice tier instead of trailing it.
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
@@ -6537,6 +6594,7 @@ export default function ChatView(props: ChatViewProps) {
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
+        ...goalItems,
       ];
     }
     return [
@@ -6585,10 +6643,12 @@ export default function ChatView(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
+      ...goalItems,
     ];
   }, [
     activeBranchMismatchKey,
     feedbackBannerItems,
+    goalBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     backgroundWorkBannerItem,
@@ -7427,6 +7487,38 @@ export default function ChatView(props: ChatViewProps) {
         feedbackUploadsInFlightRef.current.delete(routeThreadKey);
       });
 
+      return;
+    }
+    const goalSlashCommand =
+      ctxSelectedProvider === "codex" &&
+      composerImages.length === 0 &&
+      composerFiles.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerElementContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0
+        ? parseCodexGoalCommand(trimmed)
+        : null;
+    if (goalSlashCommand) {
+      if (goalSlashCommand.kind === "invalid") {
+        setThreadError(activeThread.id, goalSlashCommand.message);
+        return;
+      }
+      if (!isServerThread) {
+        setThreadError(activeThread.id, "Start the thread before using /goal.");
+        return;
+      }
+      const result = await requestThreadGoal({
+        environmentId: activeThread.environmentId,
+        input: { threadId: activeThread.id, request: goalSlashCommand },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        setThreadError(activeThread.id, "Could not update the thread goal.");
+      } else {
+        promptRef.current = "";
+        clearComposerDraftContent(composerDraftTarget);
+        composerRef.current?.resetCursorState();
+      }
       return;
     }
     if (

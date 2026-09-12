@@ -43,6 +43,8 @@ import {
   ThreadPullRequestLinkSource,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
+  OrchestrationThreadGoal,
+  ThreadGoalRequest,
 } from "./orchestration.ts";
 import {
   ProviderApprovalDecision,
@@ -385,6 +387,9 @@ export const OrchestrationV2AppThread = Schema.Struct({
         startedAt: Schema.DateTimeUtc,
       }),
     ),
+  ),
+  goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
@@ -1264,6 +1269,8 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.interaction-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
+      "thread.goal-updated",
+      "thread.goal-cleared",
     ]),
     payload: OrchestrationV2AppThread,
   }),
@@ -1489,6 +1496,9 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
         startedAt: Schema.DateTimeUtc,
       }),
     ),
+  ),
+  goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
@@ -2033,6 +2043,8 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.interaction-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
+      "thread.goal-updated",
+      "thread.goal-cleared",
     ]),
     payload: OrchestrationV2AppThreadJson,
   }),
@@ -2345,6 +2357,12 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     modelSelection: ModelSelection,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.goal.request"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    request: ThreadGoalRequest,
   }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),

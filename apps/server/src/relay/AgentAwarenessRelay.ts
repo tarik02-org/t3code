@@ -84,6 +84,8 @@ export function shouldPublishAgentAwarenessEvent(
     case "thread.pull-request-synced":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    case "thread.goal-updated":
+    case "thread.goal-cleared":
     case "run.created":
     case "run.updated":
     case "runtime-request.updated":

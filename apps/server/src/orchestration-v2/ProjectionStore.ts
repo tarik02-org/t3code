@@ -473,6 +473,8 @@ export function applyToProjection(
     case "thread.interaction-mode-updated":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    case "thread.goal-updated":
+    case "thread.goal-cleared":
       return {
         ...base,
         thread: event.payload,
@@ -1406,6 +1408,7 @@ function shellFromState(input: {
     pinOrderKey: input.state.thread.pinOrderKey ?? null,
     lastVisitedAt: input.state.thread.lastVisitedAt,
     titleRegeneration: input.state.thread.titleRegeneration ?? null,
+    goal: input.state.thread.goal ?? null,
     deletedAt: input.state.thread.deletedAt,
   };
 }
@@ -1437,7 +1440,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.runtime-mode-updated":
           case "thread.interaction-mode-updated":
           case "thread.model-selection-updated":
-          case "thread.provider-switched": {
+          case "thread.provider-switched":
+          case "thread.goal-updated":
+          case "thread.goal-cleared": {
             const payloadJson = yield* encodeThreadPayload(event.payload);
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
@@ -2256,7 +2261,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           event.type !== "thread.runtime-mode-updated" &&
           event.type !== "thread.interaction-mode-updated" &&
           event.type !== "thread.model-selection-updated" &&
-          event.type !== "thread.provider-switched"
+          event.type !== "thread.provider-switched" &&
+          event.type !== "thread.goal-updated" &&
+          event.type !== "thread.goal-cleared"
         ) {
           const rows = yield* sql<PayloadRow>`
             SELECT payload_json

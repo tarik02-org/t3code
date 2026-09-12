@@ -26,6 +26,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
+  ThreadGoalRequest,
   RuntimeMode,
   RuntimeRequestId,
   RunAttemptId,
@@ -76,6 +77,11 @@ export type ProviderAdapterV2SessionStatus = typeof ProviderAdapterV2SessionStat
 export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("app_thread.created"),
+    driver: ProviderDriverKind,
+    appThread: OrchestrationV2AppThread,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("app_thread.updated"),
     driver: ProviderDriverKind,
     appThread: OrchestrationV2AppThread,
   }),
@@ -524,6 +530,10 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly requestGoal?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly request: ThreadGoalRequest;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
