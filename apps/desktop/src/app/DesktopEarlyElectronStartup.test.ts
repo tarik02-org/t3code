@@ -13,6 +13,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("reads the persisted linux password-store preference before Electron is ready", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "1.2.3",
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
       joinPath,
@@ -27,6 +28,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("accepts JSONC in the early desktop settings file", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "1.2.3",
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
       joinPath,
@@ -41,6 +43,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("falls back to auto when the early settings document is missing or invalid", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "1.2.3",
       env: {},
       homeDirectory: "/home/user",
       joinPath,
@@ -54,6 +57,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("preserves absolute root paths when resolving early settings", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "1.2.3",
       env: { T3CODE_HOME: "/" },
       homeDirectory: "/home/user",
       joinPath,
@@ -68,9 +72,11 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("resolves the early linux Electron switches", () => {
     const options = resolveEarlyLinuxElectronOptions({
+      appVersion: "1.2.3",
       env: {
         T3CODE_HOME: "/home/user/.t3-test",
         XDG_CURRENT_DESKTOP: "niri",
+        T3CODE_LINUX_DESKTOP_ENTRY_MANAGED: "true",
         VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
       },
       homeDirectory: "/home/user",
@@ -83,6 +89,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
     assert.deepEqual(options, {
       isDevelopment: true,
+      linuxDesktopEntryManaged: true,
       linuxWmClass: "t3code-dev",
       linuxDesktopEntryName: "com.t3tools.T3Code.Development.desktop",
       passwordStore: "gnome-libsecret",
@@ -91,6 +98,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("keeps implicit development state under ~/.t3/dev when T3CODE_HOME is unset", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "1.2.3",
       env: {
         VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
       },
@@ -107,6 +115,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("treats whitespace-only T3CODE_HOME as unconfigured in development", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "1.2.3",
       env: {
         T3CODE_HOME: "   ",
         VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
