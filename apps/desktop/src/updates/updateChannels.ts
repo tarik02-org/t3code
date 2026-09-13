@@ -8,11 +8,17 @@ const NIGHTLY_VERSION_PATTERN = /^[^-+]+-nightly\.\d{8}\.\d+$/;
 // channel a preview install reports is cosmetic: it never checks for updates
 // and no updater feed ever lists a preview release.
 const PRERELEASE_VERSION_PATTERN = /^[^-+]+-(?:nightly|preview)\.\d{8}\.\d+$/;
+const CANARY_VERSION_PATTERN = /^[^-+]+-canary\.\d{8}\.\d+$/;
 
 export function isNightlyDesktopVersion(version: string): boolean {
   return PRERELEASE_VERSION_PATTERN.test(version);
 }
 
+export function isCanaryDesktopVersion(version: string): boolean {
+  return CANARY_VERSION_PATTERN.test(version);
+}
+
 export function resolveDefaultDesktopUpdateChannel(appVersion: string): DesktopUpdateChannel {
-  return NIGHTLY_VERSION_PATTERN.test(appVersion) ? "nightly" : "latest";
+  if (isCanaryDesktopVersion(appVersion)) return "canary";
+  return isNightlyDesktopVersion(appVersion) ? "nightly" : "latest";
 }
