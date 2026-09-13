@@ -178,7 +178,14 @@ jobs:
       - name: Verify candidate history
         env:
           VALIDATION_REF: ${{ steps.pr.outputs.validation_ref }}
-        run: node scripts/validate-fork-history.ts --ref HEAD --upstream-ref "refs/remotes/origin/$VALIDATION_REF"
+          KIND: ${{ steps.pr.outputs.kind }}
+        run: |
+          set -euo pipefail
+          args=(--ref HEAD --upstream-ref "refs/remotes/origin/$VALIDATION_REF")
+          if [[ "$KIND" == release ]]; then
+            args+=(--require-release-state)
+          fi
+          node scripts/validate-fork-history.ts "${args[@]}"
 
       - id: actualization_base
         name: Resolve actualization base
@@ -228,7 +235,12 @@ jobs:
           GIT_COMMITTER_EMAIL: noreply@github.com
         run: |
           set -euo pipefail
-          parent="$(git rev-parse "$BASE_SHA^")"
+          base_subject="$(git show -s --format=%s "$BASE_SHA")"
+          if [[ "$base_subject" == "prepare stable release "* || "$base_subject" == "chore(release):"* ]]; then
+            parent="$(git rev-parse "$BASE_SHA^")"
+          else
+            parent="$BASE_SHA"
+          fi
           tree="$(git rev-parse "$HEAD_SHA^{tree}")"
           GIT_AUTHOR_NAME="$(git show -s --format=%an "$HEAD_SHA")"
           GIT_AUTHOR_EMAIL="$(git show -s --format=%ae "$HEAD_SHA")"

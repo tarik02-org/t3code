@@ -18,14 +18,13 @@ upstream/main
 fork CI and workflow replacement
 fork packaging infrastructure
 fork feature and fix commits
-one mutable release-state commit
 ```
 
 `upstream/main` is a protected mirror. The sync workflow imports upstream objects, updates the mirror, snapshots current `main` into `actualization/incoming`, and opens a Draft PR against `upstream/main`. The mirror is left unchanged while that PR is open.
 
 The PR intentionally starts conflicted so GitHub can run checks against the mirrored upstream base after its head is rebuilt. Manual work rebuilds the fork commits on that base. After checks pass, promotion pushes the first fork commit to a temporary base, retargets the PR there, and asks GitHub to rebase-merge the remaining reviewed commits. Only that complete staged result is force-pushed to `main`, guarded by a lease. The default branch never exposes incomplete history. GitHub assigns new commit IDs during the merge, so the resulting `main` tip differs from the reviewed PR head.
 
-The release-state commit contains package versions and any final generated lock/hash state. It is replaced during release preparation. Dependency declarations stay with the feature or fix that needs them. Intermediate lockfiles and Nix hashes are consolidated before release.
+Release-state files belong only to release preparation, not to the actualization stack. Dependency declarations stay with the feature or fix that needs them. Intermediate lockfiles and Nix hashes are consolidated by the release flow.
 
 History above the upstream base is linear. `history/validated` must pass before a stable release can be promoted. Release tags preserve published chronology; no extra backup branch is required for normal work.
 
@@ -35,7 +34,8 @@ History above the upstream base is linear. `history/validated` must pass before 
 2. Make one logical change. Keep all clients, contracts, providers, and connection modes in scope when they apply.
 3. Keep the branch buildable. If dependencies change, update the lockfile and Nix hash for the branch so CI can build it offline.
 4. Open a PR to `main` and squash it into one durable commit.
-5. After the squash lands, run `actualize` before the next stable release. A feature integrated after release-state makes `main` temporarily unvalidated.
+5. Fixes made while developing on top of a feature may remain separate until integration. When actualization rebases the fork stack, fold those fixes into their owning feature commits with `fixup`; do not preserve repair-only commits in the rebuilt stack.
+6. After the squash lands, run `actualize` before the next stable release.
 
 If `main` is rewritten while a feature PR is open, rebuild the branch from the new `main`. Do not carry the old ancestry forward.
 
@@ -63,11 +63,11 @@ Actualization is a local rebuild followed by a Draft PR promoted into `main`.
    - drop behavior now supplied by upstream;
    - port provider, orchestration, projection, composer, sidebar, and terminal changes to current seams;
    - leave upstream documentation upstream.
-5. Remove the old release-state commit. Consolidate generated lockfile and Nix hash changes, then add one release-state commit with the last published stable version.
+5. Remove the old release-state commit. Do not add a replacement release-state commit; stable release preparation owns package versions and generated lock/hash state.
 6. Run `range-diff`, the full fork delta review, focused checks for every conflict area, `history/validated`, and the Nix runtime build.
 7. Push the temporary branch.
 8. The sync workflow opens a Draft `actualization/incoming -> upstream/main` PR whose head starts as the current `main` snapshot.
-9. Rebuild that PR head manually on the current `upstream/main`, preserving the seven strata, then resolve the conflicts and push the head.
+9. Rebuild that PR head manually on the current `upstream/main`, preserving the fork strata, folding repair commits into their owning features with `fixup`, then resolve the conflicts and push the head.
 10. After checks pass, comment `/promote`. Promotion validates the candidate against `upstream/main`, pushes its first fork commit to a temporary base, and rebase-merges the PR there. It then force-pushes the complete merge result to `main` with a lease. GitHub records the PR as merged, and the workflow deletes both temporary branches.
 
 If `main` or `upstream/main` moves before promotion, refresh the actualization. Sync and promotion share one concurrency group, so neither can change refs during the other's final checks and cleanup. The final `main` push uses a lease. A failed promotion leaves its PR and staging branch visible for manual recovery.
@@ -112,12 +112,12 @@ Pushes to `canary/*` run CI and history validation against the matching upstream
 
 - `/promote` is accepted only from repository members, collaborators, or the owner.
 - `actualization` rebase-merges on a temporary staging base, then moves `main` to the complete staged result with a lease.
-- `release` replaces only the old release-state commit with the reviewed release tree.
-- A stale base, failed check, non-linear history, unexpected release-state file, or mismatched package version blocks promotion.
+- `release` adds the release-state commit after an actualization, or replaces the previous release-state commit when one exists.
+- A stale base, failed check, or non-linear history blocks promotion. Release-state validation applies to release PRs, not actualization PRs.
 - The GitHub App bypasses the `main` non-fast-forward rule. Human stable approval remains a separate Environment gate.
 
 ## Completion
 
-An actualization is complete when GitHub records its PR as merged, `main` points at the rebase-merge result, `history/validated` passes, and both temporary branches are gone.
+An actualization is complete when GitHub records its PR as merged, `main` points at the rebase-merge result without a release-state commit, `history/validated` passes, and both temporary branches are gone.
 
 A release is complete when the stable Environment job publishes the tag and assets, the release body contains the upstream and manual sections, and the next Draft release PR reflects the new stable tag.

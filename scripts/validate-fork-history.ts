@@ -153,6 +153,7 @@ const decodePackageManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(P
 export const validateForkHistory = Effect.fn("validateForkHistory")(function* (input: {
   readonly ref: string;
   readonly upstreamRef: string;
+  readonly requireReleaseState: boolean;
 }) {
   const head = yield* runGit(["rev-parse", input.ref]);
   const upstreamBase = yield* runGit(["rev-parse", input.upstreamRef]);
@@ -172,6 +173,21 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
     });
   }
 
+  const commitSubject = yield* runGit(["show", "-s", "--format=%s", head]);
+  const isReleaseState =
+    commitSubject.startsWith("prepare stable release ") ||
+    commitSubject.startsWith("chore(release):");
+  if (input.requireReleaseState && !isReleaseState) {
+    return yield* new InvalidForkHistoryError({
+      reason: "invalid-release-state-subject",
+      detail: commitSubject,
+    });
+  }
+
+  if (!isReleaseState) {
+    return { head, upstreamBase, version: null } as const;
+  }
+
   const changedFiles = (yield* runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", head]))
     .split(/\r?\n/)
     .filter((file) => file.length > 0);
@@ -180,17 +196,6 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
     return yield* new InvalidForkHistoryError({
       reason: "unexpected-release-files",
       detail: unexpectedFiles.join("\n"),
-    });
-  }
-
-  const commitSubject = yield* runGit(["show", "-s", "--format=%s", head]);
-  if (
-    !commitSubject.startsWith("prepare stable release ") &&
-    !commitSubject.startsWith("chore(release):")
-  ) {
-    return yield* new InvalidForkHistoryError({
-      reason: "invalid-release-state-subject",
-      detail: commitSubject,
     });
   }
 
@@ -226,14 +231,26 @@ const command = Command.make(
       Flag.withDescription("Upstream main ref used as the history base."),
       Flag.withDefault("refs/remotes/upstream/main"),
     ),
+    requireReleaseState: Flag.boolean("require-release-state").pipe(
+      Flag.withDescription("Require the head commit to be a release-state commit."),
+      Flag.withDefault(false),
+    ),
   },
-  ({ ref, upstreamRef }) =>
-    validateForkHistory({ ref, upstreamRef }).pipe(
+  ({ ref, upstreamRef, requireReleaseState }) =>
+    validateForkHistory({ ref, upstreamRef, requireReleaseState }).pipe(
       Effect.flatMap(({ head, upstreamBase, version }) =>
-        Console.log(`valid history ${head} based on ${upstreamBase} (release ${version})`),
+        Console.log(
+          version === null
+            ? `valid history ${head} based on ${upstreamBase}`
+            : `valid history ${head} based on ${upstreamBase} (release ${version})`,
+        ),
       ),
     ),
-).pipe(Command.withDescription("Validate the linear fork release-state history."));
+).pipe(
+  Command.withDescription(
+    "Validate the linear fork history and, when requested, its release state.",
+  ),
+);
 
 if (import.meta.main) {
   Command.run(command, { version: "0.0.0" }).pipe(

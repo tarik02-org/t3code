@@ -74,4 +74,12 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Validate fork history
-        run: node scripts/validate-fork-history.ts --ref HEAD --upstream-ref "$HISTORY_BASE_REF"
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          set -euo pipefail
+          args=(--ref HEAD --upstream-ref "$HISTORY_BASE_REF")
+          if [[ " $PR_LABELS " == *' release '* ]]; then
+            args+=(--require-release-state)
+          fi
+          node scripts/validate-fork-history.ts "${args[@]}"
