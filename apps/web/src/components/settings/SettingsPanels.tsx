@@ -449,7 +449,7 @@ function AboutVersionSection() {
       {hasDesktopBridge ? (
         <SettingsRow
           {...searchableSetting("update-track")}
-          description="Use stable releases or nightly builds. Switch back anytime."
+          description="Use stable releases, nightly builds, or the experimental canary channel."
           control={
             <Select
               value={selectedUpdateChannel}
@@ -464,7 +464,11 @@ function AboutVersionSection() {
                 disabled={isChangingUpdateChannel}
               >
                 <SelectValue>
-                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
+                  {selectedUpdateChannel === "canary"
+                    ? "Canary"
+                    : selectedUpdateChannel === "nightly"
+                      ? "Nightly"
+                      : "Stable"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -473,6 +477,9 @@ function AboutVersionSection() {
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
                   Nightly
+                </SelectItem>
+                <SelectItem hideIndicator value="canary">
+                  Canary
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -501,6 +508,9 @@ function AboutVersionSection() {
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
                   Nightly
+                </SelectItem>
+                <SelectItem hideIndicator value="canary">
+                  Canary
                 </SelectItem>
               </SelectPopup>
             </Select>
