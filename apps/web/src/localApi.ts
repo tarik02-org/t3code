@@ -1,10 +1,35 @@
-import type { ConfirmDialogOptions, ContextMenuItem, LocalApi } from "@t3tools/contracts";
+import {
+  DEFAULT_CLIENT_SETTINGS,
+  type ConfirmDialogOptions,
+  type ContextMenuItem,
+  type ContextMenuStyle,
+  type LocalApi,
+} from "@t3tools/contracts";
 
 import { requestConfirmDialog } from "./confirmDialog";
 import { dismissContextMenu, showContextMenuFallback } from "./contextMenuFallback";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
+import { isMacPlatform } from "./lib/utils";
 
 let cachedApi: LocalApi | undefined;
+
+async function readContextMenuStyle(): Promise<ContextMenuStyle> {
+  try {
+    const settings = window.desktopBridge
+      ? await window.desktopBridge.getClientSettings()
+      : readBrowserClientSettings();
+    return settings?.contextMenuStyle ?? DEFAULT_CLIENT_SETTINGS.contextMenuStyle;
+  } catch {
+    return DEFAULT_CLIENT_SETTINGS.contextMenuStyle;
+  }
+}
+
+function shouldUseNativeContextMenu(style: ContextMenuStyle): boolean {
+  if (style === "custom") return false;
+  if (style === "native") return true;
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  return Boolean(window.desktopBridge) && isMacPlatform(platform);
+}
 
 function createBrowserLocalApi(): LocalApi {
   return {
@@ -46,8 +71,13 @@ function createBrowserLocalApi(): LocalApi {
         items: readonly ContextMenuItem<T>[],
         position?: { x: number; y: number },
       ): Promise<T | null> => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.showContextMenu(items, position) as Promise<T | null>;
+        const style = await readContextMenuStyle();
+        if (shouldUseNativeContextMenu(style) && window.desktopBridge) {
+          try {
+            return (await window.desktopBridge.showContextMenu(items, position)) as T | null;
+          } catch {
+            return null;
+          }
         }
         return showContextMenuFallback(items, position);
       },
