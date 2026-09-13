@@ -67,6 +67,10 @@
       "types": "./src/markdownImages.ts",
       "default": "./src/markdownImages.ts"
     },
+    "./markdown-frontmatter": {
+      "types": "./src/markdownFrontmatter.ts",
+      "default": "./src/markdownFrontmatter.ts"
+    },
     "./media-reference": {
       "types": "./src/mediaReference.ts",
       "default": "./src/mediaReference.ts"
