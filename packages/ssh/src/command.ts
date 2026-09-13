@@ -362,3 +362,22 @@ export const resolveSshTarget = Effect.fn("ssh/command.resolveSshTarget")(functi
     ),
   );
 });
+export function resolveRemoteT3CliPackageSpec(input: {
+  readonly appVersion: string;
+  readonly updateChannel: DesktopUpdateChannel;
+  readonly isDevelopment?: boolean;
+}): string {
+  const appVersion = input.appVersion.trim();
+  if (!input.isDevelopment && appVersion.includes("-canary.")) {
+    return "t3@nightly";
+  }
+  if (!input.isDevelopment && PUBLISHABLE_T3_VERSION_PATTERN.test(appVersion)) {
+    return `t3@${appVersion}`;
+  }
+
+  if (input.isDevelopment) {
+    return "t3@nightly";
+  }
+
+  return input.updateChannel === "latest" ? "t3@latest" : `t3@${input.updateChannel}`;
+}
