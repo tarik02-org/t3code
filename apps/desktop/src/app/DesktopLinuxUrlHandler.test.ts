@@ -23,6 +23,7 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     isPackaged: true,
     isDevelopment: false,
     displayName: "T3 Code (Alpha)",
+    linuxDesktopEntryManaged: false,
     linuxDesktopEntryName: "com.t3tools.T3Code.desktop",
     linuxWmClass: "t3code",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
@@ -230,6 +231,19 @@ describe("DesktopLinuxUrlHandler", () => {
         "/home/alice/.local/share/applications/com.t3tools.T3Code.Development.desktop",
       );
       assert.deepEqual(unpackaged.commands, []);
+    });
+  });
+
+  it.effect("leaves a package-managed desktop entry and URL handler untouched", () => {
+    const recorded = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, {
+        environment: { linuxDesktopEntryManaged: true },
+      });
+
+      assert.deepEqual(recorded.files, []);
+      assert.deepEqual(recorded.commands, []);
     });
   });
 
