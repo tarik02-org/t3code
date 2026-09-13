@@ -61,6 +61,7 @@ import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionTh
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadPullRequest } from "../../persistence/ProjectionThreadPullRequests.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
+import { ProjectionThreadGoalRepository } from "../../persistence/Services/ProjectionThreadGoals.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
 import {
   decodeThreadDetailPageCursor,
@@ -125,13 +126,17 @@ const ProjectionThreadPullRequestDbRowSchema = ProjectionThreadPullRequest.mapFi
     stack: Schema.NullOr(Schema.fromJsonString(ThreadPullRequestStack)),
   }),
 );
-const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
+const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(Struct.omit(["goal"])).mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
   }),
 );
+const ProjectionThreadHydratedRowSchema = ProjectionThreadDbRowSchema.mapFields(
+  Struct.assign({ goal: ProjectionThread.fields.goal }),
+);
+type ProjectionThreadHydratedRow = typeof ProjectionThreadHydratedRowSchema.Type;
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -486,6 +491,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
+  const projectionThreadGoalRepository = yield* ProjectionThreadGoalRepository;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const repositoryIdentityResolutionConcurrency = 4;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
@@ -519,6 +525,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ]),
     );
   });
+
+  const withThreadGoals = (
+    rows: ReadonlyArray<Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>>,
+  ): Effect.Effect<ReadonlyArray<ProjectionThreadHydratedRow>, ProjectionRepositoryError> =>
+    rows.length === 0
+      ? Effect.succeed([])
+      : projectionThreadGoalRepository
+          .getByThreadIds({ threadIds: rows.map((row) => row.threadId) })
+          .pipe(
+            Effect.map(
+              (goals) =>
+                rows.map((row) => ({
+                  ...row,
+                  goal: goals.get(row.threadId) ?? null,
+                })) satisfies ReadonlyArray<ProjectionThreadHydratedRow>,
+            ),
+          );
 
   const listProjectRows = SqlSchema.findAll({
     Request: Schema.UndefinedOr(
@@ -794,7 +817,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           tone,
           kind,
           summary,
-          payload_json AS "payload",
+          CASE
+            WHEN json_extract(payload_json, '$.itemType') = 'command_execution'
+              THEN json_remove(payload_json, '$.data.item.aggregatedOutput')
+            ELSE payload_json
+          END AS "payload",
           sequence,
           created_at AS "createdAt"
         FROM projection_thread_activities
@@ -1988,6 +2015,7 @@ pending_approval_requests AS (
             ),
           ),
           listThreadRows(undefined).pipe(
+            Effect.flatMap(withThreadGoals),
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getSnapshot:listThreads:query",
@@ -2261,6 +2289,7 @@ pending_approval_requests AS (
                 activeOrderKey: row.activeOrderKey ?? null,
                 titleRegeneration: mapTitleRegeneration(row),
                 deletedAt: row.deletedAt,
+                ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                 activities: activitiesByThread.get(row.threadId) ?? [],
@@ -2303,6 +2332,7 @@ pending_approval_requests AS (
             ),
           ),
           listThreadRows(undefined).pipe(
+            Effect.flatMap(withThreadGoals),
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getCommandReadModel:listThreads:query",
@@ -2505,6 +2535,7 @@ pending_approval_requests AS (
                   activeOrderKey: row.activeOrderKey ?? null,
                   titleRegeneration: mapTitleRegeneration(row),
                   deletedAt: row.deletedAt,
+                  ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                   messages: [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   activities: [],
@@ -2542,6 +2573,7 @@ pending_approval_requests AS (
             ),
           ),
           listActiveThreadRows(undefined).pipe(
+            Effect.flatMap(withThreadGoals),
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listThreads:query",
@@ -2660,6 +2692,7 @@ pending_approval_requests AS (
                         activeOrderKey: row.activeOrderKey ?? null,
                         titleRegeneration: mapTitleRegeneration(row),
                         session: sessionByThread.get(row.threadId) ?? null,
+                        ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                         latestUserMessageAt: row.latestUserMessageAt,
                         hasPendingApprovals: row.pendingApprovalCount > 0,
                         hasPendingUserInput: row.pendingUserInputCount > 0,
@@ -2704,6 +2737,7 @@ pending_approval_requests AS (
             ),
           ),
           listArchivedThreadRows(undefined).pipe(
+            Effect.flatMap(withThreadGoals),
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getArchivedShellSnapshot:listThreads:query",
@@ -2822,6 +2856,7 @@ pending_approval_requests AS (
                   activeOrderKey: row.activeOrderKey ?? null,
                   titleRegeneration: mapTitleRegeneration(row),
                   session: sessionByThread.get(row.threadId) ?? null,
+                  ...(row.goal === null || row.goal === undefined ? {} : { goal: row.goal }),
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
                   hasPendingUserInput: row.pendingUserInputCount > 0,
@@ -3108,6 +3143,11 @@ pending_approval_requests AS (
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow, pullRequestRows] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
+          Effect.flatMap((option) =>
+            Option.isNone(option)
+              ? Effect.succeed(Option.none<ProjectionThreadHydratedRow>())
+              : withThreadGoals([option.value]).pipe(Effect.map((rows) => Option.some(rows[0]!))),
+          ),
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
@@ -3177,6 +3217,9 @@ pending_approval_requests AS (
         activeOrderKey: threadRow.value.activeOrderKey ?? null,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        ...(threadRow.value.goal === null || threadRow.value.goal === undefined
+          ? {}
+          : { goal: threadRow.value.goal }),
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
@@ -3379,6 +3422,11 @@ pending_approval_requests AS (
         sessionRow,
       ] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
+          Effect.flatMap((option) =>
+            Option.isNone(option)
+              ? Effect.succeed(Option.none<ProjectionThreadHydratedRow>())
+              : withThreadGoals([option.value]).pipe(Effect.map((rows) => Option.some(rows[0]!))),
+          ),
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
@@ -3476,6 +3524,9 @@ pending_approval_requests AS (
         activeOrderKey: threadRow.value.activeOrderKey ?? null,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         deletedAt: null,
+        ...(threadRow.value.goal === null || threadRow.value.goal === undefined
+          ? {}
+          : { goal: threadRow.value.goal }),
         messages: messageRows.map((row) => {
           const message = {
             id: row.messageId,

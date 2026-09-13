@@ -8,6 +8,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
   type ProviderEvent,
+  type ThreadGoalRequest,
   type ProviderInteractionMode,
   type ProviderRequestKind,
   type ProviderSession,
@@ -44,6 +45,14 @@ import {
   type T3CodeToolAvailability,
 } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+const decodeThreadGoalGetResponse = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    goal: Schema.Union([
+      EffectCodexSchema.V2ThreadGoalUpdatedNotification__ThreadGoal,
+      Schema.Null,
+    ]),
+  }),
+);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -177,6 +186,7 @@ export interface CodexSessionRuntimeOptions {
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
+  readonly defaultModeRequestUserInput?: boolean | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
@@ -213,6 +223,9 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly sendGoalRequest?: (
+    request: ThreadGoalRequest,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
@@ -237,6 +250,7 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
+  | CodexSessionRuntimeGoalUnsupportedError
   | CodexSessionRuntimeThreadIdMissingError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingApprovalNotFoundError>()(
@@ -280,6 +294,15 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedError<
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeGoalUnsupportedError extends Schema.TaggedError<CodexSessionRuntimeGoalUnsupportedError>()(
+  "CodexSessionRuntimeGoalUnsupportedError",
+  {},
+) {
+  override get message(): string {
+    return "Codex session does not support goals.";
   }
 }
 
@@ -547,6 +570,7 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly defaultModeRequestUserInput?: boolean | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -556,6 +580,13 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.defaultModeRequestUserInput !== undefined
+      ? {
+          config: {
+            "features.default_mode_request_user_input": input.defaultModeRequestUserInput,
+          },
+        }
+      : {}),
   };
 }
 
@@ -723,6 +754,7 @@ export const openCodexThread = (input: {
   readonly cwd: string;
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly defaultModeRequestUserInput?: boolean | undefined;
   readonly resumeThreadId: string | undefined;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
@@ -731,6 +763,7 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    defaultModeRequestUserInput: input.defaultModeRequestUserInput,
   });
 
   if (resumeThreadId === undefined) {
@@ -782,6 +815,7 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/name/updated":
     case "thread/settings/updated":
     case "thread/tokenUsage/updated":
+    case "thread/goal/cleared":
     case "model/rerouted":
     case "turn/started":
     case "hook/started":
@@ -815,6 +849,8 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/realtime/error":
     case "thread/realtime/closed":
       return notification.params.threadId;
+    case "thread/goal/updated":
+      return notification.params.goal.threadId;
     default:
       return undefined;
   }
@@ -1051,6 +1087,8 @@ function shouldSuppressChildConversationNotification(
     method === "thread/name/updated" ||
     method === "thread/settings/updated" ||
     method === "thread/tokenUsage/updated" ||
+    method === "thread/goal/updated" ||
+    method === "thread/goal/cleared" ||
     method === "model/rerouted" ||
     method === "turn/started" ||
     method === "turn/completed" ||
@@ -2376,6 +2414,7 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
+        defaultModeRequestUserInput: options.defaultModeRequestUserInput,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
       });
 
@@ -2523,6 +2562,66 @@ export const makeCodexSessionRuntime = (
             threadId: providerThreadId,
             turnId: effectiveTurnId,
           });
+        }),
+      sendGoalRequest: (request) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          switch (request.kind) {
+            case "status": {
+              const rawResponse = yield* client.raw.request("thread/goal/get", {
+                threadId: providerThreadId,
+              });
+              const response = yield* decodeThreadGoalGetResponse(rawResponse).pipe(
+                Effect.mapError((error) =>
+                  CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
+                    "decode-response-payload",
+                    error,
+                    { method: "thread/goal/get" },
+                  ),
+                ),
+              );
+              if (response.goal) {
+                yield* emitEvent({
+                  kind: "notification",
+                  threadId: options.threadId,
+                  method: "thread/goal/updated",
+                  payload: {
+                    threadId: providerThreadId,
+                    goal: response.goal,
+                  },
+                });
+              } else {
+                yield* emitEvent({
+                  kind: "notification",
+                  threadId: options.threadId,
+                  method: "thread/goal/cleared",
+                  payload: {
+                    threadId: providerThreadId,
+                  },
+                });
+              }
+              return;
+            }
+            case "set":
+              yield* client.raw.request("thread/goal/set", {
+                threadId: providerThreadId,
+                objective: request.objective,
+                status: "active",
+              });
+              return;
+            case "control":
+              if (request.action === "clear") {
+                yield* client.raw.request("thread/goal/clear", {
+                  threadId: providerThreadId,
+                });
+                return;
+              }
+              yield* client.raw.request("thread/goal/set", {
+                threadId: providerThreadId,
+                status: request.action === "pause" ? "paused" : "active",
+              });
+              return;
+          }
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

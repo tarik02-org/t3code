@@ -111,6 +111,22 @@ describe("DesktopPreReadyPlatform", () => {
     );
   }
 
+  it.effect("uses a package-managed Linux desktop entry without overwriting it", () => {
+    vi.stubEnv("T3CODE_LINUX_DESKTOP_ENTRY_MANAGED", "true");
+    getSwitchValueMock.mockReturnValue("");
+
+    return Effect.gen(function* () {
+      yield* Layer.build(
+        DesktopPreReadyPlatform.layer.pipe(
+          Layer.provide(Layer.succeed(HostProcessPlatform, "linux")),
+        ),
+      );
+
+      assert.deepEqual(setDesktopNameMock.mock.calls, [["com.t3tools.T3Code.desktop"]]);
+      assert.equal(writeFileSyncMock.mock.calls.length, 0);
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+  });
+
   it.effect("keeps startup available when the early desktop entry cannot be written", () => {
     getSwitchValueMock.mockReturnValue("");
     mkdirSyncMock.mockImplementation(() => {

@@ -33,6 +33,10 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
+  CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_OPTION_ID,
+  supportsCodexLongContext,
+} from "../../codexModelOptions.ts";
+import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -205,6 +209,40 @@ export function mapCodexModelCapabilities(
       currentValue: defaultServiceTier,
     });
   }
+  if (supportsCodexLongContext(model.model)) {
+    optionDescriptors.push({
+      id: "contextWindow",
+      label: "Context Window",
+      type: "select",
+      options: [
+        { id: "258k", label: "258k", isDefault: true },
+        { id: "1m", label: "1M" },
+      ],
+      currentValue: "258k",
+    });
+  }
+  optionDescriptors.push({
+    id: CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_OPTION_ID,
+    label: "Default Mode Questions",
+    description: "Control whether Codex can ask questions while working in Default mode.",
+    type: "select",
+    options: [
+      {
+        id: "unset",
+        label: "Unset",
+        isDefault: true,
+      },
+      {
+        id: "allow",
+        label: "Allow",
+      },
+      {
+        id: "reject",
+        label: "Reject",
+      },
+    ],
+    currentValue: "unset",
+  });
 
   return createModelCapabilities({
     optionDescriptors,
@@ -270,6 +308,14 @@ function appendCustomCodexModels(
 
   const seen = new Set(models.map((model) => model.slug));
   const fallbackCapabilities = models.find((model) => model.capabilities)?.capabilities ?? null;
+  const customCapabilities = fallbackCapabilities
+    ? {
+        ...fallbackCapabilities,
+        optionDescriptors: fallbackCapabilities.optionDescriptors?.filter(
+          (descriptor) => descriptor.id !== "contextWindow",
+        ),
+      }
+    : null;
   const customEntries: ServerProviderModel[] = [];
   for (const entry of readCustomModelEntries(customModels)) {
     if (seen.has(entry.slug)) {
@@ -280,7 +326,7 @@ function appendCustomCodexModels(
       slug: entry.slug,
       name: entry.name,
       isCustom: true,
-      capabilities: entry.capabilities ?? fallbackCapabilities,
+      capabilities: entry.capabilities ?? customCapabilities,
     });
   }
   return customEntries.length === 0 ? models : [...models, ...customEntries];
