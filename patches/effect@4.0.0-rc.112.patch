@@ -1,7 +1,230 @@
+diff --git a/dist/unstable/ai/McpSchema.js b/dist/unstable/ai/McpSchema.js
+--- a/dist/unstable/ai/McpSchema.js
++++ b/dist/unstable/ai/McpSchema.js
+@@ -87,16 +87,7 @@ export const ProgressToken = /*#__PURE__*/Schema.Union([Schema.String, Schema.Fi
+  * @since 4.0.0
+  */
+ export class RequestMeta extends /*#__PURE__*/Schema.Opaque()(/*#__PURE__*/Schema.Struct({
+-  _meta: /*#__PURE__*/optional(/*#__PURE__*/Schema.Struct({
+-    /**
+-     * If specified, the caller is requesting out-of-band progress notifications
+-     * for this request (as represented by notifications/progress). The value of
+-     * this parameter is an opaque token that will be attached to any subsequent
+-     * notifications. The receiver is not obligated to provide these
+-     * notifications.
+-     */
+-    progressToken: /*#__PURE__*/optional(ProgressToken)
+-  }))
++  _meta: /*#__PURE__*/optional(/*#__PURE__*/Schema.JsonObject)
+ })) {}
+ /**
+  * Schema for optional MCP result metadata.
+@@ -2378,4 +2369,16 @@ export function param(name, schema) {
+  * @since 4.0.0
+  */
+ export class EnabledWhen extends /*#__PURE__*/Context.Service()("effect/unstable/ai/McpSchema/EnabledWhen") {}
++/**
++ * Per-request MCP `_meta`, provided to tool handlers alongside
++ * `McpServerClient`. Holds the decoded request `_meta` object (or `undefined`),
++ * allowing handlers to read extension metadata clients attach to calls —
++ * for example OpenCode's `sessionID` stamp on `tools/call`.
++ *
++ * @category services
++ * @since 4.0.0
++ */
++export const McpRequestMeta = /*#__PURE__*/Context.Reference()("effect/unstable/ai/McpSchema/McpRequestMeta", {
++  defaultValue: () => undefined
++});
+ //# sourceMappingURL=McpSchema.js.map
+\ No newline at end of file
+diff --git a/dist/unstable/ai/McpSchema.d.ts b/dist/unstable/ai/McpSchema.d.ts
+--- a/dist/unstable/ai/McpSchema.d.ts
++++ b/dist/unstable/ai/McpSchema.d.ts
+@@ -95,45 +95,9 @@ export declare const ProgressToken: Schema.Union<[
+  */
+ export type ProgressToken = typeof ProgressToken.Type;
+ declare const RequestMeta_base: Schema.Opaque<RequestMeta, Schema.Struct<{
+-    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, Schema.optionalKey<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
+ }>, {}> & Omit<Schema.Struct<{
+-    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, Schema.optionalKey<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
+ }>, keyof Schema.Top>;
+ /**
+  * Schema for optional MCP request metadata.
+@@ -219,50 +183,14 @@ export declare const Cursor: typeof Schema.String;
+  */
+ export type Cursor = typeof Cursor.Type;
+ declare const PaginatedRequestMeta_base: Schema.Opaque<PaginatedRequestMeta, Schema.Struct<{
+-    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, Schema.optionalKey<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
+     /**
+      * An opaque token representing the current pagination position.
+      * If provided, the server should return results starting after this cursor.
+      */
+     readonly cursor: Schema.decodeTo<Schema.optional<Schema.String>, Schema.optionalKey<Schema.String>, never, never>;
+ }>, {}> & Omit<Schema.Struct<{
+-    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, Schema.optionalKey<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
+     /**
+      * An opaque token representing the current pagination position.
+      * If provided, the server should return results starting after this cursor.
+@@ -3187,25 +3115,7 @@ export declare const EnumSchema: Schema.Union<readonly [Schema.Union<readonly [t
+  */
+ export declare const PrimitiveSchemaDefinition: Schema.Union<readonly [typeof StringSchema, typeof NumberSchema, typeof BooleanSchema, Schema.Union<readonly [Schema.Union<readonly [typeof UntitledSingleSelectEnumSchema, typeof TitledSingleSelectEnumSchema]>, Schema.Union<readonly [typeof UntitledMultiSelectEnumSchema, typeof TitledMultiSelectEnumSchema]>, typeof LegacyTitledEnumSchema]>]>;
+ declare const ElicitRequestFormParams_base: Schema.Class<ElicitRequestFormParams, Schema.Struct<{
+-    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, Schema.optionalKey<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
+     readonly mode: Schema.decodeTo<Schema.optional<Schema.Literal<"form">>, Schema.optionalKey<Schema.Literal<"form">>, never, never>;
+     readonly message: Schema.String;
+     readonly requestedSchema: Schema.Struct<{
+@@ -3224,25 +3134,7 @@ declare const ElicitRequestFormParams_base: Schema.Class<ElicitRequestFormParams
+ export declare class ElicitRequestFormParams extends ElicitRequestFormParams_base {
+ }
+ declare const ElicitRequestURLParams_base: Schema.Class<ElicitRequestURLParams, Schema.Struct<{
+-    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, Schema.optionalKey<Schema.Struct<{
+-        /**
+-         * If specified, the caller is requesting out-of-band progress notifications
+-         * for this request (as represented by notifications/progress). The value of
+-         * this parameter is an opaque token that will be attached to any subsequent
+-         * notifications. The receiver is not obligated to provide these
+-         * notifications.
+-         */
+-        readonly progressToken: Schema.decodeTo<Schema.optional<Schema.Union<[Schema.String, Schema.Finite]>>, Schema.optionalKey<Schema.Union<[Schema.String, Schema.Finite]>>, never, never>;
+-    }>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
+     readonly mode: Schema.Literal<"url">;
+     readonly message: Schema.String;
+     readonly elicitationId: Schema.String;
+@@ -4099,5 +3991,16 @@ declare const EnabledWhen_base: Context.ServiceClass<EnabledWhen, "effect/unstab
+  */
+ export declare class EnabledWhen extends EnabledWhen_base {
+ }
++/**
++ * Per-request MCP `_meta`, provided to tool handlers alongside
++ * `McpServerClient`. Holds the decoded request `_meta` object (or `undefined`),
++ * allowing handlers to read extension metadata clients attach to calls.
++ *
++ * @category services
++ * @since 4.0.0
++ */
++export declare const McpRequestMeta: Context.Reference<{
++    readonly [key: string]: unknown;
++} | undefined>;
+ export {};
+ //# sourceMappingURL=McpSchema.d.ts.map
+\ No newline at end of file
 diff --git a/dist/unstable/ai/McpServer.js b/dist/unstable/ai/McpServer.js
-index ce9dda4..95c38f2 100644
 --- a/dist/unstable/ai/McpServer.js
 +++ b/dist/unstable/ai/McpServer.js
+@@ -192,7 +192,7 @@ export class McpServer extends /*#__PURE__*/Context.Service()("effect/ai/McpServ
+             capabilities: profile.clientCapabilities,
+             clientInfo: profile.clientInfo
+           }),
+-          handle: (call, invocation) => options.handle(call.arguments).pipe(Effect.provideService(McpServerClient, invocation.requestContext), Effect.catchTags({
++          handle: (call, invocation) => options.handle(call.arguments).pipe(Effect.provideService(McpServerClient, invocation.requestContext), Effect.provideService(McpSchema.McpRequestMeta, call._meta), Effect.catchTags({
+             InternalError: error => Effect.fail(new McpCore.ToolExecutionError({
+               name: options.tool.name,
+               message: error.message
 @@ -444,6 +444,26 @@ const runWithProtocolState = /*#__PURE__*/Effect.fnUntraced(function* (options,
    const defaultLogLevel = yield* CurrentLogLevel;
    const isHttp = Option.isSome(yield* Effect.serviceOption(HttpRouter.HttpRouter));
