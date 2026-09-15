@@ -1,0 +1,117 @@
+import * as NodeAssert from "node:assert/strict";
+
+import { describe, it } from "vite-plus/test";
+
+import { buildOpenCode2SessionRules } from "./opencode2Runtime.ts";
+
+const lastMatchingRule = (
+  rules: ReturnType<typeof buildOpenCode2SessionRules>,
+  action: string,
+  resource = "*",
+) => {
+  const matching = rules.filter(
+    (rule) =>
+      // `*` matches zero or more characters in both fields.
+      new RegExp(`^${rule.action.replaceAll("*", ".*")}$`).test(action) &&
+      new RegExp(`^${rule.resource.replaceAll("*", ".*")}$`).test(resource),
+  );
+  return matching.length > 0 ? matching[matching.length - 1] : undefined;
+};
+
+const effectFor = (
+  rules: ReturnType<typeof buildOpenCode2SessionRules>,
+  action: string,
+  resource = "*",
+): "allow" | "deny" | "ask" | undefined => lastMatchingRule(rules, action, resource)?.effect;
+
+describe("buildOpenCode2SessionRules", () => {
+  it("grants full access freely (no session rules)", () => {
+    NodeAssert.deepEqual(buildOpenCode2SessionRules("full-access"), []);
+  });
+
+  it("asks for everything in supervised mode", () => {
+    const rules = buildOpenCode2SessionRules("approval-required");
+    NodeAssert.deepEqual(effectFor(rules, "shell"), "ask");
+    NodeAssert.deepEqual(effectFor(rules, "edit"), "ask");
+    NodeAssert.deepEqual(effectFor(rules, "webfetch"), "ask");
+    NodeAssert.deepEqual(effectFor(rules, "mcp_tool", "*"), "ask");
+  });
+
+  it("denies foreign t3-code tools but keeps the thread's own callable", () => {
+    // OpenCode checks MCP tool calls as `<sanitized-server>_<tool>`.
+    const own = "t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
+    for (const mode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+      const rules = buildOpenCode2SessionRules(mode, own);
+      // Another thread's registration: denied even though visible.
+      NodeAssert.deepEqual(
+        effectFor(rules, "t3-code-00000000-0000-0000-0000-000000000000_list_thread_pull_requests"),
+        "deny",
+      );
+      // This thread's own tools stay callable (ask → surfaced as approval).
+      NodeAssert.deepEqual(effectFor(rules, `${own}_list_thread_pull_requests`), "ask");
+      NodeAssert.deepEqual(effectFor(rules, `${own}_preview_open`), "ask");
+      // Bare prefix match without the tool suffix must not over-allow.
+      NodeAssert.deepEqual(
+        effectFor(rules, `t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ffX`),
+        "deny",
+      );
+    }
+  });
+
+  it("falls back to denying all t3-code tools when no own server name is given", () => {
+    const rules = buildOpenCode2SessionRules("approval-required");
+    NodeAssert.deepEqual(effectFor(rules, "t3-code-25e99ad6_list_thread_pull_requests"), "deny");
+  });
+
+  it("auto-allows edits only in auto-accept-edits mode", () => {
+    const autoEdits = buildOpenCode2SessionRules("auto-accept-edits");
+    NodeAssert.deepEqual(effectFor(autoEdits, "edit"), "allow");
+    const supervised = buildOpenCode2SessionRules("approval-required");
+    NodeAssert.deepEqual(effectFor(supervised, "edit"), "ask");
+    // `auto` falls back to supervised for OpenCode (documented parity).
+    const auto = buildOpenCode2SessionRules("auto");
+    NodeAssert.deepEqual(effectFor(auto, "edit"), "ask");
+  });
+
+  it("keeps read-only discovery frictionless in every restricted mode", () => {
+    for (const mode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+      const rules = buildOpenCode2SessionRules(mode);
+      NodeAssert.deepEqual(effectFor(rules, "read"), "allow");
+      NodeAssert.deepEqual(effectFor(rules, "glob"), "allow");
+      NodeAssert.deepEqual(effectFor(rules, "grep"), "allow");
+      NodeAssert.deepEqual(effectFor(rules, "subagent"), "allow");
+      NodeAssert.deepEqual(effectFor(rules, "question"), "allow");
+    }
+  });
+
+  it("keeps .env reads behind an ask with an example-file exception", () => {
+    const rules = buildOpenCode2SessionRules("approval-required");
+    NodeAssert.deepEqual(effectFor(rules, "read", ".env"), "ask");
+    NodeAssert.deepEqual(effectFor(rules, "read", "foo.env"), "ask");
+    NodeAssert.deepEqual(effectFor(rules, "read", "foo.env.local"), "ask");
+    NodeAssert.deepEqual(effectFor(rules, "read", "foo.env.example"), "allow");
+    NodeAssert.deepEqual(effectFor(rules, "read", "src/main.ts"), "allow");
+  });
+
+  it("starts with a catch-all ask so unlisted actions cannot slip through", () => {
+    for (const mode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+      const rules = buildOpenCode2SessionRules(mode);
+      NodeAssert.deepEqual(rules[0], { action: "*", resource: "*", effect: "ask" });
+      NodeAssert.deepEqual(effectFor(rules, "shell", "rm -rf /"), "ask");
+      // Session rules are evaluated after agent rules with last-match-wins,
+      // so the server asks even when agent config allows the action.
+    }
+  });
+
+  it("covers every documented v2 core action (no v1 leftovers)", () => {
+    const rules = buildOpenCode2SessionRules("approval-required");
+    const actions = new Set(rules.map((rule) => rule.action));
+    for (const action of ["read", "edit", "glob", "grep", "question", "subagent"]) {
+      NodeAssert.deepEqual(actions.has(action), true);
+    }
+    // Everything else is covered by the `*` catch-all (verified above).
+    // v1 `bash`/`task` do not exist in v2 and must not appear.
+    NodeAssert.deepEqual(actions.has("bash"), false);
+    NodeAssert.deepEqual(actions.has("task"), false);
+  });
+});
