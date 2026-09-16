@@ -56,6 +56,7 @@ import {
   buildOpenCode2SessionRules,
   parseOpenCode2ModelSlug,
   toOpenCode2FileParts,
+  withOpenCode2Variant,
 } from "../opencode2Runtime.ts";
 import type { OpenCode2Connection, OpenCodeClient } from "../opencode2Runtime.ts";
 import * as OpenCode2Runtime from "../opencode2Runtime.ts";
@@ -458,6 +459,7 @@ export function makeOpenCode2Adapter(
           .connect({
             serverUrl: openCode2Settings.serverUrl,
             serverPassword: openCode2Settings.serverPassword,
+            binaryPath: openCode2Settings.binaryPath,
           })
           .pipe(
             Effect.mapError(
@@ -2029,17 +2031,16 @@ export function makeOpenCode2Adapter(
         return "unknown";
       }
       // Session rules are the supervised-mode guarantee; re-assert them in
-      // case the shared server restarted with different config.
+      // case the shared server restarted with different config. Sent even when
+      // empty so a session that moved to full-access gets its rules cleared.
       if (context.appliedRulesMode) {
         const ruleset = buildOpenCode2SessionRules(context.appliedRulesMode, context.mcpServerName);
-        if (ruleset.length > 0) {
-          yield* context.client.permission
-            .rules({
-              sessionID: toSessionId(context.openCodeSessionId),
-              permissions: ruleset,
-            })
-            .pipe(Effect.timeout("5 seconds"), Effect.ignoreCause);
-        }
+        yield* context.client.permission
+          .rules({
+            sessionID: toSessionId(context.openCodeSessionId),
+            permissions: ruleset,
+          })
+          .pipe(Effect.timeout("5 seconds"), Effect.ignoreCause);
       }
       yield* recoverPendingRequests(context);
       if (context.activeTurnId !== undefined) {
@@ -2302,7 +2303,10 @@ export function makeOpenCode2Adapter(
             const client = connection.client;
             const ruleset = buildOpenCode2SessionRules(input.runtimeMode, mcpServerName);
             const agent = getModelSelectionStringOptionValue(input.modelSelection, "agent");
-            const parsedModel = parseOpenCode2ModelSlug(input.modelSelection?.model);
+            const parsedModel = withOpenCode2Variant(
+              parseOpenCode2ModelSlug(input.modelSelection?.model),
+              getModelSelectionStringOptionValue(input.modelSelection, "variant"),
+            );
 
             // Resume: re-adopt the session named by the durable cursor —
             // OpenCode 2 scopes history by session id on the shared server.
@@ -2344,19 +2348,19 @@ export function makeOpenCode2Adapter(
               }
               // Resume skips `session.create`, so re-assert the ruleset — a
               // runtime-mode change would otherwise leave the session on its
-              // original permissions.
-              if (ruleset.length > 0) {
-                yield* client.permission
-                  .rules({ sessionID: adopted.id, permissions: ruleset })
-                  .pipe(
-                    Effect.mapError(
-                      toRequestError(
-                        "permission.rules",
-                        "Failed to re-apply session rules on resume.",
-                      ),
+              // original permissions. An empty ruleset is sent deliberately:
+              // it is what clears a supervised session's rules when the thread
+              // has since moved to full-access.
+              yield* client.permission
+                .rules({ sessionID: adopted.id, permissions: ruleset })
+                .pipe(
+                  Effect.mapError(
+                    toRequestError(
+                      "permission.rules",
+                      "Failed to re-apply session rules on resume.",
                     ),
-                  );
-              }
+                  ),
+                );
               if (agent) {
                 yield* client.session
                   .switchAgent({ sessionID: adopted.id, agent: toAgentId(agent) })
@@ -2576,7 +2580,10 @@ export function makeOpenCode2Adapter(
             issue: `OpenCode 2 model selection is bound to instance '${modelSelection.instanceId}', expected '${boundInstanceId}'.`,
           });
         }
-        const parsedModel = parseOpenCode2ModelSlug(modelSelection?.model);
+        const parsedModel = withOpenCode2Variant(
+          parseOpenCode2ModelSlug(modelSelection?.model),
+          getModelSelectionStringOptionValue(modelSelection, "variant"),
+        );
         if (modelSelection !== undefined && modelSelection.model && !parsedModel) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -3074,18 +3081,16 @@ export function makeOpenCode2Adapter(
         });
       }
       // Fork copies the parent's rules; re-assert them anyway in case the
-      // mode changed since.
+      // mode changed since (empty clears them when the thread is full-access).
       if (context.appliedRulesMode) {
         const ruleset = buildOpenCode2SessionRules(context.appliedRulesMode, context.mcpServerName);
-        if (ruleset.length > 0) {
-          yield* context.client.permission
-            .rules({ sessionID: forkedSessionId, permissions: ruleset })
-            .pipe(
-              Effect.mapError(
-                toRequestError("permission.rules", "Failed to set rules on the forked session."),
-              ),
-            );
-        }
+        yield* context.client.permission
+          .rules({ sessionID: forkedSessionId, permissions: ruleset })
+          .pipe(
+            Effect.mapError(
+              toRequestError("permission.rules", "Failed to set rules on the forked session."),
+            ),
+          );
       }
       yield* closePendingRequests(context, { type: "session.fork" });
       context.openCodeSessionId = forkedSessionId;

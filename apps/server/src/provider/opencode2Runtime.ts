@@ -51,27 +51,33 @@ const OPENCODE2_CONNECT_TIMEOUT = "10 seconds";
  * `ownMcpServerName` denies the other threads' `t3-code-*` MCP registrations:
  * per-thread-named servers are visible to every session in the directory, and
  * without this rule a restricted session could execute another thread's
- * tools (which run under that thread's credential).
+ * tools (which run under that thread's credential). That isolation holds in
+ * every mode including `full-access` — skipping approvals is about this
+ * thread's own work, not about letting it act as another thread.
  */
 export function buildOpenCode2SessionRules(
   runtimeMode: RuntimeMode,
   ownMcpServerName?: string,
 ): Permission.Ruleset {
+  // Other threads' t3-code registrations are visible in this directory; only
+  // this thread's own registration may be called. OpenCode checks MCP tool
+  // calls as `<sanitized-server>_<tool>`, so the own-server pattern carries
+  // the tool suffix.
+  const t3CodeDeny: Permission.Ruleset = [{ action: "t3-code-*", resource: "*", effect: "deny" }];
+  // Full access stays prompt-free, so the thread's own tools are auto-allowed
+  // rather than surfaced as an approval — but the cross-thread deny remains.
+  const ownRule = (effect: "ask" | "allow"): Permission.Ruleset =>
+    ownMcpServerName ? [{ action: `${ownMcpServerName}_*`, resource: "*", effect }] : [];
+
   if (runtimeMode === "full-access") {
-    return [];
+    return [...t3CodeDeny, ...ownRule("allow")];
   }
   const editEffect = runtimeMode === "auto-accept-edits" ? ("allow" as const) : ("ask" as const);
   return [
     // Catch-all ask first; the specific rules below win as later matches.
     { action: "*", resource: "*", effect: "ask" },
-    // Other threads' t3-code registrations are visible in this directory;
-    // only this thread's own registration may be called. OpenCode checks MCP
-    // tool calls as `<sanitized-server>_<tool>`, so the own-server allow
-    // pattern carries the tool suffix.
-    { action: "t3-code-*", resource: "*", effect: "deny" },
-    ...(ownMcpServerName
-      ? [{ action: `${ownMcpServerName}_*`, resource: "*", effect: "ask" as const }]
-      : []),
+    ...t3CodeDeny,
+    ...ownRule("ask"),
     // Read-only discovery stays frictionless.
     { action: "read", resource: "*", effect: "allow" },
     { action: "glob", resource: "*", effect: "allow" },
@@ -113,6 +119,8 @@ export interface OpenCode2RuntimeShape {
   readonly connect: (input: {
     readonly serverUrl?: string | null;
     readonly serverPassword?: string;
+    /** Path to the v2 binary used to start the background service when none is registered. */
+    readonly binaryPath?: string;
   }) => Effect.Effect<OpenCode2Connection, OpenCode2RuntimeError>;
   /** Load model/agent/skill inventory from the same connection chat uses. */
   readonly loadInventory: (input: {
@@ -181,43 +189,51 @@ const makeOpenCode2Runtime = Effect.gen(function* () {
       return { client, url, external: true, version } satisfies OpenCode2Connection;
     });
 
-  const connectBackgroundService = Effect.gen(function* () {
-    const discovered = yield* OpenCodeLocalService.discover().pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.mapError((cause) =>
-        ensureRuntimeError("connect", "Failed to read the local service registration.", cause),
-      ),
-    );
-    if (discovered) {
-      const headers = discovered.auth
-        ? { authorization: basicAuthHeader(discovered.auth.username, discovered.auth.password) }
-        : {};
-      const client = yield* clientFor(discovered.url, headers);
+  const connectBackgroundService = (binaryPath: string | undefined) =>
+    Effect.gen(function* () {
+      const discovered = yield* OpenCodeLocalService.discover().pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.mapError((cause) =>
+          ensureRuntimeError("connect", "Failed to read the local service registration.", cause),
+        ),
+      );
+      if (discovered) {
+        const headers = discovered.auth
+          ? { authorization: basicAuthHeader(discovered.auth.username, discovered.auth.password) }
+          : {};
+        const client = yield* clientFor(discovered.url, headers);
+        const version = yield* probeConnection(client);
+        return {
+          client,
+          url: discovered.url,
+          external: false,
+          version,
+        } satisfies OpenCode2Connection;
+      }
+      const command = openCode2ServiceCommand(binaryPath);
+      const endpoint = yield* OpenCodeLocalService.ensure({
+        version: (version) => version.startsWith("2."),
+        ...(command ? { command } : {}),
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.mapError((cause) =>
+          ensureRuntimeError(
+            "connect",
+            "No OpenCode background service is registered and starting one failed.",
+            cause,
+          ),
+        ),
+      );
+      const headers = OpenCodeLocalService.headers(endpoint) ?? {};
+      const client = yield* clientFor(endpoint.url, headers);
       const version = yield* probeConnection(client);
       return {
         client,
-        url: discovered.url,
+        url: endpoint.url,
         external: false,
         version,
       } satisfies OpenCode2Connection;
-    }
-    const endpoint = yield* OpenCodeLocalService.ensure({
-      version: (version) => version.startsWith("2."),
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.mapError((cause) =>
-        ensureRuntimeError(
-          "connect",
-          "No OpenCode background service is registered and starting one failed.",
-          cause,
-        ),
-      ),
-    );
-    const headers = OpenCodeLocalService.headers(endpoint) ?? {};
-    const client = yield* clientFor(endpoint.url, headers);
-    const version = yield* probeConnection(client);
-    return { client, url: endpoint.url, external: false, version } satisfies OpenCode2Connection;
-  });
+    });
 
   const connect: OpenCode2RuntimeShape["connect"] = (input) =>
     Effect.gen(function* () {
@@ -230,7 +246,7 @@ const makeOpenCode2Runtime = Effect.gen(function* () {
             : undefined,
         );
       }
-      return yield* connectBackgroundService;
+      return yield* connectBackgroundService(input.binaryPath);
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
 
   const loadInventory: OpenCode2RuntimeShape["loadInventory"] = (input) =>
@@ -305,6 +321,38 @@ export function parseOpenCode2ModelSlug(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Service command used when T3 has to start the v2 background service itself.
+ * The SDK default is `opencode serve --service`, but the v2 binary is
+ * `opencode2` — on a machine with only v2 installed, going through the default
+ * would spawn a v1 binary (or nothing) and the 2.x version gate could never
+ * pass. Returns undefined so the caller can fall back to the SDK default.
+ */
+export function openCode2ServiceCommand(
+  binaryPath: string | undefined,
+): ReadonlyArray<string> | undefined {
+  const command = binaryPath?.trim();
+  return command && command.length > 0 ? [command, "serve", "--service"] : undefined;
+}
+
+/**
+ * Fold a composer `variant` selection (the Reasoning option) into a parsed
+ * model ref. v2's `session.prompt` has no variant field — the variant rides
+ * inside the model ref as `provider/model#variant` — so it has to be attached
+ * here. A variant that fails to parse yields the ref unchanged, so a bad
+ * selection degrades to the provider default instead of dropping the model.
+ */
+export function withOpenCode2Variant(
+  ref: ReturnType<typeof Model.Ref.parse> | undefined,
+  variant: string | null | undefined,
+): ReturnType<typeof Model.Ref.parse> | undefined {
+  const trimmed = variant?.trim();
+  if (!ref || !trimmed || trimmed.length === 0) {
+    return ref;
+  }
+  return parseOpenCode2ModelSlug(`${ref.providerID}/${ref.id}#${trimmed}`) ?? ref;
 }
 
 /**

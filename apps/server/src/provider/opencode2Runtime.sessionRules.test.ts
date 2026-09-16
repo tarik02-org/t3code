@@ -25,8 +25,45 @@ const effectFor = (
 ): "allow" | "deny" | "ask" | undefined => lastMatchingRule(rules, action, resource)?.effect;
 
 describe("buildOpenCode2SessionRules", () => {
-  it("grants full access freely (no session rules)", () => {
-    NodeAssert.deepEqual(buildOpenCode2SessionRules("full-access"), []);
+  it("grants full access freely while keeping cross-thread MCP isolation", () => {
+    // Full access skips approvals for this thread's own work, but must not let
+    // it act as another thread: the per-thread `t3-code-*` registrations carry
+    // the target thread's credential and are visible to every session.
+    const own = "t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
+    const rules = buildOpenCode2SessionRules("full-access", own);
+    NodeAssert.deepEqual(effectFor(rules, "shell"), undefined);
+    NodeAssert.deepEqual(effectFor(rules, "edit"), undefined);
+    NodeAssert.deepEqual(
+      effectFor(rules, "t3-code-00000000-0000-0000-0000-000000000000_list_thread_pull_requests"),
+      "deny",
+    );
+    NodeAssert.deepEqual(effectFor(rules, `${own}_list_thread_pull_requests`), "allow");
+    // Full access stays prompt-free: no catch-all ask, own tools auto-allowed.
+    NodeAssert.equal(
+      rules.some((rule) => rule.action === "*" && rule.resource === "*" && rule.effect === "ask"),
+      false,
+    );
+  });
+
+  it("keeps the cross-thread deny in every mode", () => {
+    const own = "t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
+    for (const mode of ["full-access", "approval-required", "auto-accept-edits", "auto"] as const) {
+      const rules = buildOpenCode2SessionRules(mode, own);
+      // Another thread's registration: denied even though visible.
+      NodeAssert.deepEqual(
+        effectFor(rules, "t3-code-00000000-0000-0000-0000-000000000000_list_thread_pull_requests"),
+        "deny",
+      );
+      // This thread's own tools stay callable in every mode: auto-allowed
+      // under full access, surfaced as an approval otherwise.
+      const ownEffect = mode === "full-access" ? "allow" : "ask";
+      NodeAssert.deepEqual(effectFor(rules, `${own}_list_thread_pull_requests`), ownEffect);
+      // Bare prefix match without the tool suffix must not over-allow.
+      NodeAssert.deepEqual(
+        effectFor(rules, `t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ffX`),
+        "deny",
+      );
+    }
   });
 
   it("asks for everything in supervised mode", () => {

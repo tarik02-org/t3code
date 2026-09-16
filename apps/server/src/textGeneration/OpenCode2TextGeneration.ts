@@ -62,6 +62,7 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
           ...(openCode2Settings.serverPassword
             ? { serverPassword: openCode2Settings.serverPassword }
             : {}),
+          binaryPath: openCode2Settings.binaryPath,
         });
 
         const result = yield* connection.client.generate

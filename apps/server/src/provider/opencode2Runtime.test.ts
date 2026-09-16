@@ -7,7 +7,13 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
-import { OpenCode2Runtime, OpenCode2RuntimeLive } from "./opencode2Runtime.ts";
+import {
+  OpenCode2Runtime,
+  OpenCode2RuntimeLive,
+  openCode2ServiceCommand,
+  parseOpenCode2ModelSlug,
+  withOpenCode2Variant,
+} from "./opencode2Runtime.ts";
 
 const HEALTH_BODY = { healthy: true, version: "2.0.3", pid: 1234 };
 
@@ -65,3 +71,51 @@ it.effect("keeps a trailing slash from corrupting the probe URL", () =>
     NodeAssert.ok(!requestedUrls[0]?.includes("[object Object]"));
   }),
 );
+
+it("folds the composer variant selection into the model ref", () => {
+  // v2's `session.prompt` has no variant field, so the Reasoning selection
+  // must ride inside the model ref (`provider/model#variant`); without this
+  // the choice was silently dropped.
+  const base = parseOpenCode2ModelSlug("openai/gpt-6-astra");
+  NodeAssert.equal(base?.variant, undefined);
+
+  const withHigh = withOpenCode2Variant(base, "high");
+  NodeAssert.equal(withHigh?.providerID, "openai");
+  NodeAssert.equal(withHigh?.id, "gpt-6-astra");
+  NodeAssert.equal(withHigh?.variant, "high");
+});
+
+it("ignores an absent or blank variant, and degrades a bad one to no variant", () => {
+  const base = parseOpenCode2ModelSlug("openai/gpt-6-astra");
+
+  NodeAssert.equal(withOpenCode2Variant(base, undefined)?.variant, undefined);
+  NodeAssert.equal(withOpenCode2Variant(base, "")?.variant, undefined);
+  NodeAssert.equal(withOpenCode2Variant(base, "   ")?.variant, undefined);
+  // A variant containing the ref separator cannot be encoded, so the model
+  // must survive while only the variant is dropped.
+  const bad = withOpenCode2Variant(base, "hi#gh");
+  NodeAssert.equal(bad?.providerID, "openai");
+  NodeAssert.equal(bad?.id, "gpt-6-astra");
+  NodeAssert.equal(bad?.variant, undefined);
+});
+
+it("leaves an unparseable model selection alone", () => {
+  NodeAssert.equal(withOpenCode2Variant(undefined, "high"), undefined);
+});
+
+it("starts the background service with the configured binary path", () => {
+  // The SDK default is `opencode serve --service`, but the v2 binary is
+  // `opencode2`; a machine with only v2 installed could never pass the 2.x
+  // version gate through the default.
+  NodeAssert.deepEqual(openCode2ServiceCommand("/opt/opencode2"), [
+    "/opt/opencode2",
+    "serve",
+    "--service",
+  ]);
+});
+
+it("defers to the SDK default command when no binary path is configured", () => {
+  NodeAssert.equal(openCode2ServiceCommand(undefined), undefined);
+  NodeAssert.equal(openCode2ServiceCommand(""), undefined);
+  NodeAssert.equal(openCode2ServiceCommand("   "), undefined);
+});
