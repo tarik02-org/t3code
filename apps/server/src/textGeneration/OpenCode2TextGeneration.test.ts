@@ -17,12 +17,23 @@ const INSTANCE = ProviderInstanceId.make("opencode2");
  * The generation endpoint is stubbed at the runtime boundary so these tests
  * pin the decode path rather than the server: `generate.text` returns the
  * model's raw text, and `extractJsonObject` hands it on as a JSON *string*.
+ * `requestedModels` records the ref actually sent so variant forwarding is
+ * observable.
  */
-const runtimeReturning = (text: () => string): OpenCode2RuntimeShape => ({
+const runtimeReturning = (
+  text: () => string,
+  requestedModels?: Array<Record<string, unknown>>,
+): OpenCode2RuntimeShape => ({
   connect: () =>
     Effect.succeed({
       client: {
-        generate: { text: () => Effect.succeed({ text: text() }) },
+        generate: {
+          text: (input: { readonly model?: Record<string, unknown> }) =>
+            Effect.sync(() => {
+              requestedModels?.push(input.model ?? {});
+              return { text: text() };
+            }),
+        },
       },
       url: "http://stub",
       external: false,
@@ -31,20 +42,51 @@ const runtimeReturning = (text: () => string): OpenCode2RuntimeShape => ({
   loadInventory: () => Effect.die("not used"),
 });
 
-const makeTextGeneration = (text: () => string) =>
+const makeTextGeneration = (text: () => string, requestedModels?: Array<Record<string, unknown>>) =>
   makeOpenCode2TextGeneration(decodeSettings({ enabled: true })).pipe(
-    Effect.provideService(OpenCode2Runtime, OpenCode2Runtime.of(runtimeReturning(text))),
+    Effect.provideService(
+      OpenCode2Runtime,
+      OpenCode2Runtime.of(runtimeReturning(text, requestedModels)),
+    ),
   );
 
-const generateTitle = (text: () => string, message = "investigate the flaky CI job") =>
+const generateTitle = (
+  text: () => string,
+  message = "investigate the flaky CI job",
+  requestedModels?: Array<Record<string, unknown>>,
+) =>
   Effect.gen(function* () {
-    const textGeneration = yield* makeTextGeneration(text);
+    const textGeneration = yield* makeTextGeneration(text, requestedModels);
     return yield* textGeneration.generateThreadTitle({
       message,
       cwd: process.cwd(),
       modelSelection: createModelSelection(INSTANCE, "openai/gpt-6-astra"),
     });
   }).pipe(Effect.provide(NodeServices.layer));
+
+it.effect("forwards the selected reasoning variant into the model ref", () =>
+  Effect.gen(function* () {
+    // Regression: only the base slug was parsed, so Low/High/Extra High were
+    // silently ignored and text generation used the provider default.
+    const requestedModels: Array<Record<string, unknown>> = [];
+    const textGeneration = yield* makeTextGeneration(
+      () => JSON.stringify({ title: "Fix flaky CI job" }),
+      requestedModels,
+    );
+    yield* textGeneration.generateThreadTitle({
+      message: "investigate the flaky CI job",
+      cwd: process.cwd(),
+      modelSelection: createModelSelection(INSTANCE, "openai/gpt-6-astra", [
+        { id: "variant", value: "high" },
+      ]),
+    });
+
+    NodeAssert.equal(requestedModels.length, 1);
+    NodeAssert.equal(requestedModels[0]?.providerID, "openai");
+    NodeAssert.equal(requestedModels[0]?.id, "gpt-6-astra");
+    NodeAssert.equal(requestedModels[0]?.variant, "high");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect("decodes a plain JSON object returned by the model", () =>
   Effect.gen(function* () {

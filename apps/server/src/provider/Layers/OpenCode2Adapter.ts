@@ -54,7 +54,6 @@ import {
 import { type OpenCode2AdapterShape } from "../Services/OpenCode2Adapter.ts";
 import {
   buildOpenCode2SessionRules,
-  openCode2McpServerBase,
   openCode2McpServerName,
   parseOpenCode2ModelSlug,
   toOpenCode2FileParts,
@@ -75,6 +74,12 @@ const OPENCODE2_RESUME_VERSION = 1 as const;
 /** Reconnect backoff for the replay-less v2 event stream. */
 const OPENCODE2_RECONNECT_BASE_DELAY_MS = 2_000;
 const OPENCODE2_RECONNECT_MAX_DELAY_MS = 30_000;
+/**
+ * Ceiling on waiting for the first `server.connected`. The pump retries
+ * forever, so without this a server that accepts the health probe but never
+ * streams would hang session startup instead of failing it.
+ */
+const OPENCODE2_STREAM_READY_TIMEOUT = "15 seconds";
 /** Page guard for cursor-paginated list endpoints (upstream InvalidCursorError trap). */
 const OPENCODE2_LIST_MAX_PAGES = 200;
 
@@ -376,8 +381,6 @@ interface OpenCode2SessionContext {
   /** Runtime mode whose ruleset was last written to the session. */
   appliedRulesMode: RuntimeMode | undefined;
   readonly mcpServerName: string;
-  /** Sanitized base shared by this directory's registrations (for isolation rules). */
-  readonly mcpServerBase: string;
   cancellationTurnId: TurnId | undefined;
   interruptedTurnId: TurnId | undefined;
   reconcileIdleStatus: boolean;
@@ -2016,7 +2019,6 @@ export function makeOpenCode2Adapter(
       if (context.appliedRulesMode) {
         const ruleset = buildOpenCode2SessionRules({
           runtimeMode: context.appliedRulesMode,
-          mcpServerBase: context.mcpServerBase,
           ownMcpServerName: context.mcpServerName,
         });
         yield* context.client.permission
@@ -2058,10 +2060,11 @@ export function makeOpenCode2Adapter(
     ) {
       const run = Effect.gen(function* () {
         let attempt = 0;
-        // The connection is verified by the runtime's health probe at connect
-        // time; resolve `firstConnection` as soon as the pump owns the
-        // subscription so concurrent startSession callers converge.
-        yield* Deferred.succeed(context.firstConnection, undefined).pipe(Effect.ignore);
+        // The health probe only proves the HTTP API answers; the event stream
+        // is a separate subscription. Because v2 streams have no replay, a
+        // prompt admitted during the gap would lose its output permanently —
+        // so `firstConnection` resolves on `server.connected` (the first event
+        // of every subscription), not when the pump merely starts.
         while (!(yield* Ref.get(context.stopped))) {
           yield* context.client.event.subscribe().pipe(
             Stream.filter((event) => {
@@ -2080,6 +2083,14 @@ export function makeOpenCode2Adapter(
               }
               return isRequestBearingEvent(event);
             }),
+            Stream.tap((event) =>
+              // `Deferred.succeed` is idempotent, so resolving on every
+              // (re)connect needs no extra guard, and it will not override a
+              // failure already recorded by `emitUnexpectedExit`.
+              event.type === "server.connected"
+                ? Deferred.succeed(context.firstConnection, undefined).pipe(Effect.ignore)
+                : Effect.void,
+            ),
             Stream.runForEach((event) => handleSubscribedEvent(context, event)),
             Effect.exit,
           );
@@ -2122,7 +2133,6 @@ export function makeOpenCode2Adapter(
       Effect.gen(function* () {
         const ruleset = buildOpenCode2SessionRules({
           runtimeMode,
-          mcpServerBase: context.mcpServerBase,
           ownMcpServerName: context.mcpServerName,
         });
         yield* context.client.permission
@@ -2281,7 +2291,6 @@ export function makeOpenCode2Adapter(
         }
 
         const sessionScope = yield* Scope.make();
-        const mcpServerBase = openCode2McpServerBase(openCode2Settings.mcpServerName);
         const mcpServerName = openCode2McpServerName(
           openCode2Settings.mcpServerName,
           input.threadId,
@@ -2292,7 +2301,6 @@ export function makeOpenCode2Adapter(
             const client = connection.client;
             const ruleset = buildOpenCode2SessionRules({
               runtimeMode: input.runtimeMode,
-              mcpServerBase,
               ownMcpServerName: mcpServerName,
             });
             const agent = getModelSelectionStringOptionValue(input.modelSelection, "agent");
@@ -2441,7 +2449,6 @@ export function makeOpenCode2Adapter(
           activeTurnId: undefined,
           appliedRulesMode: input.runtimeMode,
           mcpServerName,
-          mcpServerBase,
           cancellationTurnId: undefined,
           interruptedTurnId: undefined,
           reconcileIdleStatus: false,
@@ -2526,7 +2533,21 @@ export function makeOpenCode2Adapter(
         );
         const connectionExit = yield* Effect.gen(function* () {
           yield* startEventPump(context);
-          yield* Deferred.await(context.firstConnection);
+          // Wait for a live subscription, bounded so an unreachable-but-
+          // answering server fails session start rather than hanging it.
+          yield* Deferred.await(context.firstConnection).pipe(
+            Effect.timeoutOrElse({
+              duration: OPENCODE2_STREAM_READY_TIMEOUT,
+              orElse: () =>
+                Effect.fail(
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "event.subscribe",
+                    detail: `OpenCode 2 event stream did not connect within ${OPENCODE2_STREAM_READY_TIMEOUT}.`,
+                  }),
+                ),
+            }),
+          );
         }).pipe(
           Effect.onInterrupt(() => cleanupStartingContext),
           Effect.exit,
@@ -3079,7 +3100,6 @@ export function makeOpenCode2Adapter(
       if (context.appliedRulesMode) {
         const ruleset = buildOpenCode2SessionRules({
           runtimeMode: context.appliedRulesMode,
-          mcpServerBase: context.mcpServerBase,
           ownMcpServerName: context.mcpServerName,
         });
         yield* context.client.permission

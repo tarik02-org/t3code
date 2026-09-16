@@ -2,7 +2,11 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { buildOpenCode2SessionRules } from "./opencode2Runtime.ts";
+import {
+  buildOpenCode2SessionRules,
+  OPENCODE2_MCP_NAMESPACE,
+  openCode2McpServerName,
+} from "./opencode2Runtime.ts";
 
 const lastMatchingRule = (
   rules: ReturnType<typeof buildOpenCode2SessionRules>,
@@ -24,12 +28,11 @@ const effectFor = (
   resource = "*",
 ): "allow" | "deny" | "ask" | undefined => lastMatchingRule(rules, action, resource)?.effect;
 
-/** Session rules for a mode, with an optional own registration under `base`. */
+/** Session rules for a mode, with an optional own registration name. */
 const rulesFor = (
   runtimeMode: "full-access" | "approval-required" | "auto-accept-edits" | "auto",
-  base = "t3-code",
   ownMcpServerName?: string,
-) => buildOpenCode2SessionRules({ runtimeMode, mcpServerBase: base, ownMcpServerName });
+) => buildOpenCode2SessionRules({ runtimeMode, ownMcpServerName });
 
 describe("buildOpenCode2SessionRules", () => {
   it("grants full access freely while keeping cross-thread MCP isolation", () => {
@@ -37,7 +40,7 @@ describe("buildOpenCode2SessionRules", () => {
     // it act as another thread: the per-thread `t3-code-*` registrations carry
     // the target thread's credential and are visible to every session.
     const own = "t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
-    const rules = rulesFor("full-access", "t3-code", own);
+    const rules = rulesFor("full-access", own);
     NodeAssert.deepEqual(effectFor(rules, "shell"), undefined);
     NodeAssert.deepEqual(effectFor(rules, "edit"), undefined);
     NodeAssert.deepEqual(
@@ -52,46 +55,55 @@ describe("buildOpenCode2SessionRules", () => {
     );
   });
 
-  it("isolates foreign registrations under a customized base name", () => {
-    // Regression: the foreign deny was hard-coded to `t3-code-*`, so with a
-    // customized `mcpServerName` another thread's `corp-*` tools fell through
-    // to permissive agent/user rules and ran with that thread's credential.
-    const own = "corp-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
+  it("isolates foreign registrations that nest a customized name", () => {
+    // Registrations nest inside the reserved namespace, so one constant deny
+    // covers them; a customized `mcpServerName` must not escape isolation.
+    const own = openCode2McpServerName("corp", "25e99ad6-4c39-49e3-8446-f6b58d7974ff");
     for (const mode of ["full-access", "approval-required", "auto-accept-edits", "auto"] as const) {
-      const rules = rulesFor(mode, "corp", own);
+      const rules = rulesFor(mode, own);
+      // Another thread on the same instance: denied even though visible.
       NodeAssert.deepEqual(
-        effectFor(rules, "corp-00000000-0000-0000-0000-000000000000_list_thread_pull_requests"),
+        effectFor(
+          rules,
+          `${openCode2McpServerName("corp", "00000000-0000-0000-0000-000000000000")}_list_thread_pull_requests`,
+        ),
         "deny",
       );
       NodeAssert.deepEqual(
         effectFor(rules, `${own}_list_thread_pull_requests`),
         mode === "full-access" ? "allow" : "ask",
       );
-      // The default base is not this directory's base, so the foreign rule does
-      // not target it: restricted modes fall back to the catch-all ask, and
-      // full access (no catch-all) leaves it unspecified.
-      NodeAssert.deepEqual(
-        effectFor(rules, "t3-code-00000000_list_thread_pull_requests"),
-        mode === "full-access" ? undefined : "ask",
-      );
     }
   });
 
-  it("isolates using the sanitized base the registrations actually use", () => {
-    // The sanitizer rewrites the configured base too (`corp.io` → `corp_io`),
-    // so a deny derived from the raw setting would never match.
-    const rules = rulesFor("full-access", "corp_io", "corp_io-t1-abc");
-    NodeAssert.deepEqual(effectFor(rules, "corp_io-00000000_list_thread_pull_requests"), "deny");
-    NodeAssert.deepEqual(effectFor(rules, "corp_io-t1-abc_list_thread_pull_requests"), "allow");
-    // A rule built from the raw setting would have matched this and not the
-    // registered `corp_io-…` names.
-    NodeAssert.deepEqual(effectFor(rules, "corp.io-00000000_list_thread_pull_requests"), undefined);
+  it("isolates a colocated instance that configured a different name", () => {
+    // Regression: the deny was derived from this instance's own base, so with
+    // separate instances (`corp` vs `work`) on one server neither denied the
+    // other's registrations and their tools stayed callable cross-thread.
+    const other = openCode2McpServerName("work", "tB");
+    for (const mode of ["full-access", "approval-required", "auto-accept-edits", "auto"] as const) {
+      const rules = rulesFor(mode, openCode2McpServerName("corp", "tA"));
+      NodeAssert.deepEqual(effectFor(rules, `${other}_list_thread_pull_requests`), "deny");
+      NodeAssert.deepEqual(effectFor(rules, "t3-code-work-tB_list_thread_pull_requests"), "deny");
+    }
+  });
+
+  it("keeps the reserved namespace regardless of the configured name", () => {
+    // The sanitizer rewrites the configured name too (`corp.io` → `corp_io`),
+    // and both the registration and the rules must agree on the result.
+    const own = openCode2McpServerName("corp.io", "t1");
+    NodeAssert.equal(own, "t3-code-corp_io-t1");
+    NodeAssert.ok(own.startsWith(`${OPENCODE2_MCP_NAMESPACE}-`));
+
+    const rules = rulesFor("full-access", own);
+    NodeAssert.deepEqual(effectFor(rules, `${own}_list_thread_pull_requests`), "allow");
+    NodeAssert.deepEqual(effectFor(rules, "t3-code-corp.io-t1_list_thread_pull_requests"), "deny");
   });
 
   it("keeps the cross-thread deny in every mode", () => {
     const own = "t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
     for (const mode of ["full-access", "approval-required", "auto-accept-edits", "auto"] as const) {
-      const rules = rulesFor(mode, "t3-code", own);
+      const rules = rulesFor(mode, own);
       // Another thread's registration: denied even though visible.
       NodeAssert.deepEqual(
         effectFor(rules, "t3-code-00000000-0000-0000-0000-000000000000_list_thread_pull_requests"),
@@ -121,7 +133,7 @@ describe("buildOpenCode2SessionRules", () => {
     // OpenCode checks MCP tool calls as `<sanitized-server>_<tool>`.
     const own = "t3-code-25e99ad6-4c39-49e3-8446-f6b58d7974ff";
     for (const mode of ["approval-required", "auto-accept-edits", "auto"] as const) {
-      const rules = rulesFor(mode, "t3-code", own);
+      const rules = rulesFor(mode, own);
       // Another thread's registration: denied even though visible.
       NodeAssert.deepEqual(
         effectFor(rules, "t3-code-00000000-0000-0000-0000-000000000000_list_thread_pull_requests"),

@@ -7,6 +7,7 @@ import {
   type OpenCode2Settings,
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import {
@@ -49,7 +50,10 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
       readonly modelSelection: ModelSelection;
     }) =>
       Effect.gen(function* () {
-        const parsedModel = OpenCode2Runtime.parseOpenCode2ModelSlug(input.modelSelection.model);
+        const parsedModel = OpenCode2Runtime.withOpenCode2Variant(
+          OpenCode2Runtime.parseOpenCode2ModelSlug(input.modelSelection.model),
+          getModelSelectionStringOptionValue(input.modelSelection, "variant"),
+        );
         if (!parsedModel) {
           return yield* new TextGenerationError({
             operation: input.operation,
