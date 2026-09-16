@@ -16,11 +16,7 @@ import {
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import {
-  OpenCode2Runtime,
-  OpenCode2RuntimeError,
-  type OpenCode2Inventory,
-} from "../opencode2Runtime.ts";
+import * as OpenCode2Runtime from "../opencode2Runtime.ts";
 
 const OPENCODE2_PRESENTATION = {
   displayName: "OpenCode 2",
@@ -28,34 +24,67 @@ const OPENCODE2_PRESENTATION = {
 } as const;
 const OPENCODE2_PROBE_TIMEOUT = "8 seconds";
 
-const DEFAULT_OPENCODE2_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [
-    {
-      id: "variant",
-      label: "Reasoning",
-      type: "select",
-      options: [
-        { id: "low", label: "Low" },
-        { id: "medium", label: "Medium", isDefault: true },
-        { id: "high", label: "High" },
-        { id: "xhigh", label: "Extra High" },
-      ],
-      currentValue: "medium",
-    },
-    {
-      id: "agent",
-      label: "Agent",
-      type: "select",
-      options: [
-        { id: "build", label: "Build", isDefault: true },
-        { id: "plan", label: "Plan" },
-      ],
-      currentValue: "build",
-    },
+const OPENCODE2_AGENT_DESCRIPTOR = {
+  id: "agent",
+  label: "Agent",
+  type: "select",
+  options: [
+    { id: "build", label: "Build", isDefault: true },
+    { id: "plan", label: "Plan" },
   ],
+  currentValue: "build",
+} as const;
+
+/**
+ * Capabilities for models whose variants are unknown (custom models, the
+ * fallback catalog). No Reasoning selector: OpenCode 2 rejects a variant the
+ * model does not declare, so guessing one breaks every turn.
+ */
+const DEFAULT_OPENCODE2_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [OPENCODE2_AGENT_DESCRIPTOR],
 });
 
-function flattenOpenCode2Models(inventory: OpenCode2Inventory): ReadonlyArray<ServerProviderModel> {
+function titleCaseSlug(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter((segment) => segment.length > 0)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+/** Reasoning options come from the model's own declared variants. */
+function openCode2CapabilitiesForModel(
+  model: OpenCode2Runtime.OpenCode2Inventory["models"][number],
+): ModelCapabilities {
+  if (model.variants.length === 0) {
+    return DEFAULT_OPENCODE2_MODEL_CAPABILITIES;
+  }
+  const defaultVariant = model.variants.includes("medium")
+    ? "medium"
+    : model.variants.includes("high")
+      ? "high"
+      : undefined;
+  return createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "variant",
+        label: "Reasoning",
+        type: "select",
+        options: model.variants.map((variant) =>
+          variant === defaultVariant
+            ? { id: variant, label: titleCaseSlug(variant), isDefault: true as const }
+            : { id: variant, label: titleCaseSlug(variant) },
+        ),
+        ...(defaultVariant ? { currentValue: defaultVariant } : {}),
+      },
+      OPENCODE2_AGENT_DESCRIPTOR,
+    ],
+  });
+}
+
+function flattenOpenCode2Models(
+  inventory: OpenCode2Runtime.OpenCode2Inventory,
+): ReadonlyArray<ServerProviderModel> {
   return inventory.models.flatMap((model) => {
     const name = nonEmptyTrimmed(model.name);
     if (!name) return [];
@@ -66,14 +95,14 @@ function flattenOpenCode2Models(inventory: OpenCode2Inventory): ReadonlyArray<Se
         name,
         ...(subProvider ? { subProvider } : {}),
         isCustom: false,
-        capabilities: DEFAULT_OPENCODE2_MODEL_CAPABILITIES,
+        capabilities: openCode2CapabilitiesForModel(model),
       } satisfies ServerProviderModel,
     ];
   });
 }
 
 function openCode2SkillsToServerProviderSkills(
-  input: OpenCode2Inventory["skills"] | undefined,
+  input: OpenCode2Runtime.OpenCode2Inventory["skills"] | undefined,
 ): ReadonlyArray<ServerProviderSkill> {
   const skills: Array<ServerProviderSkill> = [];
   for (const skill of input ?? []) {
@@ -125,8 +154,8 @@ export const makePendingOpenCode2Provider = (
 export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderStatus")(function* (
   openCode2Settings: OpenCode2Settings,
   cwd: string,
-): Effect.fn.Return<ServerProviderDraft, never, OpenCode2Runtime> {
-  const openCode2Runtime = yield* OpenCode2Runtime;
+): Effect.fn.Return<ServerProviderDraft, never, OpenCode2Runtime.OpenCode2Runtime> {
+  const openCode2Runtime = yield* OpenCode2Runtime.OpenCode2Runtime;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const customModels = openCode2Settings.customModels;
   const isExternalServer = openCode2Settings.serverUrl.trim().length > 0;
@@ -134,15 +163,16 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
   // `connect` and `loadInventory` already fail with an `OpenCode2RuntimeError`
   // carrying a human-readable `detail`, so the probe surfaces that directly
   // instead of re-wrapping the failure to recover the message.
-  const fallback = (detail: string) =>
+  const fallback = (detail: string, connection?: OpenCode2Runtime.OpenCode2Connection) =>
     buildServerProvider({
       presentation: OPENCODE2_PRESENTATION,
       enabled: openCode2Settings.enabled,
       checkedAt,
       models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE2_MODEL_CAPABILITIES),
       probe: {
-        installed: false,
-        version: null,
+        // A reachable server that fails inventory is still installed.
+        installed: connection !== undefined,
+        version: connection?.version ?? null,
         status: "error",
         auth: { status: "unknown" },
         message: detail,
@@ -181,7 +211,7 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
         duration: OPENCODE2_PROBE_TIMEOUT,
         orElse: () =>
           Effect.fail(
-            new OpenCode2RuntimeError({
+            new OpenCode2Runtime.OpenCode2RuntimeError({
               operation: "connect",
               detail: "OpenCode 2 connection probe timed out.",
             }),
@@ -201,7 +231,7 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
         duration: OPENCODE2_PROBE_TIMEOUT,
         orElse: () =>
           Effect.fail(
-            new OpenCode2RuntimeError({
+            new OpenCode2Runtime.OpenCode2RuntimeError({
               operation: "inventory",
               detail: "OpenCode 2 inventory loading timed out.",
             }),
@@ -210,12 +240,13 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
       Effect.result,
     );
   if (Result.isFailure(inventoryResult)) {
-    return fallback(inventoryResult.failure.detail);
+    return fallback(inventoryResult.failure.detail, connection);
   }
   const inventory = inventoryResult.success;
 
+  const serverModels = flattenOpenCode2Models(inventory);
   const models = providerModelsFromSettings(
-    flattenOpenCode2Models(inventory),
+    serverModels,
     customModels,
     DEFAULT_OPENCODE2_MODEL_CAPABILITIES,
   );
@@ -235,9 +266,11 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
         status: models.length > 0 ? "authenticated" : "unknown",
         type: "opencode",
       },
+      // Readiness counts custom models too; the message reports only what
+      // the server itself advertises.
       message:
-        models.length > 0
-          ? `${models.length} model${models.length === 1 ? "" : "s"} available on ${isExternalServer ? "the configured OpenCode 2 server" : "the OpenCode 2 background service"}.`
+        serverModels.length > 0
+          ? `${serverModels.length} model${serverModels.length === 1 ? "" : "s"} available on ${isExternalServer ? "the configured OpenCode 2 server" : "the OpenCode 2 background service"}.`
           : isExternalServer
             ? "Connected to the configured OpenCode 2 server, but it reported no models."
             : "OpenCode 2 is running, but it reported no models.",
