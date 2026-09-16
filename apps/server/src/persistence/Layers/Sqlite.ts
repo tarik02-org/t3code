@@ -3,11 +3,11 @@ import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProjectionThreadGoalRepositoryLive } from "../Services/ProjectionThreadGoals.ts";
-import { makeRuntimeSqliteLayer } from "../RuntimeSqliteLayer.ts";
 
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -31,7 +31,7 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
     ProjectionThreadGoalRepositoryLive,
     Layer.provideMerge(
       setup,
-      makeRuntimeSqliteLayer({
+      NodeSqliteClient.layer({
         filename: dbPath,
         spanAttributes: {
           "db.name": path.basename(dbPath),
@@ -44,7 +44,7 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
 
 export const SqlitePersistenceMemory = Layer.provideMerge(
   ProjectionThreadGoalRepositoryLive,
-  Layer.provideMerge(setup, makeRuntimeSqliteLayer({ filename: ":memory:" })),
+  Layer.provideMerge(setup, NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 
 export const layerConfig = Layer.unwrap(
