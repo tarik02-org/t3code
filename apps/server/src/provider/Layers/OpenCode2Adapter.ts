@@ -34,7 +34,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type { Brand } from "effect/Brand";
-import { Form, Model, Permission, Session, SessionMessage } from "@opencode/client/effect";
+import { Form, Permission, Session, SessionMessage } from "@opencode/client/effect";
 import { Mcp } from "@opencode/schema/mcp";
 import type { OpenCodeEvent } from "@opencode/client/effect";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -52,7 +52,11 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { type OpenCode2AdapterShape } from "../Services/OpenCode2Adapter.ts";
-import { buildOpenCode2SessionRules, toOpenCode2FileParts } from "../opencode2Runtime.ts";
+import {
+  buildOpenCode2SessionRules,
+  parseOpenCode2ModelSlug,
+  toOpenCode2FileParts,
+} from "../opencode2Runtime.ts";
 import type { OpenCode2Connection, OpenCodeClient } from "../opencode2Runtime.ts";
 import * as OpenCode2Runtime from "../opencode2Runtime.ts";
 
@@ -149,7 +153,7 @@ const isoFromEpochMs = (value: number) =>
  * to its lexical form on failure. Exported shape mirrors the v1 adapter's
  * `isSameOpenCodeDirectory`.
  */
-export function isSameOpenCode2Directory(
+function isSameOpenCode2Directory(
   fileSystem: FileSystem.FileSystem,
   path: Path.Path,
   left: string,
@@ -377,7 +381,6 @@ interface OpenCode2IdleReconciliation {
 interface OpenCode2SessionContext {
   session: ProviderSession;
   readonly client: OpenCodeClient;
-  readonly connection: OpenCode2Connection;
   readonly directory: string;
   openCodeSessionId: string;
   /** Root session plus subagent child sessions, all routed to this thread. */
@@ -391,12 +394,9 @@ interface OpenCode2SessionContext {
   readonly toolNamesById: Map<string, string>;
   turnUsage: OpenCode2TurnUsage | undefined;
   activeTurnId: TurnId | undefined;
-  activeAgent: string | undefined;
-  /** Runtime mode whose ruleset was last written to the session. */
   /** Runtime mode whose ruleset was last written to the session. */
   appliedRulesMode: RuntimeMode | undefined;
-  /** This thread's MCP server name on the connected OpenCode server. */
-  mcpServerName: string | undefined;
+  readonly mcpServerName: string;
   cancellationTurnId: TurnId | undefined;
   interruptedTurnId: TurnId | undefined;
   reconcileIdleStatus: boolean;
@@ -446,18 +446,13 @@ export function makeOpenCode2Adapter(
       }
     };
 
-    /**
-     * Connections are cheap handles to an externally-owned server; cache per
-     * (serverUrl, password) so concurrent session starts do not each re-probe
-     * health, but never cache across different credentials.
-     */
-    const connectionCache = new Map<string, OpenCode2Connection>();
+    // One connection per adapter: settings are fixed at construction, so the
+    // health probe runs once per adapter instead of once per session start.
+    let cachedConnection: OpenCode2Connection | undefined;
     const connect = (): Effect.Effect<OpenCode2Connection, ProviderAdapterRequestError> =>
       Effect.gen(function* () {
-        const key = `${openCode2Settings.serverUrl}\u0000${openCode2Settings.serverPassword}`;
-        const cached = connectionCache.get(key);
-        if (cached) {
-          return cached;
+        if (cachedConnection) {
+          return cachedConnection;
         }
         const connection = yield* openCode2Runtime
           .connect({
@@ -475,7 +470,7 @@ export function makeOpenCode2Adapter(
                 }),
             ),
           );
-        connectionCache.set(key, connection);
+        cachedConnection = connection;
         return connection;
       });
 
@@ -718,7 +713,6 @@ export function makeOpenCode2Adapter(
       }
       const tokenUsage = takeTurnUsage(context, outcome.state === "completed");
       context.activeTurnId = undefined;
-      context.activeAgent = undefined;
       context.interruptedTurnId = undefined;
       context.awaitingBusyAfterInterruption = false;
       context.reconcileIdleStatus = false;
@@ -837,9 +831,7 @@ export function makeOpenCode2Adapter(
       context.interruptedTurnId = turnId;
       context.reconcileIdleStatus = true;
       context.awaitingBusyAfterInterruption = false;
-      const cancellation =
-        context.cancellationTurnId === turnId ? context.cancellationTurnId : undefined;
-      if (cancellation) {
+      if (context.cancellationTurnId === turnId) {
         context.cancellationTurnId = undefined;
       }
       let tokenUsage: TurnTokenUsage = {
@@ -850,14 +842,13 @@ export function makeOpenCode2Adapter(
       if (context.activeTurnId === turnId) {
         tokenUsage = takeTurnUsage(context, false);
         context.activeTurnId = undefined;
-        context.activeAgent = undefined;
         yield* updateProviderSession(
           context,
           { status: "ready" },
           { clearActiveTurnId: true, clearLastError: true },
         );
       }
-      yield* clearPendingRequests(context, { type: "session.interrupt" });
+      yield* closePendingRequests(context, { type: "session.interrupt" });
       emitUnsafe({
         ...(yield* buildEventBase({
           threadId: context.session.threadId,
@@ -893,7 +884,6 @@ export function makeOpenCode2Adapter(
       const tokenUsage = takeTurnUsage(context, false);
       context.promptAdmission = undefined;
       context.activeTurnId = undefined;
-      context.activeAgent = undefined;
       context.awaitingBusyAfterInterruption = false;
       context.reconcileIdleStatus = false;
       yield* updateProviderSession(
@@ -1294,8 +1284,6 @@ export function makeOpenCode2Adapter(
       }
     });
 
-    const clearPendingRequests = closePendingRequests;
-
     /**
      * Reconcile pending asks against the server: close T3-side dialogs the
      * server no longer tracks, and surface asks T3 never saw (emitted while
@@ -1373,14 +1361,12 @@ export function makeOpenCode2Adapter(
       }
       // Best-effort deregistration of this thread's MCP server; concurrent
       // threads keep their own uniquely named registrations.
-      if (context.mcpServerName) {
-        yield* context.client.mcp
-          .remove({
-            server: context.mcpServerName,
-            location: { directory: toDirectory(context.directory) },
-          })
-          .pipe(Effect.ignore);
-      }
+      yield* context.client.mcp
+        .remove({
+          server: context.mcpServerName,
+          location: { directory: toDirectory(context.directory) },
+        })
+        .pipe(Effect.ignore);
       yield* Scope.close(context.sessionScope, Exit.void).pipe(Effect.ignore);
     });
 
@@ -1768,46 +1754,7 @@ export function makeOpenCode2Adapter(
             }
             break;
           }
-          case "session.text.delta": {
-            if (turnId !== undefined && event.data.delta.length > 0) {
-              yield* emit({
-                ...(yield* buildEventBase({
-                  threadId: context.session.threadId,
-                  turnId,
-                  itemId: `${event.data.assistantMessageID}:${event.data.ordinal}`,
-                  createdAt: isoFromEpochMs(event.created),
-                  raw: event,
-                })),
-                type: "content.delta",
-                payload: {
-                  streamKind: "assistant_text",
-                  delta: event.data.delta,
-                },
-              });
-            }
-            break;
-          }
-          case "session.text.ended": {
-            if (turnId !== undefined) {
-              yield* emit({
-                ...(yield* buildEventBase({
-                  threadId: context.session.threadId,
-                  turnId,
-                  itemId: `${event.data.assistantMessageID}:${event.data.ordinal}`,
-                  createdAt: isoFromEpochMs(event.created),
-                  raw: event,
-                })),
-                type: "item.completed",
-                payload: {
-                  itemType: "assistant_message",
-                  status: "completed",
-                  title: "Assistant message",
-                  ...(event.data.text.length > 0 ? { detail: event.data.text } : {}),
-                },
-              });
-            }
-            break;
-          }
+          case "session.text.delta":
           case "session.reasoning.delta": {
             if (turnId !== undefined && event.data.delta.length > 0) {
               yield* emit({
@@ -1820,15 +1767,18 @@ export function makeOpenCode2Adapter(
                 })),
                 type: "content.delta",
                 payload: {
-                  streamKind: "reasoning_text",
+                  streamKind:
+                    event.type === "session.text.delta" ? "assistant_text" : "reasoning_text",
                   delta: event.data.delta,
                 },
               });
             }
             break;
           }
+          case "session.text.ended":
           case "session.reasoning.ended": {
             if (turnId !== undefined) {
+              const isText = event.type === "session.text.ended";
               yield* emit({
                 ...(yield* buildEventBase({
                   threadId: context.session.threadId,
@@ -1839,9 +1789,9 @@ export function makeOpenCode2Adapter(
                 })),
                 type: "item.completed",
                 payload: {
-                  itemType: "reasoning",
+                  itemType: isText ? "assistant_message" : "reasoning",
                   status: "completed",
-                  title: "Reasoning",
+                  title: isText ? "Assistant message" : "Reasoning",
                   ...(event.data.text.length > 0 ? { detail: event.data.text } : {}),
                 },
               });
@@ -2218,9 +2168,7 @@ export function makeOpenCode2Adapter(
         if (!mcpSession) {
           return;
         }
-        const serverName =
-          context.mcpServerName ??
-          openCode2McpServerName(openCode2Settings.mcpServerName, context.session.threadId);
+        const serverName = context.mcpServerName;
         const endpoint =
           openCode2Settings.mcpEndpointUrl.trim().length > 0
             ? openCode2Settings.mcpEndpointUrl.trim()
@@ -2245,7 +2193,6 @@ export function makeOpenCode2Adapter(
               toRequestError("mcp.add", "Failed to register the T3 Code MCP server."),
             ),
           );
-        context.mcpServerName = serverName;
       });
 
     // ── message listing ───────────────────────────────────────────
@@ -2300,7 +2247,6 @@ export function makeOpenCode2Adapter(
           readonly items: ReadonlyArray<unknown>;
         }>;
         readonly messages: ReadonlyArray<SessionMessage.Info>;
-        readonly sessionInfo: Session.Info;
       },
       ProviderAdapterRequestError
     > =>
@@ -2325,7 +2271,7 @@ export function makeOpenCode2Adapter(
             });
           }
         }
-        return { turns, messages, sessionInfo };
+        return { turns, messages };
       });
 
     // ── adapter surface ───────────────────────────────────────────
@@ -2485,7 +2431,6 @@ export function makeOpenCode2Adapter(
         const context: OpenCode2SessionContext = {
           session,
           client: started.connection.client,
-          connection: started.connection,
           directory,
           openCodeSessionId: sessionInfo.id,
           relatedSessionIds: new Set([sessionInfo.id]),
@@ -2497,7 +2442,6 @@ export function makeOpenCode2Adapter(
           toolNamesById: new Map(),
           turnUsage: undefined,
           activeTurnId: undefined,
-          activeAgent: undefined,
           appliedRulesMode: input.runtimeMode,
           mcpServerName,
           cancellationTurnId: undefined,
@@ -2652,7 +2596,7 @@ export function makeOpenCode2Adapter(
               attachment,
             }),
         }).map((part) => ({ uri: part.url, name: part.name }));
-        if ((!text || text.length === 0) && fileParts.length === 0) {
+        if (!text && fileParts.length === 0) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "sendTurn",
@@ -2722,7 +2666,6 @@ export function makeOpenCode2Adapter(
             context.promptGeneration = promptGeneration;
             context.promptAdmission = admission;
             context.activeTurnId = turnId;
-            context.activeAgent = intendedAgent;
             if (steeringTurnId === undefined) {
               context.turnUsage = makeOpenCode2TurnUsage();
             }
@@ -2758,7 +2701,7 @@ export function makeOpenCode2Adapter(
               context.client.session
                 .prompt({
                   sessionID: toSessionId(context.openCodeSessionId),
-                  text: text && text.length > 0 ? text : "",
+                  text: text ?? "",
                   ...(fileParts.length > 0 ? { files: fileParts } : {}),
                   ...(steeringTurnId !== undefined ? { delivery: "steer" as const } : {}),
                 })
@@ -2782,7 +2725,6 @@ export function makeOpenCode2Adapter(
                 const tokenUsage = takeTurnUsage(context, false);
                 context.promptAdmission = undefined;
                 context.activeTurnId = undefined;
-                context.activeAgent = undefined;
                 context.awaitingBusyAfterInterruption = false;
                 context.reconcileIdleStatus = false;
                 yield* updateProviderSession(
@@ -3145,7 +3087,7 @@ export function makeOpenCode2Adapter(
             );
         }
       }
-      yield* clearPendingRequests(context, { type: "session.fork" });
+      yield* closePendingRequests(context, { type: "session.fork" });
       context.openCodeSessionId = forkedSessionId;
       context.relatedSessionIds.clear();
       context.relatedSessionIds.add(forkedSessionId);
@@ -3172,7 +3114,7 @@ export function makeOpenCode2Adapter(
       };
     });
 
-    const stopAll: OpenCode2AdapterShape["stopAll"] = () =>
+    const stopAllSessions = () =>
       Effect.gen(function* () {
         const contexts = [...sessions.values()];
         sessions.clear();
@@ -3182,6 +3124,8 @@ export function makeOpenCode2Adapter(
         });
       });
 
+    const stopAll: OpenCode2AdapterShape["stopAll"] = () => stopAllSessions();
+
     // Layer-level finalizer: when the adapter layer shuts down, stop every
     // session. Closing each `sessionScope` interrupts the event pump and
     // reconciliation fibers, deregisters the thread-scoped MCP server, and
@@ -3189,14 +3133,7 @@ export function makeOpenCode2Adapter(
     // about Effect scopes therefore cannot leak remote sessions by forgetting
     // to call `stopAll`.
     yield* Effect.addFinalizer(() =>
-      Effect.gen(function* () {
-        const contexts = [...sessions.values()];
-        sessions.clear();
-        yield* Effect.forEach(contexts, (context) => Effect.ignoreCause(stopContext(context)), {
-          concurrency: "unbounded",
-          discard: true,
-        });
-      }).pipe(Effect.ensuring(Queue.shutdown(runtimeEvents))),
+      stopAllSessions().pipe(Effect.ensuring(Queue.shutdown(runtimeEvents))),
     );
 
     return {
@@ -3222,27 +3159,4 @@ export function makeOpenCode2Adapter(
       },
     } satisfies OpenCode2AdapterShape;
   });
-}
-
-/**
- * Parse a `provider/model#variant` slug into a v2 `Model.Ref`. Returns
- * undefined for anything that isn't a well-formed slug; `Model.Ref.parse`
- * throws, so validate the separators first.
- */
-function parseOpenCode2ModelSlug(
-  slug: string | null | undefined,
-): ReturnType<typeof Model.Ref.parse> | undefined {
-  if (typeof slug !== "string") {
-    return undefined;
-  }
-  const trimmed = slug.trim();
-  const separator = trimmed.indexOf("/");
-  if (separator <= 0 || separator === trimmed.length - 1) {
-    return undefined;
-  }
-  try {
-    return Model.Ref.parse(trimmed);
-  } catch {
-    return undefined;
-  }
 }

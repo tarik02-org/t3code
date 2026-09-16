@@ -2,7 +2,6 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
-  NonNegativeInt,
   TextGenerationError,
   type ModelSelection,
   type OpenCode2Settings,
@@ -23,7 +22,6 @@ import {
   sanitizeThreadTitle,
 } from "./TextGenerationUtils.ts";
 import * as OpenCode2Runtime from "../provider/opencode2Runtime.ts";
-import { Model } from "@opencode/client/effect";
 
 const OpenCode2TextGenerationOperation = Schema.Literals([
   "generateCommitMessage",
@@ -33,38 +31,6 @@ const OpenCode2TextGenerationOperation = Schema.Literals([
 ]);
 
 type OpenCode2TextGenerationOperation = typeof OpenCode2TextGenerationOperation.Type;
-
-const openCode2TextGenerationErrorContext = {
-  operation: OpenCode2TextGenerationOperation,
-  cwd: Schema.String,
-};
-
-export class OpenCode2TextGenerationRequestError extends Schema.TaggedError<OpenCode2TextGenerationRequestError>()(
-  "OpenCode2TextGenerationRequestError",
-  {
-    ...openCode2TextGenerationErrorContext,
-    providerId: Schema.String,
-    modelId: Schema.String,
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `OpenCode 2 generate request failed for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId}.`;
-  }
-}
-
-export class OpenCode2TextGenerationEmptyOutputError extends Schema.TaggedError<OpenCode2TextGenerationEmptyOutputError>()(
-  "OpenCode2TextGenerationEmptyOutputError",
-  {
-    ...openCode2TextGenerationErrorContext,
-    providerId: Schema.String,
-    modelId: Schema.String,
-  },
-) {
-  override get message(): string {
-    return `OpenCode 2 returned empty output for ${this.operation} in ${this.cwd} using ${this.providerId}/${this.modelId}.`;
-  }
-}
 
 /**
  * v2's `generate.text` runs on the connected server with no session and no
@@ -76,24 +42,14 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
   Effect.gen(function* () {
     const openCode2Runtime = yield* OpenCode2Runtime.OpenCode2Runtime;
 
-    const parseModelSlug = (slug: string | null | undefined) => {
-      const trimmed = (slug ?? "").trim();
-      const separator = trimmed.indexOf("/");
-      if (separator <= 0 || separator === trimmed.length - 1) {
-        return null;
-      }
-      return Model.Ref.parse(trimmed);
-    };
-
     const generate = <A>(input: {
       readonly operation: OpenCode2TextGenerationOperation;
-      readonly cwd: string;
       readonly prompt: string;
       readonly outputSchema: Schema.Codec<A, unknown, never, never>;
       readonly modelSelection: ModelSelection;
     }) =>
       Effect.gen(function* () {
-        const parsedModel = parseModelSlug(input.modelSelection.model);
+        const parsedModel = OpenCode2Runtime.parseOpenCode2ModelSlug(input.modelSelection.model);
         if (!parsedModel) {
           return yield* new TextGenerationError({
             operation: input.operation,
@@ -116,11 +72,9 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
           .pipe(
             Effect.mapError(
               (cause) =>
-                new OpenCode2TextGenerationRequestError({
+                new TextGenerationError({
                   operation: input.operation,
-                  cwd: input.cwd,
-                  providerId: parsedModel.providerID,
-                  modelId: parsedModel.id,
+                  detail: "OpenCode 2 generate request failed.",
                   cause,
                 }),
             ),
@@ -128,15 +82,17 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
 
         const rawText = result.text.trim();
         if (rawText.length === 0) {
-          return yield* new OpenCode2TextGenerationEmptyOutputError({
+          return yield* new TextGenerationError({
             operation: input.operation,
-            cwd: input.cwd,
-            providerId: parsedModel.providerID,
-            modelId: parsedModel.id,
+            detail: "OpenCode 2 returned empty output.",
           });
         }
 
-        return yield* Schema.decodeEffect(input.outputSchema)(extractJsonObject(rawText)).pipe(
+        // `extractJsonObject` returns the JSON *text*; decode it through
+        // `fromJsonString` so the output schema is applied to the parsed
+        // object rather than to a string (mirrors the other providers).
+        const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(input.outputSchema));
+        return yield* decodeOutput(extractJsonObject(rawText)).pipe(
           Effect.catchTag(
             "SchemaError",
             (cause) =>
@@ -155,18 +111,6 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
               detail: cause.detail,
               cause,
             }),
-          OpenCode2TextGenerationRequestError: (cause) =>
-            new TextGenerationError({
-              operation: input.operation,
-              detail: "OpenCode 2 generate request failed.",
-              cause,
-            }),
-          OpenCode2TextGenerationEmptyOutputError: (cause) =>
-            new TextGenerationError({
-              operation: cause.operation,
-              detail: "OpenCode 2 returned empty output.",
-              cause,
-            }),
         }),
       );
 
@@ -182,7 +126,6 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
           });
           const generated = yield* generate({
             operation: "generateCommitMessage",
-            cwd: input.cwd,
             prompt,
             outputSchema,
             modelSelection: input.modelSelection,
@@ -212,7 +155,6 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
         });
         const generated = yield* generate({
           operation: "generatePrContent",
-          cwd: input.cwd,
           prompt,
           outputSchema,
           modelSelection: input.modelSelection,
@@ -234,7 +176,6 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
         });
         const generated = yield* generate({
           operation: "generateBranchName",
-          cwd: input.cwd,
           prompt,
           outputSchema,
           modelSelection: input.modelSelection,
@@ -254,7 +195,6 @@ export const makeOpenCode2TextGeneration = (openCode2Settings: OpenCode2Settings
         });
         const generated = yield* generate({
           operation: "generateThreadTitle",
-          cwd: input.cwd,
           prompt,
           outputSchema,
           modelSelection: input.modelSelection,

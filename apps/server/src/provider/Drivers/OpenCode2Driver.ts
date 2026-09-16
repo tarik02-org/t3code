@@ -15,7 +15,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
 
 import { makeOpenCode2TextGeneration } from "../../textGeneration/OpenCode2TextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
@@ -26,9 +25,7 @@ import { makeOpenCode2Adapter } from "../Layers/OpenCode2Adapter.ts";
 import {
   checkOpenCode2ProviderStatus,
   makePendingOpenCode2Provider,
-  openCode2SkillsToServerProviderSkills,
 } from "../Layers/OpenCode2Provider.ts";
-import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { OpenCode2Runtime } from "../opencode2Runtime.ts";
 import {
@@ -59,10 +56,8 @@ export type OpenCode2DriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | Crypto.Crypto
   | FileSystem.FileSystem
-  | HttpClient.HttpClient
   | OpenCode2Runtime
   | Path.Path
-  | ProviderEventLoggers
   | ServerConfig
   | ServerSettingsService;
 
@@ -79,7 +74,6 @@ export const OpenCode2Driver: ProviderDriver<OpenCode2Settings, OpenCode2DriverE
       const serverConfig = yield* ServerConfig;
       const openCode2Runtime = yield* OpenCode2Runtime;
       const serverSettings = yield* ServerSettingsService;
-      const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -97,7 +91,6 @@ export const OpenCode2Driver: ProviderDriver<OpenCode2Settings, OpenCode2DriverE
       const adapter = yield* makeOpenCode2Adapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
 
       const textGeneration = yield* makeOpenCode2TextGeneration(effectiveConfig);

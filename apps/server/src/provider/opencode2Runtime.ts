@@ -9,7 +9,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { OpenCode, Permission } from "@opencode/client/effect";
+import { Model, OpenCode, Permission } from "@opencode/client/effect";
 import { Service as OpenCodeLocalService } from "@opencode/client/effect/service";
 import type { OpenCodeClient } from "@opencode/client/effect";
 
@@ -95,12 +95,6 @@ export interface OpenCode2Inventory {
     readonly maxOutputTokens: number;
     readonly status?: string;
   }>;
-  readonly agents: ReadonlyArray<{
-    readonly id: string;
-    readonly name: string;
-    readonly description: string;
-    readonly mode?: string | null;
-  }>;
   readonly skills: ReadonlyArray<{
     readonly id: string;
     readonly name: string;
@@ -165,7 +159,7 @@ const makeOpenCode2Runtime = Effect.gen(function* () {
       ),
     );
 
-  /** `health.get` is the unauthenticated liveness + version probe in v2. */
+  /** `health.get` is the connection's liveness + version probe in v2. */
   const probeConnection = (client: OpenCodeClient) =>
     client.health.get().pipe(
       Effect.timeout(OPENCODE2_CONNECT_TIMEOUT),
@@ -230,7 +224,7 @@ const makeOpenCode2Runtime = Effect.gen(function* () {
       const serverUrl = input.serverUrl?.trim();
       if (serverUrl && serverUrl.length > 0) {
         return yield* connectExternal(
-          normalizeServerUrl(serverUrl),
+          serverUrl,
           input.serverPassword && input.serverPassword.length > 0
             ? input.serverPassword
             : undefined,
@@ -252,14 +246,6 @@ const makeOpenCode2Runtime = Effect.gen(function* () {
           ),
         );
 
-      const agentPage = yield* client.agent
-        .list({ location })
-        .pipe(
-          Effect.mapError((cause) =>
-            ensureRuntimeError("inventory", "Failed to load OpenCode agents.", cause),
-          ),
-        );
-
       const skillPage = yield* client.skill
         .list({ location })
         .pipe(
@@ -276,12 +262,6 @@ const makeOpenCode2Runtime = Effect.gen(function* () {
           contextWindow: model.limit.context,
           maxOutputTokens: model.limit.output,
           status: model.status,
-        })),
-        agents: agentPage.data.map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          description: agent.description ?? "",
-          mode: agent.mode ?? null,
         })),
         skills: skillPage.data.map((skill) => ({
           id: skill.id,
@@ -301,11 +281,31 @@ export const OpenCode2RuntimeLive = Layer.effect(OpenCode2Runtime, makeOpenCode2
   Layer.provide(NodeServices.layer),
 );
 
-function normalizeServerUrl(url: string): string {
-  return NodeURL.parse(url).toString();
-}
-
 export type { OpenCodeClient };
+
+/**
+ * Parse a `provider/model#variant` selection into a v2 `Model.Ref`. Returns
+ * undefined for anything malformed; `Model.Ref.parse` throws on inputs the
+ * separator check alone would let through (e.g. `openai/#`), so the try/catch
+ * is load-bearing rather than defensive.
+ */
+export function parseOpenCode2ModelSlug(
+  slug: string | null | undefined,
+): ReturnType<typeof Model.Ref.parse> | undefined {
+  if (typeof slug !== "string") {
+    return undefined;
+  }
+  const trimmed = slug.trim();
+  const separator = trimmed.indexOf("/");
+  if (separator <= 0 || separator === trimmed.length - 1) {
+    return undefined;
+  }
+  try {
+    return Model.Ref.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * v2 file attachments. Gating mirrors the v1 adapter's native-file rules

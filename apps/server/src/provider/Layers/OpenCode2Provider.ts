@@ -4,59 +4,29 @@ import {
   type ServerProviderModel,
   type ServerProviderSkill,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as P from "effect/Predicate";
+import * as Result from "effect/Result";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
+  nonEmptyTrimmed,
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { OpenCode2Runtime, type OpenCode2Inventory } from "../opencode2Runtime.ts";
+import {
+  OpenCode2Runtime,
+  OpenCode2RuntimeError,
+  type OpenCode2Inventory,
+} from "../opencode2Runtime.ts";
 
 const OPENCODE2_PRESENTATION = {
   displayName: "OpenCode 2",
   showInteractionModeToggle: false,
 } as const;
 const OPENCODE2_PROBE_TIMEOUT = "8 seconds";
-
-class OpenCode2ProbeError extends Data.TaggedError("OpenCode2ProbeError")<{
-  readonly cause?: unknown;
-  readonly detail: string;
-}> {
-  static is(cause: unknown): cause is OpenCode2ProbeError {
-    return P.isTagged(cause, "OpenCode2ProbeError");
-  }
-}
-
-function normalizeProbeMessage(message: string): string | undefined {
-  const trimmed = message.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  if (
-    trimmed === "An error occurred in Effect.tryPromise" ||
-    trimmed === "An error occurred in Effect.try"
-  ) {
-    return undefined;
-  }
-  return trimmed;
-}
-
-function normalizedErrorMessage(cause: unknown): string | undefined {
-  if (OpenCode2ProbeError.is(cause)) {
-    return normalizeProbeMessage(cause.detail);
-  }
-  if (cause instanceof Error) {
-    return normalizeProbeMessage(cause.message);
-  }
-  return undefined;
-}
 
 const DEFAULT_OPENCODE2_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [
@@ -85,16 +55,11 @@ const DEFAULT_OPENCODE2_MODEL_CAPABILITIES: ModelCapabilities = createModelCapab
   ],
 });
 
-function trimOptional(value: string | null | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
-}
-
 function flattenOpenCode2Models(inventory: OpenCode2Inventory): ReadonlyArray<ServerProviderModel> {
   return inventory.models.flatMap((model) => {
-    const name = trimOptional(model.name);
+    const name = nonEmptyTrimmed(model.name);
     if (!name) return [];
-    const subProvider = trimOptional(model.providerId);
+    const subProvider = nonEmptyTrimmed(model.providerId);
     return [
       {
         slug: `${model.providerId}/${model.id}`,
@@ -107,17 +72,17 @@ function flattenOpenCode2Models(inventory: OpenCode2Inventory): ReadonlyArray<Se
   });
 }
 
-export function openCode2SkillsToServerProviderSkills(
+function openCode2SkillsToServerProviderSkills(
   input: OpenCode2Inventory["skills"] | undefined,
 ): ReadonlyArray<ServerProviderSkill> {
   const skills: Array<ServerProviderSkill> = [];
   for (const skill of input ?? []) {
-    const name = trimOptional(skill.name);
-    const path = trimOptional(skill.location);
+    const name = nonEmptyTrimmed(skill.name);
+    const path = nonEmptyTrimmed(skill.location);
     if (!name || !path) {
       continue;
     }
-    const description = trimOptional(skill.description ?? undefined);
+    const description = nonEmptyTrimmed(skill.description ?? undefined);
     skills.push({
       name,
       path,
@@ -166,9 +131,11 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
   const customModels = openCode2Settings.customModels;
   const isExternalServer = openCode2Settings.serverUrl.trim().length > 0;
 
-  const fallback = (cause: unknown, phase: "connection" | "inventory") => {
-    const detail = normalizedErrorMessage(cause);
-    return buildServerProvider({
+  // `connect` and `loadInventory` already fail with an `OpenCode2RuntimeError`
+  // carrying a human-readable `detail`, so the probe surfaces that directly
+  // instead of re-wrapping the failure to recover the message.
+  const fallback = (detail: string) =>
+    buildServerProvider({
       presentation: OPENCODE2_PRESENTATION,
       enabled: openCode2Settings.enabled,
       checkedAt,
@@ -178,16 +145,9 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message:
-          detail ??
-          (phase === "connection"
-            ? isExternalServer
-              ? `Could not connect to the configured OpenCode 2 server (${openCode2Settings.serverUrl}).`
-              : "Could not connect to the OpenCode 2 background service. Install OpenCode 2 and start it once, or set a server URL."
-            : "The OpenCode 2 server did not return a model inventory."),
+        message: detail,
       },
     });
-  };
 
   if (!openCode2Settings.enabled) {
     return buildServerProvider({
@@ -205,46 +165,50 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
     });
   }
 
-  const connectionExit = yield* Effect.exit(
-    openCode2Runtime
-      .connect({
-        serverUrl: openCode2Settings.serverUrl,
-        ...(openCode2Settings.serverPassword
-          ? { serverPassword: openCode2Settings.serverPassword }
-          : {}),
-      })
-      .pipe(
-        Effect.mapError((cause) => new OpenCode2ProbeError({ cause, detail: cause.detail })),
-        Effect.timeoutOrElse({
-          duration: OPENCODE2_PROBE_TIMEOUT,
-          orElse: () =>
-            Effect.fail(
-              new OpenCode2ProbeError({ detail: "OpenCode 2 connection probe timed out." }),
-            ),
-        }),
-      ),
-  );
-  if (connectionExit._tag === "Failure") {
-    return fallback(Cause.squash(connectionExit.cause), "connection");
-  }
-  const connection = connectionExit.value;
-
-  const inventoryExit = yield* Effect.exit(
-    openCode2Runtime.loadInventory({ client: connection.client, directory: cwd }).pipe(
-      Effect.mapError((cause) => new OpenCode2ProbeError({ cause, detail: cause.detail })),
+  const connectionResult = yield* openCode2Runtime
+    .connect({
+      serverUrl: openCode2Settings.serverUrl,
+      ...(openCode2Settings.serverPassword
+        ? { serverPassword: openCode2Settings.serverPassword }
+        : {}),
+    })
+    .pipe(
       Effect.timeoutOrElse({
         duration: OPENCODE2_PROBE_TIMEOUT,
         orElse: () =>
           Effect.fail(
-            new OpenCode2ProbeError({ detail: "OpenCode 2 inventory loading timed out." }),
+            new OpenCode2RuntimeError({
+              operation: "connect",
+              detail: "OpenCode 2 connection probe timed out.",
+            }),
           ),
       }),
-    ),
-  );
-  if (inventoryExit._tag === "Failure") {
-    return fallback(Cause.squash(inventoryExit.cause), "inventory");
+      Effect.result,
+    );
+  if (Result.isFailure(connectionResult)) {
+    return fallback(connectionResult.failure.detail);
   }
-  const inventory = inventoryExit.value;
+  const connection = connectionResult.success;
+
+  const inventoryResult = yield* openCode2Runtime
+    .loadInventory({ client: connection.client, directory: cwd })
+    .pipe(
+      Effect.timeoutOrElse({
+        duration: OPENCODE2_PROBE_TIMEOUT,
+        orElse: () =>
+          Effect.fail(
+            new OpenCode2RuntimeError({
+              operation: "inventory",
+              detail: "OpenCode 2 inventory loading timed out.",
+            }),
+          ),
+      }),
+      Effect.result,
+    );
+  if (Result.isFailure(inventoryResult)) {
+    return fallback(inventoryResult.failure.detail);
+  }
+  const inventory = inventoryResult.success;
 
   const models = providerModelsFromSettings(
     flattenOpenCode2Models(inventory),
