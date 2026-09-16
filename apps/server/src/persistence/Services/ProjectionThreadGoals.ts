@@ -8,10 +8,10 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { ServerConfig } from "../../config.ts";
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../Errors.ts";
-import { makeRuntimeSqliteLayer } from "../RuntimeSqliteLayer.ts";
 import { ensureGoalTable } from "../GoalTable.ts";
 import { runForkMigrations } from "../ForkMigrations.ts";
 
@@ -61,7 +61,7 @@ const ListProjectionThreadGoalsInput = Schema.Struct({
 });
 
 const buildForkClientLayer = (forkDbPath: string) =>
-  makeRuntimeSqliteLayer({
+  NodeSqliteClient.layer({
     filename: forkDbPath,
     spanAttributes: {
       "db.name": "state-tarik02.sqlite",
