@@ -32,6 +32,7 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Brand } from "effect/Brand";
 import { Form, Permission, Session, SessionMessage } from "@opencode/client/effect";
@@ -84,54 +85,16 @@ const OPENCODE2_STREAM_READY_TIMEOUT = "15 seconds";
 const OPENCODE2_LIST_MAX_PAGES = 200;
 
 /**
- * Decode a persisted resume cursor into the upstream `ses_…` id. Anything
- * that isn't a current-version cursor with a non-empty id means "no resume"
- * rather than an error. Re-adopting the session id IS the resume mechanism —
- * OpenCode 2 scopes a conversation's history by session id on the shared
- * server.
+ * Persisted resume cursor. This is the adapter's only genuinely untyped input
+ * (an opaque value round-tripped through ProviderService), so it is a schema
+ * decoded at the boundary: an unrecognized shape means "no resume" rather
+ * than an error, and a shape change is caught by the version literal.
  */
-function parseOpenCode2Resume(raw: unknown): { readonly sessionId: string } | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return undefined;
-  }
-  const record = raw as Record<string, unknown>;
-  if (record.schemaVersion !== OPENCODE2_RESUME_VERSION) {
-    return undefined;
-  }
-  if (typeof record.sessionId !== "string" || record.sessionId.trim().length === 0) {
-    return undefined;
-  }
-  return { sessionId: record.sessionId.trim() };
-}
-
-/**
- * Whether an error definitively reports a missing session. The v2 client
- * decodes error responses into tagged errors, so the check is structural:
- * only the exact `SessionNotFoundError` tag may silently start a fresh
- * session; every other failure must propagate or a transient blip resets a
- * live thread to an empty one (#3604 silent context loss).
- */
-function isOpenCode2SessionNotFound(cause: unknown): boolean {
-  return (
-    typeof cause === "object" &&
-    cause !== null &&
-    "_tag" in cause &&
-    (cause as { readonly _tag: unknown })._tag === "SessionNotFoundError"
-  );
-}
-
-function openCode2ErrorDetail(cause: unknown): string {
-  if (cause instanceof Error && cause.message.trim().length > 0) {
-    return cause.message;
-  }
-  if (typeof cause === "object" && cause !== null && "message" in cause) {
-    const message = (cause as { readonly message?: unknown }).message;
-    if (typeof message === "string" && message.trim().length > 0) {
-      return message;
-    }
-  }
-  return "Unknown OpenCode 2 failure.";
-}
+const OpenCode2ResumeCursor = Schema.Struct({
+  schemaVersion: Schema.Literal(OPENCODE2_RESUME_VERSION),
+  sessionId: Schema.NonEmptyString,
+});
+const decodeOpenCode2ResumeCursor = Schema.decodeUnknownOption(OpenCode2ResumeCursor);
 
 /** v2 brands its protocol ids; lift persisted plain strings back into them. */
 const toSessionId = (value: string): Session.ID => Session.ID.descending(value);
@@ -527,13 +490,26 @@ export function makeOpenCode2Adapter(
           cause: cause as never,
         });
 
-    const toProcessError = (threadId: ThreadId, cause: unknown): ProviderAdapterProcessError =>
-      new ProviderAdapterProcessError({
+    /**
+     * The failure already crossed the adapter boundary as a
+     * `ProviderAdapterRequestError` (every client method is `mapError`-wrapped
+     * at its call site), so the cause's error carries the real detail. Defects
+     * and interrupts have no request error, hence the explicit fallback.
+     */
+    const toProcessError = (
+      threadId: ThreadId,
+      cause: Cause.Cause<ProviderAdapterRequestError>,
+    ): ProviderAdapterProcessError => {
+      const failure = Cause.findErrorOption(cause);
+      return new ProviderAdapterProcessError({
         provider: PROVIDER,
         threadId,
-        detail: openCode2ErrorDetail(cause),
-        cause: cause as never,
+        detail: Option.isSome(failure)
+          ? failure.value.detail
+          : "OpenCode 2 session startup failed.",
+        cause: Option.isSome(failure) ? failure.value : cause,
       });
+    };
 
     function updateProviderSession(
       context: OpenCode2SessionContext,
@@ -635,8 +611,9 @@ export function makeOpenCode2Adapter(
       if (Option.isNone(active)) {
         return { type: "unknown" };
       }
-      const activeSessions = active.value as Record<string, unknown>;
-      const running = Object.hasOwn(activeSessions, context.openCodeSessionId);
+      // `session.active` is keyed by `Session.ID`; the raw id needs the same
+      // brand lift the rest of the adapter uses.
+      const running = Object.hasOwn(active.value, toSessionId(context.openCodeSessionId));
       return running ? { type: "busy" } : { type: "idle" };
     });
 
@@ -1427,24 +1404,24 @@ export function makeOpenCode2Adapter(
 
     // ── event handling ────────────────────────────────────────────
 
-    /** v2 events are flat: `{ id, created, type, data, location?, metadata? }`. */
+    /**
+     * v2 events are flat: `{ id, created, type, data, location?, metadata? }`.
+     * `data` is a large union whose members are not all session-scoped, so the
+     * id is read through a permissive schema rather than cast and picked apart
+     * field by field.
+     */
+    const EventSessionRef = Schema.Struct({
+      sessionID: Schema.optional(Schema.String),
+      form: Schema.optional(Schema.Struct({ sessionID: Schema.optional(Schema.String) })),
+    });
+    const decodeEventSessionRef = Schema.decodeUnknownOption(EventSessionRef);
+
     function eventSessionId(event: OpenCodeEvent): string | undefined {
-      const data = event.data as Record<string, unknown> | undefined;
-      if (!data || typeof data !== "object") {
+      const ref = decodeEventSessionRef(event.data);
+      if (Option.isNone(ref)) {
         return undefined;
       }
-      if (typeof data.sessionID === "string") {
-        return data.sessionID;
-      }
-      const form = data.form;
-      if (
-        form &&
-        typeof form === "object" &&
-        typeof (form as { readonly sessionID?: unknown }).sessionID === "string"
-      ) {
-        return (form as { readonly sessionID: string }).sessionID;
-      }
-      return undefined;
+      return ref.value.sessionID ?? ref.value.form?.sessionID;
     }
 
     function isRequestBearingEvent(event: OpenCodeEvent): boolean {
@@ -1492,7 +1469,7 @@ export function makeOpenCode2Adapter(
           .get({ sessionID: toSessionId(currentSessionId) })
           .pipe(
             Effect.timeout("5 seconds"),
-            Effect.catchIf(isOpenCode2SessionNotFound, () =>
+            Effect.catchTag("SessionNotFoundError", () =>
               Effect.succeed(undefined as Session.Info | undefined),
             ),
             Effect.option,
@@ -2004,7 +1981,8 @@ export function makeOpenCode2Adapter(
         .get({ sessionID: toSessionId(context.openCodeSessionId) })
         .pipe(Effect.timeout("5 seconds"), Effect.result);
       if (Result.isFailure(info)) {
-        if (isOpenCode2SessionNotFound(info.failure)) {
+        // The decoded failure union is tagged, so a plain tag check is enough.
+        if (info.failure._tag === "SessionNotFoundError") {
           yield* emitUnexpectedExit(
             context,
             "The OpenCode 2 session no longer exists on the server.",
@@ -2280,7 +2258,10 @@ export function makeOpenCode2Adapter(
     const startSession: OpenCode2AdapterShape["startSession"] = (input) =>
       Effect.gen(function* () {
         const directory = input.cwd ?? serverConfig.cwd;
-        const resumeSessionId = parseOpenCode2Resume(input.resumeCursor)?.sessionId;
+        const resumeCursor = decodeOpenCode2ResumeCursor(input.resumeCursor);
+        const resumeSessionId = Option.isSome(resumeCursor)
+          ? resumeCursor.value.sessionId
+          : undefined;
         const existing = sessions.get(input.threadId);
         if (existing) {
           if (existing.session.status === "connecting" && !(yield* Ref.get(existing.stopped))) {
@@ -2311,17 +2292,20 @@ export function makeOpenCode2Adapter(
 
             // Resume: re-adopt the session named by the durable cursor —
             // OpenCode 2 scopes history by session id on the shared server.
-            // The probe recovers only a confirmed not-found (start fresh);
-            // transport/auth errors propagate instead of masking as a new
-            // empty session.
+            // Only a confirmed missing session may silently start fresh; every
+            // other failure propagates, or a transient blip would reset a live
+            // thread to an empty one (#3604 silent context loss).
             const adopted = resumeSessionId
-              ? yield* client.session
-                  .get({ sessionID: toSessionId(resumeSessionId) })
-                  .pipe(
-                    Effect.catchIf(isOpenCode2SessionNotFound, () =>
-                      Effect.succeed(undefined as Session.Info | undefined),
-                    ),
-                  )
+              ? yield* client.session.get({ sessionID: toSessionId(resumeSessionId) }).pipe(
+                  // Typed on the decoded error union, before the boundary map
+                  // collapses the rest into a request error.
+                  Effect.catchTag("SessionNotFoundError", () =>
+                    Effect.succeed(undefined as Session.Info | undefined),
+                  ),
+                  Effect.mapError(
+                    toRequestError("session.get", "Failed to read the OpenCode 2 session."),
+                  ),
+                )
               : undefined;
 
             if (adopted) {
@@ -2407,7 +2391,7 @@ export function makeOpenCode2Adapter(
 
         if (Exit.isFailure(startedExit)) {
           yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
-          return yield* toProcessError(input.threadId, Cause.squash(startedExit.cause));
+          return yield* toProcessError(input.threadId, startedExit.cause);
         }
         const started = startedExit.value;
         const { sessionInfo, created } = started;
@@ -2743,7 +2727,12 @@ export function makeOpenCode2Adapter(
               // accepted the prompt anyway — reconcile before failing.
               const landed = yield* promptLandedOnServer(context);
               if (landed.type === "idle" || landed.type === "unknown") {
-                const requestError = Cause.squash(promptExit.cause);
+                // The failure is already a mapped `ProviderAdapterRequestError`,
+                // so its `detail` is the user-facing text.
+                const promptFailure = Cause.findErrorOption(promptExit.cause);
+                const requestErrorDetail = Option.isSome(promptFailure)
+                  ? promptFailure.value.detail
+                  : "OpenCode 2 prompt submission failed.";
                 const tokenUsage = takeTurnUsage(context, false);
                 context.promptAdmission = undefined;
                 context.activeTurnId = undefined;
@@ -2754,7 +2743,7 @@ export function makeOpenCode2Adapter(
                   {
                     status: "ready",
                     model: modelSelection?.model ?? context.session.model,
-                    lastError: openCode2ErrorDetail(requestError),
+                    lastError: requestErrorDetail,
                   },
                   { clearActiveTurnId: true },
                 );
@@ -2762,7 +2751,7 @@ export function makeOpenCode2Adapter(
                   ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
                   type: "turn.aborted",
                   payload: {
-                    reason: openCode2ErrorDetail(requestError),
+                    reason: requestErrorDetail,
                     tokenUsage,
                   },
                 });
