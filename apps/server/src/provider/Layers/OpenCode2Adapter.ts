@@ -54,6 +54,8 @@ import {
 import { type OpenCode2AdapterShape } from "../Services/OpenCode2Adapter.ts";
 import {
   buildOpenCode2SessionRules,
+  openCode2McpServerBase,
+  openCode2McpServerName,
   parseOpenCode2ModelSlug,
   toOpenCode2FileParts,
   withOpenCode2Variant,
@@ -75,9 +77,6 @@ const OPENCODE2_RECONNECT_BASE_DELAY_MS = 2_000;
 const OPENCODE2_RECONNECT_MAX_DELAY_MS = 30_000;
 /** Page guard for cursor-paginated list endpoints (upstream InvalidCursorError trap). */
 const OPENCODE2_LIST_MAX_PAGES = 200;
-const OPENCODE2_DEFAULT_MCP_SERVER_NAME = "t3-code";
-/** MCP server names must stay short and filename-safe; hash beyond this. */
-const OPENCODE2_MCP_NAME_MAX_LENGTH = 96;
 
 /**
  * Decode a persisted resume cursor into the upstream `ses_…` id. Anything
@@ -281,27 +280,6 @@ function trimText(value: string | undefined | null): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Deterministic per-thread MCP server name on a shared OpenCode server.
- * MCP names allow letters, digits, `_`, and `-`; the thread id is sanitized
- * and hashed beyond the length cap so two threads in one directory can hold
- * independent registrations.
- */
-function openCode2McpServerName(baseName: string, threadId: string): string {
-  const base = baseName.trim().length > 0 ? baseName.trim() : OPENCODE2_DEFAULT_MCP_SERVER_NAME;
-  const name = `${base}-${threadId}`.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
-  if (name.length <= OPENCODE2_MCP_NAME_MAX_LENGTH) {
-    return name;
-  }
-  // FNV-1a of the full thread id keeps the name stable across restarts.
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < threadId.length; index += 1) {
-    hash ^= threadId.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return `${base}-${hash.toString(16).padStart(8, "0")}`;
-}
-
 /** A pending v2 permission ask, normalized out of the decoded event payload. */
 interface OpenCode2PermissionAsk {
   readonly id: string;
@@ -398,6 +376,8 @@ interface OpenCode2SessionContext {
   /** Runtime mode whose ruleset was last written to the session. */
   appliedRulesMode: RuntimeMode | undefined;
   readonly mcpServerName: string;
+  /** Sanitized base shared by this directory's registrations (for isolation rules). */
+  readonly mcpServerBase: string;
   cancellationTurnId: TurnId | undefined;
   interruptedTurnId: TurnId | undefined;
   reconcileIdleStatus: boolean;
@@ -2034,7 +2014,11 @@ export function makeOpenCode2Adapter(
       // case the shared server restarted with different config. Sent even when
       // empty so a session that moved to full-access gets its rules cleared.
       if (context.appliedRulesMode) {
-        const ruleset = buildOpenCode2SessionRules(context.appliedRulesMode, context.mcpServerName);
+        const ruleset = buildOpenCode2SessionRules({
+          runtimeMode: context.appliedRulesMode,
+          mcpServerBase: context.mcpServerBase,
+          ownMcpServerName: context.mcpServerName,
+        });
         yield* context.client.permission
           .rules({
             sessionID: toSessionId(context.openCodeSessionId),
@@ -2136,7 +2120,11 @@ export function makeOpenCode2Adapter(
       runtimeMode: RuntimeMode,
     ): Effect.Effect<void, ProviderAdapterRequestError> =>
       Effect.gen(function* () {
-        const ruleset = buildOpenCode2SessionRules(runtimeMode, context.mcpServerName);
+        const ruleset = buildOpenCode2SessionRules({
+          runtimeMode,
+          mcpServerBase: context.mcpServerBase,
+          ownMcpServerName: context.mcpServerName,
+        });
         yield* context.client.permission
           .rules({
             sessionID: toSessionId(context.openCodeSessionId),
@@ -2293,6 +2281,7 @@ export function makeOpenCode2Adapter(
         }
 
         const sessionScope = yield* Scope.make();
+        const mcpServerBase = openCode2McpServerBase(openCode2Settings.mcpServerName);
         const mcpServerName = openCode2McpServerName(
           openCode2Settings.mcpServerName,
           input.threadId,
@@ -2301,7 +2290,11 @@ export function makeOpenCode2Adapter(
           Effect.gen(function* () {
             const connection = yield* connect();
             const client = connection.client;
-            const ruleset = buildOpenCode2SessionRules(input.runtimeMode, mcpServerName);
+            const ruleset = buildOpenCode2SessionRules({
+              runtimeMode: input.runtimeMode,
+              mcpServerBase,
+              ownMcpServerName: mcpServerName,
+            });
             const agent = getModelSelectionStringOptionValue(input.modelSelection, "agent");
             const parsedModel = withOpenCode2Variant(
               parseOpenCode2ModelSlug(input.modelSelection?.model),
@@ -2448,6 +2441,7 @@ export function makeOpenCode2Adapter(
           activeTurnId: undefined,
           appliedRulesMode: input.runtimeMode,
           mcpServerName,
+          mcpServerBase,
           cancellationTurnId: undefined,
           interruptedTurnId: undefined,
           reconcileIdleStatus: false,
@@ -3083,7 +3077,11 @@ export function makeOpenCode2Adapter(
       // Fork copies the parent's rules; re-assert them anyway in case the
       // mode changed since (empty clears them when the thread is full-access).
       if (context.appliedRulesMode) {
-        const ruleset = buildOpenCode2SessionRules(context.appliedRulesMode, context.mcpServerName);
+        const ruleset = buildOpenCode2SessionRules({
+          runtimeMode: context.appliedRulesMode,
+          mcpServerBase: context.mcpServerBase,
+          ownMcpServerName: context.mcpServerName,
+        });
         yield* context.client.permission
           .rules({ sessionID: forkedSessionId, permissions: ruleset })
           .pipe(

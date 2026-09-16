@@ -171,6 +171,10 @@ export const checkOpenCode2ProviderStatus = Effect.fn("checkOpenCode2ProviderSta
       ...(openCode2Settings.serverPassword
         ? { serverPassword: openCode2Settings.serverPassword }
         : {}),
+      // The probe is the first thing a fresh install hits; without the
+      // configured binary it would start the SDK's default `opencode`
+      // instead of `opencode2` and report the provider unavailable.
+      binaryPath: openCode2Settings.binaryPath,
     })
     .pipe(
       Effect.timeoutOrElse({

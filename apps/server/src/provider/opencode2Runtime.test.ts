@@ -10,6 +10,8 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import {
   OpenCode2Runtime,
   OpenCode2RuntimeLive,
+  openCode2McpServerBase,
+  openCode2McpServerName,
   openCode2ServiceCommand,
   parseOpenCode2ModelSlug,
   withOpenCode2Variant,
@@ -118,4 +120,28 @@ it("defers to the SDK default command when no binary path is configured", () => 
   NodeAssert.equal(openCode2ServiceCommand(undefined), undefined);
   NodeAssert.equal(openCode2ServiceCommand(""), undefined);
   NodeAssert.equal(openCode2ServiceCommand("   "), undefined);
+});
+
+it("sanitizes the MCP naming base so rules can predict registered names", () => {
+  NodeAssert.equal(openCode2McpServerBase(undefined), "t3-code");
+  NodeAssert.equal(openCode2McpServerBase("  "), "t3-code");
+  NodeAssert.equal(openCode2McpServerBase("corp"), "corp");
+  // The sanitizer rewrites the configured base too, so the isolation rules
+  // must be derived from this value rather than the raw setting.
+  NodeAssert.equal(openCode2McpServerBase("corp.io"), "corp_io");
+});
+
+it("keeps per-thread names valid and predictable, including the hashed path", () => {
+  const threadId = "1df144f5-a78f-433d-a7d2-6c58ef966196";
+  const name = openCode2McpServerName("corp.io", threadId);
+  NodeAssert.equal(name, "corp_io-1df144f5-a78f-433d-a7d2-6c58ef966196");
+  NodeAssert.ok(/^[a-zA-Z0-9_-]+$/.test(name));
+  NodeAssert.ok(name.startsWith(`${openCode2McpServerBase("corp.io")}-`));
+
+  // Beyond the length cap the name is hashed; the sanitized base must still
+  // keep the result a valid MCP name (regression: it used to keep `corp.io`).
+  const long = openCode2McpServerName("corp.io", "x".repeat(200));
+  NodeAssert.ok(long.length <= 96, `expected <= 96 chars, got ${long.length}`);
+  NodeAssert.ok(/^[a-zA-Z0-9_-]+$/.test(long), `invalid MCP name: ${long}`);
+  NodeAssert.ok(long.startsWith("corp_io-"), `expected sanitized base, got: ${long}`);
 });

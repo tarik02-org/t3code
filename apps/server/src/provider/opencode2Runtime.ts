@@ -48,35 +48,41 @@ const OPENCODE2_CONNECT_TIMEOUT = "10 seconds";
  * overridden by user config, agent definitions, or saved approvals — this is
  * what makes supervised modes trustworthy on a shared background service.
  *
- * `ownMcpServerName` denies the other threads' `t3-code-*` MCP registrations:
- * per-thread-named servers are visible to every session in the directory, and
- * without this rule a restricted session could execute another thread's
- * tools (which run under that thread's credential). That isolation holds in
- * every mode including `full-access` — skipping approvals is about this
+ * Cross-thread isolation: per-thread-named registrations are visible to every
+ * session in the directory, and each carries its target thread's credential,
+ * so a session must never call another thread's. Both patterns are derived
+ * from `mcpServerBase` — the same sanitized base the registrations use — so a
+ * customized `mcpServerName` is isolated too, not just the default. This holds
+ * in every mode including `full-access`: skipping approvals is about this
  * thread's own work, not about letting it act as another thread.
  */
-export function buildOpenCode2SessionRules(
-  runtimeMode: RuntimeMode,
-  ownMcpServerName?: string,
-): Permission.Ruleset {
-  // Other threads' t3-code registrations are visible in this directory; only
-  // this thread's own registration may be called. OpenCode checks MCP tool
-  // calls as `<sanitized-server>_<tool>`, so the own-server pattern carries
-  // the tool suffix.
-  const t3CodeDeny: Permission.Ruleset = [{ action: "t3-code-*", resource: "*", effect: "deny" }];
+export function buildOpenCode2SessionRules(input: {
+  readonly runtimeMode: RuntimeMode;
+  /** Base shared by this directory's registrations; defaults to `t3-code`. */
+  readonly mcpServerBase?: string | undefined;
+  /** This thread's own registration, allowed within that base. */
+  readonly ownMcpServerName?: string | undefined;
+}): Permission.Ruleset {
+  const base = openCode2McpServerBase(input.mcpServerBase);
+  // Foreign registrations under our base are denied outright. The own-server
+  // rule is emitted after it and wins by last-match-wins.
+  const foreignDeny: Permission.Ruleset = [{ action: `${base}-*`, resource: "*", effect: "deny" }];
   // Full access stays prompt-free, so the thread's own tools are auto-allowed
   // rather than surfaced as an approval — but the cross-thread deny remains.
   const ownRule = (effect: "ask" | "allow"): Permission.Ruleset =>
-    ownMcpServerName ? [{ action: `${ownMcpServerName}_*`, resource: "*", effect }] : [];
+    input.ownMcpServerName
+      ? [{ action: `${input.ownMcpServerName}_*`, resource: "*", effect }]
+      : [];
 
-  if (runtimeMode === "full-access") {
-    return [...t3CodeDeny, ...ownRule("allow")];
+  if (input.runtimeMode === "full-access") {
+    return [...foreignDeny, ...ownRule("allow")];
   }
-  const editEffect = runtimeMode === "auto-accept-edits" ? ("allow" as const) : ("ask" as const);
+  const editEffect =
+    input.runtimeMode === "auto-accept-edits" ? ("allow" as const) : ("ask" as const);
   return [
     // Catch-all ask first; the specific rules below win as later matches.
     { action: "*", resource: "*", effect: "ask" },
-    ...t3CodeDeny,
+    ...foreignDeny,
     ...ownRule("ask"),
     // Read-only discovery stays frictionless.
     { action: "read", resource: "*", effect: "allow" },
@@ -90,6 +96,44 @@ export function buildOpenCode2SessionRules(
     { action: "read", resource: "*.env.example", effect: "allow" },
     { action: "edit", resource: "*", effect: editEffect },
   ];
+}
+
+const OPENCODE2_DEFAULT_MCP_SERVER_NAME = "t3-code";
+/** MCP names must stay short and filename-safe; hash beyond this length. */
+const OPENCODE2_MCP_NAME_MAX_LENGTH = 96;
+
+/**
+ * Sanitized MCP naming base, shared by the registration name and the
+ * isolation rules. Both must agree on this value: the sanitizer rewrites the
+ * configured base too (`corp.io` → `corp_io`), so rules derived from the raw
+ * setting would not match the registered server.
+ */
+export function openCode2McpServerBase(baseName: string | undefined): string {
+  const trimmed = baseName?.trim();
+  const base = trimmed && trimmed.length > 0 ? trimmed : OPENCODE2_DEFAULT_MCP_SERVER_NAME;
+  return base.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+/**
+ * Deterministic per-thread MCP server name on a shared OpenCode server. MCP
+ * names allow letters, digits, `_`, and `-`; the base is sanitized so the
+ * isolation rules can predict it, and the thread id is hashed beyond the
+ * length cap so two threads in one directory hold independent registrations.
+ */
+export function openCode2McpServerName(baseName: string | undefined, threadId: string): string {
+  const base = openCode2McpServerBase(baseName);
+  const name = `${base}-${threadId}`.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
+  if (name.length <= OPENCODE2_MCP_NAME_MAX_LENGTH) {
+    return name;
+  }
+  // FNV-1a of the full thread id keeps the name stable across restarts. The
+  // hash is hex, so the already-sanitized base keeps the result a valid name.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < threadId.length; index += 1) {
+    hash ^= threadId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${base}-${hash.toString(16).padStart(8, "0")}`;
 }
 
 export interface OpenCode2Inventory {
