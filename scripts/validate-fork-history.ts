@@ -58,7 +58,7 @@ export class InvalidForkHistoryError extends Schema.TaggedError<InvalidForkHisto
   "InvalidForkHistoryError",
   {
     reason: Schema.Literals([
-      "not-based-on-upstream",
+      "unrelated-history",
       "contains-merges",
       "unexpected-release-files",
       "invalid-release-state-subject",
@@ -81,8 +81,13 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
     ),
   );
 
-const runGit = Effect.fn("validateForkHistory.runGit")(function* (args: ReadonlyArray<string>) {
-  const cwd = process.cwd();
+// Runs git and reports its exit code instead of failing on it. `merge-base`
+// uses a nonzero exit to mean "no common ancestor", which is a real answer
+// rather than a process error.
+const runGitCommand = Effect.fn("validateForkHistory.runGitCommand")(function* (
+  args: ReadonlyArray<string>,
+  cwd: string,
+) {
   const context = {
     executable: "git" as const,
     argumentCount: args.length,
@@ -136,16 +141,23 @@ const runGit = Effect.fn("validateForkHistory.runGit")(function* (args: Readonly
     { concurrency: "unbounded" },
   );
 
-  if (exitCode !== 0) {
+  return { context, stdout, stderr, exitCode } as const;
+});
+
+const runGit = Effect.fn("validateForkHistory.runGit")(function* (
+  args: ReadonlyArray<string>,
+  cwd: string,
+) {
+  const result = yield* runGitCommand(args, cwd);
+  if (result.exitCode !== 0) {
     return yield* new GitHistoryProcessExitError({
-      ...context,
-      exitCode,
-      stdoutLength: stdout.length,
-      stderrLength: stderr.length,
+      ...result.context,
+      exitCode: result.exitCode,
+      stdoutLength: result.stdout.length,
+      stderrLength: result.stderr.length,
     });
   }
-
-  return stdout.trim();
+  return result.stdout.trim();
 });
 
 const decodePackageManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(PackageManifest));
@@ -154,18 +166,28 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
   readonly ref: string;
   readonly upstreamRef: string;
   readonly requireReleaseState: boolean;
+  // Repository to run git in. Defaults to the current working directory; tests
+  // point it at a scratch repo instead of changing the process cwd.
+  readonly repoDir?: string;
 }) {
-  const head = yield* runGit(["rev-parse", input.ref]);
-  const upstreamBase = yield* runGit(["rev-parse", input.upstreamRef]);
-  const mergeBase = yield* runGit(["merge-base", head, upstreamBase]);
-  if (mergeBase !== upstreamBase) {
+  const repoDir = input.repoDir ?? process.cwd();
+  const head = yield* runGit(["rev-parse", input.ref], repoDir);
+  const upstreamBase = yield* runGit(["rev-parse", input.upstreamRef], repoDir);
+
+  // The fork's history only has to descend from upstream; a base behind the
+  // mirror tip is a normal state while an actualization is pending, not a
+  // broken history. Promotion enforces the exact base itself (see
+  // promote-history.yml), so this check must never gate on it.
+  const mergeBaseResult = yield* runGitCommand(["merge-base", head, upstreamBase], repoDir);
+  if (mergeBaseResult.exitCode !== 0) {
     return yield* new InvalidForkHistoryError({
-      reason: "not-based-on-upstream",
-      detail: `${mergeBase} does not equal ${upstreamBase}`,
+      reason: "unrelated-history",
+      detail: `${head} and ${upstreamBase} have no common ancestor`,
     });
   }
+  const historyBase = mergeBaseResult.stdout.trim();
 
-  const mergeCommits = yield* runGit(["rev-list", "--merges", `${upstreamBase}..${head}`]);
+  const mergeCommits = yield* runGit(["rev-list", "--merges", `${historyBase}..${head}`], repoDir);
   if (mergeCommits.length > 0) {
     return yield* new InvalidForkHistoryError({
       reason: "contains-merges",
@@ -173,7 +195,7 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
     });
   }
 
-  const commitSubject = yield* runGit(["show", "-s", "--format=%s", head]);
+  const commitSubject = yield* runGit(["show", "-s", "--format=%s", head], repoDir);
   const isReleaseState =
     commitSubject.startsWith("prepare stable release ") ||
     commitSubject.startsWith("chore(release):");
@@ -185,10 +207,13 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
   }
 
   if (!isReleaseState) {
-    return { head, upstreamBase, version: null } as const;
+    return { head, historyBase, upstreamBase, version: null } as const;
   }
 
-  const changedFiles = (yield* runGit(["diff-tree", "--no-commit-id", "--name-only", "-r", head]))
+  const changedFiles = (yield* runGit(
+    ["diff-tree", "--no-commit-id", "--name-only", "-r", head],
+    repoDir,
+  ))
     .split(/\r?\n/)
     .filter((file) => file.length > 0);
   const unexpectedFiles = changedFiles.filter((file) => !ReleaseStateFiles.has(file));
@@ -202,7 +227,7 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
   const versions = yield* Effect.forEach(
     PackageManifestFiles,
     (file) =>
-      runGit(["show", `${head}:${file}`]).pipe(
+      runGit(["show", `${head}:${file}`], repoDir).pipe(
         Effect.flatMap((source) => decodePackageManifest(source)),
       ),
     { concurrency: "unbounded" },
@@ -215,7 +240,7 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
     });
   }
 
-  return { head, upstreamBase, version: versionValues[0] } as const;
+  return { head, historyBase, upstreamBase, version: versionValues[0] } as const;
 });
 
 const command = Command.make(
@@ -238,13 +263,14 @@ const command = Command.make(
   },
   ({ ref, upstreamRef, requireReleaseState }) =>
     validateForkHistory({ ref, upstreamRef, requireReleaseState }).pipe(
-      Effect.flatMap(({ head, upstreamBase, version }) =>
-        Console.log(
-          version === null
-            ? `valid history ${head} based on ${upstreamBase}`
-            : `valid history ${head} based on ${upstreamBase} (release ${version})`,
-        ),
-      ),
+      Effect.flatMap(({ head, historyBase, upstreamBase, version }) => {
+        const behind =
+          historyBase === upstreamBase
+            ? ""
+            : ` (upstream/main is ahead at ${upstreamBase}; rebase at actualization)`;
+        const release = version === null ? "" : ` (release ${version})`;
+        return Console.log(`valid history ${head} based on ${historyBase}${release}${behind}`);
+      }),
     ),
 ).pipe(
   Command.withDescription(
