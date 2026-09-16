@@ -34,8 +34,14 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import type { Brand } from "effect/Brand";
-import { Form, Permission, Session, SessionMessage } from "@opencode/client/effect";
+import {
+  AbsolutePath,
+  Agent,
+  Form,
+  Permission,
+  Session,
+  SessionMessage,
+} from "@opencode/client/effect";
 import { Mcp } from "@opencode/schema/mcp";
 import type { OpenCodeEvent } from "@opencode/client/effect";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -43,7 +49,6 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { mergeProviderSessionEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   type ProviderAdapterError,
   ProviderAdapterProcessError,
@@ -98,10 +103,8 @@ const decodeOpenCode2ResumeCursor = Schema.decodeUnknownOption(OpenCode2ResumeCu
 
 /** v2 brands its protocol ids; lift persisted plain strings back into them. */
 const toSessionId = (value: string): Session.ID => Session.ID.descending(value);
-const toDirectory = (value: string): string & Brand<"AbsolutePath"> =>
-  value as string & Brand<"AbsolutePath">;
-const toAgentId = (value: string): string & Brand<"Agent.ID"> =>
-  value as string & Brand<"Agent.ID">;
+const toDirectory = (value: string): AbsolutePath => AbsolutePath.make(value);
+const toAgentId = (value: string): Agent.ID => Agent.ID.make(value);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -205,9 +208,6 @@ function toOpenCode2ToolItemType(toolName: string | undefined): ToolLifecycleIte
   }
   if (
     normalized === "read" ||
-    normalized === "edit" ||
-    normalized === "write" ||
-    normalized === "patch" ||
     normalized === "glob" ||
     normalized === "grep" ||
     normalized.includes("edit") ||
@@ -255,7 +255,6 @@ interface OpenCode2PermissionAsk {
   readonly action: string;
   readonly resources: ReadonlyArray<string>;
   readonly metadata: Record<string, unknown> | undefined;
-  readonly message: string | undefined;
 }
 
 /** One field of a pending v2 form, with the answer key we advertise to T3. */
@@ -268,7 +267,6 @@ interface OpenCode2FormAskField {
 interface OpenCode2FormAsk {
   readonly id: string;
   readonly sessionID: string;
-  readonly title: string;
   readonly fields: ReadonlyArray<OpenCode2FormAskField>;
 }
 
@@ -344,6 +342,12 @@ interface OpenCode2SessionContext {
   /** Runtime mode whose ruleset was last written to the session. */
   appliedRulesMode: RuntimeMode | undefined;
   readonly mcpServerName: string;
+  /**
+   * Set once this context's `mcp.add` landed. The name is deterministic per
+   * thread, so a context that never registered (a lost startup race) must not
+   * remove the registration a concurrent winner relies on.
+   */
+  mcpRegistered: boolean;
   cancellationTurnId: TurnId | undefined;
   interruptedTurnId: TurnId | undefined;
   reconcileIdleStatus: boolean;
@@ -520,18 +524,16 @@ export function makeOpenCode2Adapter(
       },
     ): Effect.Effect<ProviderSession> {
       return Effect.map(nowIso, (updatedAt) => {
-        const nextSession = {
-          ...context.session,
-          ...patch,
+        // The `clear` flags remove the key entirely rather than setting it
+        // undefined. Object rest expresses that without erasing the session to
+        // a string map to reach `delete`.
+        const { activeTurnId, lastError, ...rest } = { ...context.session, ...patch };
+        const nextSession: ProviderSession = {
+          ...rest,
+          ...(clear?.clearActiveTurnId === true ? {} : { activeTurnId }),
+          ...(clear?.clearLastError === true ? {} : { lastError }),
           updatedAt,
-        } as ProviderSession & Record<string, unknown>;
-        const mutableSession = nextSession as Record<string, unknown>;
-        if (clear?.clearActiveTurnId) {
-          delete mutableSession.activeTurnId;
-        }
-        if (clear?.clearLastError) {
-          delete mutableSession.lastError;
-        }
+        };
         context.session = nextSession;
         return nextSession;
       });
@@ -1024,7 +1026,10 @@ export function makeOpenCode2Adapter(
       if (!replied) {
         // Fall back to the dialog. The id stays resolved so a recovered copy
         // of this ask cannot reopen after the user answers;
-        // `pendingPermissions` gates re-asks while the dialog is open.
+        // `pendingPermissions` gates re-asks while the dialog is open. The
+        // auto-reply marker must go, or the user's answer would be swallowed
+        // as the terminal event of a reply that never landed.
+        context.autoRepliedRequestIds.delete(ask.id);
         yield* openPermissionRequest(context, ask, raw);
       }
     });
@@ -1084,8 +1089,16 @@ export function makeOpenCode2Adapter(
       });
     });
 
+    /**
+     * The key/header pair for one form field, derived in exactly one place.
+     * `respondToUserInput` matches answers against `key` then `header`, so both
+     * the stored ask and the emitted question must agree on this derivation.
+     */
+    const formFieldKey = (field: OpenCode2FormField, index: number): string =>
+      field.key.trim().length > 0 ? field.key : `field-${index}`;
+
     function questionFromFormField(field: OpenCode2FormField, index: number): UserInputQuestion {
-      const key = field.key.trim().length > 0 ? field.key : `field-${index}`;
+      const key = formFieldKey(field, index);
       const header = trimText(field.title) ?? key;
       const question = trimText(field.description) ?? header;
       const optionFrom = (option: { label: string; description?: string | undefined }) => ({
@@ -1156,7 +1169,6 @@ export function makeOpenCode2Adapter(
       form: {
         readonly id: string;
         readonly sessionID: string;
-        readonly title: string;
         readonly fields: ReadonlyArray<OpenCode2FormField>;
       },
       raw: unknown,
@@ -1165,16 +1177,18 @@ export function makeOpenCode2Adapter(
       if (stopped || context.pendingForms.has(form.id) || context.resolvedRequestIds.has(form.id)) {
         return;
       }
-      const fields = form.fields.map((field, index) => ({
-        key: field.key.trim().length > 0 ? field.key : `field-${index}`,
-        header: trimText(field.title) ?? `field-${index}`,
-        field,
-      }));
+      // The key/header derivation is shared with the emitted questions (via
+      // `questionFromFormField`), since `respondToUserInput` matches answers
+      // against `key` then `header`.
+      const questions = form.fields.map((field, index) => questionFromFormField(field, index));
       const ask: OpenCode2FormAsk = {
         id: form.id,
         sessionID: form.sessionID,
-        title: form.title,
-        fields,
+        fields: form.fields.map((field, index) => ({
+          key: questions[index]?.id ?? formFieldKey(field, index),
+          header: questions[index]?.header ?? formFieldKey(field, index),
+          field,
+        })),
       };
       context.pendingForms.set(form.id, ask);
       emitUnsafe({
@@ -1185,9 +1199,7 @@ export function makeOpenCode2Adapter(
           raw,
         })),
         type: "user-input.requested",
-        payload: {
-          questions: form.fields.map((field, index) => questionFromFormField(field, index)),
-        },
+        payload: { questions },
       });
     });
 
@@ -1259,11 +1271,14 @@ export function makeOpenCode2Adapter(
         .pipe(Effect.timeout("10 seconds"), Effect.option);
       if (Option.isSome(permissions)) {
         const presentPermissionIds = new Set(permissions.value.map((ask) => ask.id));
+        // Each pass reconciles one request kind; the other kind is untouched
+        // until its own list arrives.
         yield* closePendingRequests(
           context,
           { type: "pending-requests.recovered" },
           {
             skipPermissionIds: presentPermissionIds,
+            skipFormIds: new Set(context.pendingForms.keys()),
           },
         );
         for (const ask of permissions.value) {
@@ -1275,7 +1290,6 @@ export function makeOpenCode2Adapter(
               action: ask.action,
               resources: ask.resources,
               metadata: ask.metadata,
-              message: ask.message,
             },
             { type: "permission.asked", recovered: true, request: ask },
           );
@@ -1290,6 +1304,7 @@ export function makeOpenCode2Adapter(
           context,
           { type: "pending-requests.recovered" },
           {
+            skipPermissionIds: new Set(context.pendingPermissions.keys()),
             skipFormIds: presentFormIds,
           },
         );
@@ -1299,7 +1314,6 @@ export function makeOpenCode2Adapter(
             {
               id: form.id,
               sessionID: form.sessionID,
-              title: form.title,
               fields: form.fields,
             },
             { type: "form.created", recovered: true, form },
@@ -1323,12 +1337,15 @@ export function makeOpenCode2Adapter(
       }
       // Best-effort deregistration of this thread's MCP server; concurrent
       // threads keep their own uniquely named registrations.
-      yield* context.client.mcp
-        .remove({
-          server: context.mcpServerName,
-          location: { directory: toDirectory(context.directory) },
-        })
-        .pipe(Effect.ignore);
+      if (context.mcpRegistered) {
+        context.mcpRegistered = false;
+        yield* context.client.mcp
+          .remove({
+            server: context.mcpServerName,
+            location: { directory: toDirectory(context.directory) },
+          })
+          .pipe(Effect.ignore);
+      }
       yield* Scope.close(context.sessionScope, Exit.void).pipe(Effect.ignore);
     });
 
@@ -1465,19 +1482,18 @@ export function makeOpenCode2Adapter(
         }
         seen.add(sessionId);
         const currentSessionId: string = sessionId;
+        // A missing ancestor ends the walk; any other failure (timeout, auth,
+        // transport) also ends it, since ancestry is best-effort.
         const info = yield* context.client.session
           .get({ sessionID: toSessionId(currentSessionId) })
           .pipe(
             Effect.timeout("5 seconds"),
-            Effect.catchTag("SessionNotFoundError", () =>
-              Effect.succeed(undefined as Session.Info | undefined),
-            ),
-            Effect.option,
+            Effect.orElseSucceed((): Session.Info | undefined => undefined),
           );
-        if (Option.isNone(info) || info.value === undefined) {
+        if (info === undefined) {
           return false;
         }
-        sessionId = info.value.parentID;
+        sessionId = info.parentID;
       }
       return false;
     });
@@ -1520,6 +1536,13 @@ export function makeOpenCode2Adapter(
         }
 
         const turnId = context.activeTurnId;
+        // Execution lifecycle is per session, and subagent child sessions run
+        // their own; only the root session's run maps onto the T3 turn.
+        const isRootExecutionEvent =
+          !event.type.startsWith("session.execution.") || sessionId === context.openCodeSessionId;
+        if (!isRootExecutionEvent) {
+          return;
+        }
         switch (event.type) {
           case "session.created": {
             if (event.data.parentID && context.relatedSessionIds.has(event.data.parentID)) {
@@ -1534,14 +1557,28 @@ export function makeOpenCode2Adapter(
             break;
           }
           case "session.deleted": {
+            if (event.data.sessionID === context.openCodeSessionId) {
+              // The root session is gone from the shared server, so no later
+              // event or turn can reach it; tear down like a server exit.
+              yield* emitUnexpectedExit(
+                context,
+                "The OpenCode 2 session was deleted on the server.",
+              );
+              return;
+            }
             context.relatedSessionIds.delete(event.data.sessionID);
             break;
           }
           case "session.renamed": {
             const title = trimText(event.data.title);
-            // Mirror user renames, but not OpenCode's auto-generated
-            // placeholders — those would lock the thread onto them.
-            if (title && !isOpenCode2DefaultTitle(title)) {
+            // Mirror user renames of the root session, but not subagent child
+            // sessions or OpenCode's auto-generated placeholders — either
+            // would overwrite the thread name.
+            if (
+              event.data.sessionID === context.openCodeSessionId &&
+              title &&
+              !isOpenCode2DefaultTitle(title)
+            ) {
               yield* emit({
                 ...(yield* buildEventBase({
                   threadId: context.session.threadId,
@@ -1663,10 +1700,12 @@ export function makeOpenCode2Adapter(
               break;
             }
             // idle: reconciliation only — the explicit execution events own
-            // turn completion, this covers a missed terminal event.
+            // turn completion, this covers a missed terminal event. An
+            // admitted prompt falls through: its run may have ended without
+            // a terminal event (e.g. a non-user interruption).
             if (turnId !== undefined) {
               const admission = context.promptAdmission;
-              if (admission?.turnId === turnId) {
+              if (admission?.turnId === turnId && !admission.accepted) {
                 yield* schedulePromptAdmissionRecovery(context, admission);
                 break;
               }
@@ -1686,7 +1725,7 @@ export function makeOpenCode2Adapter(
           case "session.idle": {
             if (turnId !== undefined) {
               const admission = context.promptAdmission;
-              if (admission?.turnId === turnId) {
+              if (admission?.turnId === turnId && !admission.accepted) {
                 yield* schedulePromptAdmissionRecovery(context, admission);
                 break;
               }
@@ -1929,7 +1968,6 @@ export function makeOpenCode2Adapter(
                 action: ask.action,
                 resources: ask.resources,
                 metadata: ask.metadata,
-                message: ask.message,
               },
               event,
             );
@@ -1946,7 +1984,6 @@ export function makeOpenCode2Adapter(
               {
                 id: event.data.form.id,
                 sessionID: event.data.form.sessionID,
-                title: event.data.form.title,
                 fields: event.data.form.fields,
               },
               event,
@@ -2006,6 +2043,9 @@ export function makeOpenCode2Adapter(
           })
           .pipe(Effect.timeout("5 seconds"), Effect.ignoreCause);
       }
+      // A restarted server has forgotten the thread's MCP registration too;
+      // `mcp.add` is a plain upsert, so re-sending it is safe when it has not.
+      yield* registerThreadMcp(context).pipe(Effect.ignoreCause);
       yield* recoverPendingRequests(context);
       if (context.activeTurnId !== undefined) {
         const turnId = context.activeTurnId;
@@ -2170,6 +2210,7 @@ export function makeOpenCode2Adapter(
               toRequestError("mcp.add", "Failed to register the T3 Code MCP server."),
             ),
           );
+        context.mcpRegistered = true;
       });
 
     // ── message listing ───────────────────────────────────────────
@@ -2202,7 +2243,7 @@ export function makeOpenCode2Adapter(
           const result = yield* context.client.message.list(request).pipe(
             Effect.mapError(listRequestError),
             Effect.map((response) => ({
-              data: response.data as ReadonlyArray<SessionMessage.Info>,
+              data: response.data,
               next: response.cursor.next,
             })),
           );
@@ -2299,9 +2340,9 @@ export function makeOpenCode2Adapter(
               ? yield* client.session.get({ sessionID: toSessionId(resumeSessionId) }).pipe(
                   // Typed on the decoded error union, before the boundary map
                   // collapses the rest into a request error.
-                  Effect.catchTag("SessionNotFoundError", () =>
-                    Effect.succeed(undefined as Session.Info | undefined),
-                  ),
+                  Effect.catchTags({
+                    SessionNotFoundError: () => Effect.succeed<Session.Info | undefined>(undefined),
+                  }),
                   Effect.mapError(
                     toRequestError("session.get", "Failed to read the OpenCode 2 session."),
                   ),
@@ -2396,7 +2437,6 @@ export function makeOpenCode2Adapter(
         const started = startedExit.value;
         const { sessionInfo, created } = started;
 
-        const sessionEnvironment = mergeProviderSessionEnvironment(options?.environment, input.env);
         const createdAt = yield* nowIso;
         const session: ProviderSession = {
           provider: PROVIDER,
@@ -2433,6 +2473,7 @@ export function makeOpenCode2Adapter(
           activeTurnId: undefined,
           appliedRulesMode: input.runtimeMode,
           mcpServerName,
+          mcpRegistered: false,
           cancellationTurnId: undefined,
           interruptedTurnId: undefined,
           reconcileIdleStatus: false,
@@ -2483,8 +2524,11 @@ export function makeOpenCode2Adapter(
         }).pipe(Effect.ensuring(Effect.sync(() => deleteContextIfCurrent(context))));
 
         // Session environment (v2's analog of the spawned-server env merge).
+        // `options.environment` is already the merged instance env; the start
+        // input carries no per-session env, so there is nothing further to fold
+        // in here.
         const environmentVariables = Object.fromEntries(
-          Object.entries(sessionEnvironment).filter(
+          Object.entries(options?.environment ?? {}).filter(
             (entry): entry is [string, string] => typeof entry[1] === "string",
           ),
         );
