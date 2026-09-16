@@ -487,7 +487,7 @@ export function makeOpenCode2Adapter(
           provider: PROVIDER,
           method,
           detail,
-          cause: cause as never,
+          cause,
         });
 
     /**
