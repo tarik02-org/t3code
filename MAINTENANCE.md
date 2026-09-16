@@ -26,7 +26,7 @@ The PR intentionally starts conflicted so GitHub can run checks against the mirr
 
 Release-state files belong only to release preparation, not to the actualization stack. Dependency declarations stay with the feature or fix that needs them. Intermediate lockfiles and Nix hashes are consolidated by the release flow.
 
-History above the upstream base is linear. `history/validated` must pass before a stable release can be promoted. Release tags preserve published chronology; no extra backup branch is required for normal work.
+History above the upstream base is linear. `history/validated` must pass before a stable release can be promoted. It validates descent, not currency: `main` based on an older `upstream/main` commit is valid while an actualization is pending, and the check never gates on the mirror tip. Promotion separately requires the candidate to sit exactly on the base it declares, so a stale base is rejected there rather than here. Release tags preserve published chronology; no extra backup branch is required for normal work.
 
 ## Feature and fix delivery
 

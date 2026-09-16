@@ -186,14 +186,12 @@ jobs:
 
       - name: Collect shared release files
         run: |
-          mkdir -p release-common/apps/desktop release-common/apps/server release-common/wsl-prebuild
+          mkdir -p release-common/apps/desktop release-common/apps/server
           cp -R result/apps/desktop/dist-electron release-common/apps/desktop/
           cp -R result/apps/desktop/resources release-common/apps/desktop/
           cp -R result/apps/server/dist release-common/apps/server/
-          cp result/wsl-prebuild/pty.node release-common/wsl-prebuild/
           test -f release-common/apps/desktop/dist-electron/preload.cjs
           test -f release-common/apps/server/dist/bin.mjs
-          file release-common/wsl-prebuild/pty.node
 
       - name: Upload shared release files
         uses: actions/upload-artifact@v7
@@ -203,11 +201,99 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  desktop:
-    name: Package ${{ matrix.label }}
+  # The Windows WSL backend runs the self-contained Linux CLI archive inside the
+  # distro, so a Windows build embeds the archive built for its own release
+  # version. Build it once on Linux hardware from the shared bundle and hand it
+  # to the desktop matrix as an artifact, the same way upstream's release does.
+  cli_linux:
+    name: Build Linux x64 CLI archive
     needs:
       - metadata
       - common_nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Brings apps/server/dist (server bundle plus web client) and the desktop
+      # resources; the resource monitor is built below, since the Nix runtime
+      # output does not carry it.
+      - name: Download shared release files
+        uses: actions/download-artifact@v8
+        with:
+          name: release-common
+          path: .
+
+      - name: Set release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.metadata.outputs.version }}"
+
+      - name: Build resource monitor
+        run: vp run build:resource-monitor
+
+      - name: Stage resource monitor for the CLI archive
+        run: |
+          target_dir="$RUNNER_TEMP/cli-resource-monitor/linux-x64"
+          mkdir -p "$target_dir"
+          cp native/resource-monitor/target/release/t3-resource-monitor "$target_dir/t3-resource-monitor"
+
+      # The single-executable is built with a Node that supports --build-sea
+      # (25.7+); the repo itself stays on engines.node. The exact version, not a
+      # major: vp downloads it from nodejs.org/dist on the runner. Keep in step
+      # with SEA_NODE_VERSION in apps/server/vite.config.ts.
+      - name: Build CLI single-executable
+        env:
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build CLI archive
+        run: |
+          node scripts/build-cli-archive.ts \
+            --platform linux \
+            --arch x64 \
+            --version "${{ needs.metadata.outputs.version }}" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
+            --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.metadata.outputs.version }}"
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-linux-x64
+          path: release-cli/*
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop:
+    name: Package ${{ matrix.label }}
+    # Every platform waits for the CLI archive even though only Windows embeds
+    # it. The matrix shares one `needs` list, and shipping a Windows installer
+    # whose WSL runtime is missing is worse than failing the whole release.
+    needs:
+      - metadata
+      - common_nix
+      - cli_linux
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     strategy:
@@ -274,6 +360,15 @@ jobs:
           name: release-common
           path: .
 
+      # The WSL backend runs the Linux CLI archive inside the distro, so the
+      # Windows desktop embeds the same-arch archive the release attaches.
+      - name: Download Linux CLI archive for WSL
+        if: matrix.platform == 'win'
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-linux-${{ matrix.arch }}
+          path: wsl-runtime
+
       - name: Install Windows native build prerequisites
         if: matrix.platform == 'win'
         shell: pwsh
@@ -316,7 +411,7 @@ jobs:
             --verbose
           )
           if [[ "${{ matrix.platform }}" == win ]]; then
-            args+=(--wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node")
+            args+=(--wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-${{ matrix.arch }}.tar.gz)
           fi
           vp run dist:desktop:artifact "${args[@]}"
 

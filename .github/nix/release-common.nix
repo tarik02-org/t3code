@@ -14,11 +14,10 @@ runtime.overrideAttrs {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/apps/desktop" "$out/apps/server" "$out/wsl-prebuild"
+    mkdir -p "$out/apps/desktop" "$out/apps/server"
     cp -R apps/desktop/dist-electron "$out/apps/desktop/"
     cp -R apps/desktop/resources "$out/apps/desktop/"
     cp -R apps/server/dist "$out/apps/server/"
-    cp apps/server/node_modules/node-pty/build/Release/pty.node "$out/wsl-prebuild/"
 
     runHook postInstall
   '';
