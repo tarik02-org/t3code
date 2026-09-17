@@ -314,4 +314,17 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
       assert.equal(versionError.argument, "version");
     }),
   );
+
+  // Upstream actualizations carry their own 0.0.x release commits; without this
+  // the fork silently falls back to upstream versioning.
+  it.effect("keeps the fork calendar version in the workspace manifests", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const versions = yield* readReleaseVersions(path.resolve(import.meta.dirname, ".."));
+
+      for (const [relativePath, version] of versions) {
+        assert.match(version, /^20\d{2}\.\d{1,2}\.\d+$/, relativePath);
+      }
+    }),
+  );
 });
