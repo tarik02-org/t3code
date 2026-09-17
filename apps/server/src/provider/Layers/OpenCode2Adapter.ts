@@ -57,6 +57,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { mergeProviderSessionEnvironment } from "../ProviderInstanceEnvironment.ts";
 import { type OpenCode2AdapterShape } from "../Services/OpenCode2Adapter.ts";
 import {
   buildOpenCode2SessionRules,
@@ -2521,13 +2522,12 @@ export function makeOpenCode2Adapter(
         }).pipe(Effect.ensuring(Effect.sync(() => deleteContextIfCurrent(context))));
 
         // Session environment (v2's analog of the spawned-server env merge).
-        // `options.environment` is already the merged instance env; the start
-        // input carries no per-session env, so there is nothing further to fold
-        // in here.
-        const environmentVariables = Object.fromEntries(
-          Object.entries(options?.environment ?? {}).filter(
-            (entry): entry is [string, string] => typeof entry[1] === "string",
-          ),
+        // The shared server process cannot carry per-thread values, so the
+        // merged instance env plus the thread's launch env (T3CODE_THREAD_ID
+        // and friends) has to travel over the session environment API instead.
+        const environmentVariables = mergeProviderSessionEnvironment(
+          options?.environment,
+          input.env,
         );
         if (Object.keys(environmentVariables).length > 0) {
           yield* context.client.session
