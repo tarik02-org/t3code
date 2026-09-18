@@ -51,10 +51,7 @@ jobs:
             sleep "$((attempt * 20))"
           done
 
-          git reset -- flake.lock
-          git clean -f -- flake.lock
-
-          if git diff --quiet -- nix/package.nix; then
+          if git diff --quiet -- nix/package.nix flake.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -64,7 +61,7 @@ jobs:
               echo "The PR author or a maintainer can apply this change by commenting \`/apply-nix-fix\`. Fork pull requests must allow maintainer edits."
               echo
               echo '```diff'
-              git diff -- nix/package.nix
+              git diff -- nix/package.nix flake.lock
               echo '```'
             } | tee "$RUNNER_TEMP/nix-pnpm-dependency-hash.md" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -157,15 +154,12 @@ jobs:
             sleep "$((attempt * 20))"
           done
 
-          git reset -- flake.lock
-          git clean -f -- flake.lock
-
-          if git diff --quiet -- nix/package.nix; then
+          if git diff --quiet -- nix/package.nix flake.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo 'The Nix pnpm dependency hash is already current.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            git add -- nix/package.nix
+            git add -- nix/package.nix flake.lock
           fi
 
       # PR-controlled code is inspected above. Mint the write token only after that work finishes.
