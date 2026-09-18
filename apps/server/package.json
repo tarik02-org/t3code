@@ -1,6 +1,6 @@
 {
   "name": "t3",
-  "version": "0.1.0",
+  "version": "2026.9.700",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -82,5 +82,7 @@
   },
   "engines": {
     "node": "^22.16 || ^23.11 || >=24.10"
-  }
+  },
+  "t3codeProviderCompatibilityVersion": "0.1.0",
+  "t3codeUpstreamVersion": "0.1.0"
 }
