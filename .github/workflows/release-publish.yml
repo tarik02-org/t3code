@@ -226,6 +226,26 @@ jobs:
             rm "$x64_manifest"
           done
 
+      # Prerelease versions are never committed to main. Tag a child commit that
+      # carries the version so the flake at the tag reports it.
+      - name: Tag release source
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            exit 0
+          fi
+          node scripts/update-release-package-versions.ts "$RELEASE_VERSION"
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "release $RELEASE_TAG"
+          fi
+          git tag "$RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+
       - name: Publish release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
@@ -244,3 +264,14 @@ jobs:
             release-assets/*.blockmap
             release-assets/*.yml
           fail_on_unmatched_files: true
+
+  nix:
+    name: Publish Nix packages
+    needs: [metadata, publish]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/nix-packages.yml
+    with:
+      ref: ${{ needs.metadata.outputs.tag }}
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

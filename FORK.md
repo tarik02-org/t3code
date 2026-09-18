@@ -32,5 +32,5 @@ Read [MAINTENANCE.md](./MAINTENANCE.md) before actualizing, backporting, deliver
 - Frontmatter rendering in web and mobile previews.
 - Unsigned macOS updates, canary channel identities, and fork packaging.
 - Headless release archives for macOS arm64, Linux x64, and Windows x64.
-- Provider compatibility policies match the upstream base version, not the fork CalVer.
+- Provider compatibility policies match the shipped upstream provider generation, not the fork CalVer.
 - Thread-scoped launch environment identity for providers and terminals.
