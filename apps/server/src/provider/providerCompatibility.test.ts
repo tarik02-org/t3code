@@ -54,6 +54,16 @@ const provider: ServerProvider = {
 const V2_RELEASE = "0.0.46";
 
 describe("provider compatibility", () => {
+  it("uses the shipped provider generation for fork CalVer builds", () => {
+    const advisory = resolveProviderCompatibility(
+      ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+      ProviderDriverKind.make("opencode"),
+      "2.0.18",
+    );
+    assert.strictEqual(advisory?.status, "supported");
+    assert.strictEqual(advisory?.recommendedRange, ">=2.0.18");
+  });
+
   it("bundles a compatibility policy for every built-in harness", () => {
     for (const builtIn of BUILT_IN_DRIVERS) {
       // Registry entries are arbitrary external ACP agents, not one versioned harness.
