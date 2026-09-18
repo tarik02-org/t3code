@@ -1,0 +1,101 @@
+name: Nix packages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-packages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Nix (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-darwin
+            runner: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Cache Nix build dependencies on GitHub
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-build-${{ matrix.system }}-${{ hashFiles('flake.lock', 'pnpm-lock.yaml', 'native/resource-monitor/Cargo.lock') }}
+          restore-prefixes-first-match: nix-build-${{ matrix.system }}-
+          save: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+          gc-max-store-size: 4G
+
+      - name: Configure public cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: tarik02-t3code
+          skipPush: true
+
+      - name: Build packages
+        shell: bash
+        run: |
+          nix build --no-link --print-out-paths --print-build-logs \
+            .#t3code-headless .#t3code-desktop > "$RUNNER_TEMP/nix-package-paths"
+
+      - name: Smoke-test packages
+        shell: bash
+        run: |
+          headless="$(nix eval --raw .#t3code-headless.outPath)"
+          desktop="$(nix eval --raw .#t3code-desktop.outPath)"
+          runtime="$(nix eval --raw .#t3code-runtime.outPath)"
+          electron="$(nix eval --raw .#t3code-desktop.electron.outPath)"
+          electron_bin="$electron/bin/electron"
+          app_root="$runtime/libexec/t3code"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            app="$desktop/Applications/T3 Code.app"
+            electron_bin="$app/Contents/MacOS/Electron"
+            app_root="$app/Contents/Resources/app"
+          fi
+          "$headless/bin/t3" --version
+          ELECTRON_RUN_AS_NODE=1 "$electron_bin" "$app_root/apps/server/dist/bin.mjs" --version
+          ELECTRON_RUN_AS_NODE=1 "$electron_bin" - "$app_root" <<'JS'
+          const assert = require("node:assert/strict");
+          require(`${process.argv[2]}/apps/server/node_modules/node-pty/build/Release/pty.node`);
+          const pty = require(`${process.argv[2]}/apps/server/node_modules/node-pty`);
+          const terminal = pty.spawn("/bin/sh", ["-c", "printf nix-pty-smoke"], { env: process.env });
+          let output = "";
+          terminal.onData((data) => { output += data; });
+          terminal.onExit(({ exitCode }) => {
+            assert.equal(exitCode, 0);
+            assert.equal(output, "nix-pty-smoke");
+          });
+          JS
+          test -x "$desktop/bin/t3code"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            test -e "$app/Contents/Resources/app/apps/server/dist/bin.mjs"
+            /usr/bin/codesign --verify --deep --strict "$app"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.T3Code
+          else
+            test -f "$desktop/share/applications/com.t3tools.T3Code.desktop"
+          fi
+
+      # Only reviewed main builds can publish. PR jobs never receive this token.
+      - name: Publish package closures
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          test -n "$CACHIX_AUTH_TOKEN"
+          cachix push tarik02-t3code < "$RUNNER_TEMP/nix-package-paths"
