@@ -121,7 +121,69 @@ const makeHarness = Effect.fn("makeOpenCode2AdapterHarness")(function* () {
     }
   });
 
-  return { adapter, publish, seen, waitForEvent, environmentCalls };
+  /**
+   * Starts a session and turn, then publishes the `session.created` that binds
+   * a subagent child and waits for its roster row. Every subagent test needs
+   * exactly this, and the receipt matters: child events are judged against the
+   * related-session set as the stream pulls, so the binding must land first.
+   */
+  const openSubagent = Effect.fn("OpenCode2AdapterTest.openSubagent")(function* (
+    name: string,
+    details?: { readonly description?: string; readonly agent?: string },
+  ) {
+    const threadId = ThreadId.make(name);
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+    const turn = yield* adapter.sendTurn({ threadId, input: "spawn a subagent" });
+    const now = yield* Clock.currentTimeMillis;
+    yield* publish(
+      nativeEvent({
+        type: "session.created",
+        created: now,
+        data: {
+          sessionID: CHILD_SESSION_ID,
+          parentID: ROOT_SESSION_ID,
+          title: details?.description ?? "Review the parser",
+          agent: details?.agent ?? "explore",
+        },
+      }),
+    );
+    yield* waitForEvent((event): event is TaskStartedEvent => event.type === "task.started");
+    return { threadId, turn, now };
+  });
+
+  /** Marks the first run open, which the child lifecycle normally does. */
+  const startChildRun = (created: number) =>
+    publish(
+      nativeEvent({
+        type: "session.execution.started",
+        created,
+        data: { sessionID: CHILD_SESSION_ID },
+      }),
+    );
+
+  const childStep = (created: number, assistantMessageID: string, output: number) =>
+    nativeEvent({
+      type: "session.step.ended",
+      created,
+      data: {
+        sessionID: CHILD_SESSION_ID,
+        assistantMessageID,
+        finish: "stop",
+        cost: 0,
+        tokens: { input: 100, output, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+    });
+
+  return {
+    adapter,
+    publish,
+    seen,
+    waitForEvent,
+    environmentCalls,
+    openSubagent,
+    startChildRun,
+    childStep,
+  };
 });
 
 const layer = ServerConfig.layerTest(process.cwd(), {
@@ -153,38 +215,7 @@ it.layer(layer)("OpenCode2Adapter", (it) => {
   it.effect("keeps a subagent child session's transcript out of the parent turn", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
-      const threadId = ThreadId.make("thread-subagent-content");
-
-      yield* h.adapter.startSession({ threadId, runtimeMode: "full-access" });
-      const turn = yield* h.adapter.sendTurn({ threadId, input: "spawn subagents" });
-      const now = yield* Clock.currentTimeMillis;
-
-      // A child session becomes "related" through the parentID on its
-      // `session.created`; that is the binding under test.
-      yield* h.publish(
-        nativeEvent({
-          type: "session.created",
-          created: now,
-          data: { sessionID: CHILD_SESSION_ID, parentID: ROOT_SESSION_ID },
-        }),
-      );
-
-      // Receipt: the root delta published after the binding is only handled
-      // once the binding has been applied, so waiting for it proves the child
-      // is registered before the child content below is published.
-      yield* h.publish(
-        nativeEvent({
-          type: "session.reasoning.delta",
-          created: now,
-          data: {
-            sessionID: ROOT_SESSION_ID,
-            assistantMessageID: "msg_warmup",
-            ordinal: 0,
-            delta: "warmup",
-          },
-        }),
-      );
-      yield* h.waitForEvent(isContentDeltaFor("msg_warmup:0"));
+      const { turn, now } = yield* h.openSubagent("thread-subagent-content");
 
       // The child's own transcript. None of it belongs to the parent turn.
       yield* h.publish(
@@ -265,19 +296,7 @@ it.layer(layer)("OpenCode2Adapter", (it) => {
           data: { sessionID: CHILD_SESSION_ID, parentID: ROOT_SESSION_ID },
         }),
       );
-      yield* h.publish(
-        nativeEvent({
-          type: "session.reasoning.delta",
-          created: now,
-          data: {
-            sessionID: ROOT_SESSION_ID,
-            assistantMessageID: "msg_warmup",
-            ordinal: 0,
-            delta: "warmup",
-          },
-        }),
-      );
-      yield* h.waitForEvent(isContentDeltaFor("msg_warmup:0"));
+      yield* h.waitForEvent((event): event is TaskStartedEvent => event.type === "task.started");
 
       yield* h.publish(
         nativeEvent({
@@ -598,10 +617,9 @@ it.layer(layer)("OpenCode2Adapter", (it) => {
         (event): event is TaskCompletedEvent => event.type === "task.completed",
       );
 
-      // Run 2 on the same session: a `sleep 15` follow-up. The live activity
-      // row for the shell must still mark the agent running, because progress
-      // rows share one stable id and a status-less row cannot reopen a settled
-      // agent (live repro: it read "Completed" for the whole 17s run).
+      // Run 2 on the same session. Progress rows share one stable activity id,
+      // so a status-less row cannot reopen a settled agent: the shell activity
+      // must still mark it running.
       yield* h.publish(
         nativeEvent({
           type: "session.execution.started",
@@ -730,10 +748,8 @@ it.layer(layer)("OpenCode2Adapter", (it) => {
           event.type === "task.progress" && event.payload.lastToolName === "grep",
       );
       NodeAssert.equal(toolLine.payload.summary, "▸ grep");
-      // Load-bearing: activity rows share the stable per-task progress id, so
-      // this row replaces the run opener. A status-less row could not reopen a
-      // settled agent, and a reused child session would read as completed while
-      // it works (live repro: a `sleep 15` follow-up showed "Completed" for 17s).
+      // Without the running status this row could not reopen a settled agent
+      // on a reused child session.
       NodeAssert.equal(toolLine.payload.status, "running");
       const thinkingRow = h.seen.find(
         (event): event is TaskProgressEvent =>

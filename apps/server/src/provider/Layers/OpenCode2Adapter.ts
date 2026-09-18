@@ -12,6 +12,7 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   type RuntimeTaskUsage,
+  type TaskAgentLinkage,
   type RuntimeMode,
   ThreadId,
   type ToolLifecycleItemType,
@@ -349,6 +350,10 @@ interface OpenCode2IdleReconciliation {
  * OpenCode emits no task frame of its own, and the roster is built from task
  * rows, so the adapter synthesizes them from the child's own session.
  */
+/** Where a subagent is in its current run. One value, not two booleans: an
+ *  agent is either waiting for its first run, running, or settled. */
+type OpenCode2SubagentStatus = "idle" | "running" | "settled";
+
 interface OpenCode2Subagent {
   /** Child session id; also the runtime taskId (stable across every task.* row). */
   readonly taskId: string;
@@ -371,12 +376,9 @@ interface OpenCode2Subagent {
   cachedInputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
-  /** True while the child's current run is open; guards duplicate running rows. */
-  live: boolean;
+  status: OpenCode2SubagentStatus;
   /** Completed tool calls, surfaced as the panel's "N tools" figure. */
   toolUses: number;
-  /** True once a terminal row closed the current run. */
-  settled: boolean;
 }
 
 interface OpenCode2SessionContext {
@@ -1568,20 +1570,16 @@ export function makeOpenCode2Adapter(
     // ── subagent roster ───────────────────────────────────────────
     //
     // OpenCode runs a subagent as a child session created by its `subagent`
-    // tool. The child's transcript must never reach this thread (the content
-    // filter drops it), but T3 still has to show *that* an agent ran: the
-    // Agents surface is built from `task.*` rows, and OpenCode emits none.
+    // tool. The child's transcript never reaches this thread (the content
+    // filter drops it), but the Agents surface still needs to show that an
+    // agent ran: it folds `task.*` rows, and OpenCode emits none.
     //
-    // A row is anchored on the child session, which is what `session.created`
-    // binds to this thread and what the child's own lifecycle events carry.
-    // The spawning tool call arrives alongside it, so it is linked as the
-    // `toolUseId`: the chat fold then replaces that call's row with the spawn
-    // CTA instead of showing the raw call and the agent twice.
+    // Rows are anchored on the child session and linked to the spawning tool
+    // call, so the chat fold replaces that call's row with the spawn CTA.
 
     /** The child session id on a `subagent` tool result, either form. */
     function subagentChildSessionIdFromToolResult(output: string): string | undefined {
-      // Background: "…(sessionID: ses_…)…". Foreground result markup:
-      // `<subagent sessionID="ses_…" state="completed">`.
+      // Background: "…(sessionID: ses_…)…". Foreground: `<subagent sessionID="ses_…" …>`.
       const match = /(?:sessionID:\s*|sessionID=")([A-Za-z0-9_-]+)/.exec(output);
       return match?.[1];
     }
@@ -1591,7 +1589,6 @@ export function makeOpenCode2Adapter(
       return subagent.totalTokens > 0 || subagent.toolUses > 0;
     }
 
-    /** The child's accumulated tokens, in the shared task-usage vocabulary. */
     function subagentTaskUsage(subagent: OpenCode2Subagent): RuntimeTaskUsage {
       return {
         totalTokens: subagent.totalTokens,
@@ -1603,131 +1600,138 @@ export function makeOpenCode2Adapter(
       };
     }
 
-    const emitSubagentTaskRow = Effect.fn("opencode2.emitSubagentTaskRow")(function* (
-      context: OpenCode2SessionContext,
-      subagent: OpenCode2Subagent,
-      row: {
-        readonly type: "started" | "running" | "usage" | "activity" | "settled";
-        readonly status?: "completed" | "failed" | "stopped";
-        readonly error?: string;
-        readonly summary?: string;
-        readonly lastToolName?: string;
-        readonly raw?: unknown;
-      },
-    ) {
-      const base = yield* buildEventBase({
-        threadId: context.session.threadId,
-        ...(subagent.turnId ? { turnId: subagent.turnId } : {}),
-        itemId: subagent.taskId,
-        ...(row.raw !== undefined ? { raw: row.raw } : {}),
-      });
-      // `timelineBypass` keeps every row out of the parent timeline; the launch
-      // tool call is linked so the chat fold replaces its row with the CTA.
-      const linkage = {
+    /**
+     * Identity repeated on every row, so a fold can rebuild the agent when its
+     * start row ages out of activity retention. `timelineBypass` keeps these
+     * rows out of the parent timeline; `toolUseId` lets the chat fold replace
+     * the launch tool row with the spawn CTA.
+     */
+    function subagentLinkage(subagent: OpenCode2Subagent): TaskAgentLinkage {
+      return {
         taskType: "local_agent",
+        timelineBypass: true,
         ...(subagent.toolCallId ? { toolUseId: subagent.toolCallId } : {}),
         ...(subagent.description ? { title: subagent.description } : {}),
         ...(subagent.agent ? { role: subagent.agent } : {}),
         ...(subagent.model ? { model: subagent.model } : {}),
         ...(subagent.effort ? { effort: subagent.effort } : {}),
-        timelineBypass: true,
-      } as const;
-      const taskId = RuntimeTaskId.make(subagent.taskId);
-      switch (row.type) {
-        case "started": {
-          yield* emit({
-            ...base,
-            type: "task.started",
-            payload: {
-              taskId,
-              ...(subagent.description ? { description: subagent.description } : {}),
-              ...linkage,
-            },
-          });
-          return;
-        }
-        case "running": {
-          yield* emit({
-            ...base,
-            type: "task.progress",
-            payload: {
-              taskId,
-              description: subagent.description ?? subagent.agent ?? "Subagent",
-              status: "running",
-              // Opens the live line at a neutral label. A reopened run would
-              // otherwise inherit the previous run's activity, since the client
-              // clears a reactivated agent's result but not its progress.
-              summary: "Working",
-              ...(subagentHasUsage(subagent) ? { typedUsage: subagentTaskUsage(subagent) } : {}),
-              ...linkage,
-            },
-          });
-          return;
-        }
-        case "usage": {
-          // A usage-only tick. `task.progress` needs a description, and the
-          // client treats a usageSnapshot as latest-state rather than a fresh
-          // activation, so this updates the count without reopening the run.
-          yield* emit({
-            ...base,
-            type: "task.progress",
-            payload: {
-              taskId,
-              description: subagent.description ?? subagent.agent ?? "Subagent",
-              typedUsage: subagentTaskUsage(subagent),
-              ...linkage,
-            },
-          });
-          return;
-        }
-        case "activity": {
-          // The live activity line. `summary` supersedes `lastToolName` in the
-          // panel, so each new activity replaces the previous one instead of
-          // letting a stale tool name stick for the rest of the run.
-          //
-          // `status: "running"` is load-bearing, not decoration: progress rows
-          // share one stable activity id per task, so this row replaces the
-          // run-opening row. Without a status the client fold refuses to
-          // reopen a settled agent, and a reused child session (the same
-          // session asked to do more work) reads as completed while it runs.
-          yield* emit({
-            ...base,
-            type: "task.progress",
-            payload: {
-              taskId,
-              description: subagent.description ?? subagent.agent ?? "Subagent",
-              status: "running",
-              ...(row.summary ? { summary: row.summary } : {}),
-              ...(row.lastToolName ? { lastToolName: row.lastToolName } : {}),
-              ...(subagentHasUsage(subagent) ? { typedUsage: subagentTaskUsage(subagent) } : {}),
-              ...linkage,
-            },
-          });
-          return;
-        }
-        case "settled": {
-          yield* emit({
-            ...base,
-            type: "task.completed",
-            payload: {
-              taskId,
-              status: row.status ?? "completed",
-              // The child's last assistant message is its outcome, which the
-              // panel leads with on a settled row. Without it the row falls
-              // through to the sticky last tool name and reads as still busy.
-              ...(row.error
-                ? { summary: row.error }
-                : subagent.lastText
-                  ? { summary: subagent.lastText }
-                  : {}),
-              ...(subagentHasUsage(subagent) ? { typedUsage: subagentTaskUsage(subagent) } : {}),
-              ...linkage,
-            },
-          });
-          return;
-        }
-      }
-    });
+      };
+    }
+
+    /** The label a row falls back to when the child gave no description. */
+    function subagentLabel(subagent: OpenCode2Subagent): string {
+      return subagent.description ?? subagent.agent ?? "Subagent";
+    }
+
+    /** Usage and linkage, omitted entirely when the agent has reported none. */
+    function subagentUsageFields(subagent: OpenCode2Subagent): {
+      typedUsage?: RuntimeTaskUsage;
+    } {
+      return subagentHasUsage(subagent) ? { typedUsage: subagentTaskUsage(subagent) } : {};
+    }
+
+    const subagentEventBase = (
+      context: OpenCode2SessionContext,
+      subagent: OpenCode2Subagent,
+      event: OpenCodeEvent,
+    ) =>
+      buildEventBase({
+        threadId: context.session.threadId,
+        ...(subagent.turnId ? { turnId: subagent.turnId } : {}),
+        itemId: subagent.taskId,
+        raw: event,
+      });
+
+    /** Opens the roster row for a newly tracked subagent. */
+    const emitSubagentStarted = (
+      context: OpenCode2SessionContext,
+      subagent: OpenCode2Subagent,
+      event: OpenCodeEvent,
+    ) =>
+      Effect.gen(function* () {
+        yield* emit({
+          ...(yield* subagentEventBase(context, subagent, event)),
+          type: "task.started",
+          payload: {
+            taskId: RuntimeTaskId.make(subagent.taskId),
+            ...(subagent.description ? { description: subagent.description } : {}),
+            ...subagentLinkage(subagent),
+          },
+        });
+      });
+
+    /**
+     * A usage-only tick: the client applies this as latest state without
+     * reopening the run, so the count can climb mid-run.
+     */
+    const emitSubagentUsage = (
+      context: OpenCode2SessionContext,
+      subagent: OpenCode2Subagent,
+      event: OpenCodeEvent,
+    ) =>
+      Effect.gen(function* () {
+        yield* emit({
+          ...(yield* subagentEventBase(context, subagent, event)),
+          type: "task.progress",
+          payload: {
+            taskId: RuntimeTaskId.make(subagent.taskId),
+            description: subagentLabel(subagent),
+            typedUsage: subagentTaskUsage(subagent),
+            ...subagentLinkage(subagent),
+          },
+        });
+      });
+
+    /**
+     * The live activity line. `summary` supersedes `lastToolName` in the panel,
+     * so each activity replaces the previous one instead of letting a stale
+     * tool name stick for the rest of the run. The running status is what
+     * reopens a settled agent on a reused session.
+     */
+    const emitSubagentProgress = (
+      context: OpenCode2SessionContext,
+      subagent: OpenCode2Subagent,
+      activity: { readonly summary: string; readonly toolName?: string },
+      event: OpenCodeEvent,
+    ) =>
+      Effect.gen(function* () {
+        yield* emit({
+          ...(yield* subagentEventBase(context, subagent, event)),
+          type: "task.progress",
+          payload: {
+            taskId: RuntimeTaskId.make(subagent.taskId),
+            description: subagentLabel(subagent),
+            status: "running",
+            summary: activity.summary,
+            ...(activity.toolName ? { lastToolName: activity.toolName } : {}),
+            ...subagentUsageFields(subagent),
+            ...subagentLinkage(subagent),
+          },
+        });
+      });
+
+    /** Closes the run. The child's last message is its outcome, so a settled
+     *  row reports what it produced rather than the last tool it ran. */
+    const emitSubagentSettled = (
+      context: OpenCode2SessionContext,
+      subagent: OpenCode2Subagent,
+      outcome: { readonly status: "completed" | "failed" | "stopped"; readonly error?: string },
+      event: OpenCodeEvent,
+    ) =>
+      Effect.gen(function* () {
+        const summary = outcome.error ?? subagent.lastText;
+        yield* emit({
+          ...(yield* subagentEventBase(context, subagent, event)),
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.make(subagent.taskId),
+            status: outcome.status,
+            ...(summary ? { summary } : {}),
+            ...subagentUsageFields(subagent),
+            ...subagentLinkage(subagent),
+          },
+        });
+      });
 
     /** Registers a child session as a subagent and opens its roster row. */
     const trackSubagent = Effect.fn("opencode2.trackSubagent")(function* (
@@ -1739,7 +1743,7 @@ export function makeOpenCode2Adapter(
         readonly model?: string | undefined;
         readonly effort?: string | undefined;
       },
-      raw: unknown,
+      event: OpenCodeEvent,
     ) {
       if (context.subagentsBySessionId.has(sessionId)) return;
       const subagent: OpenCode2Subagent = {
@@ -1757,14 +1761,12 @@ export function makeOpenCode2Adapter(
         cachedInputTokens: 0,
         outputTokens: 0,
         reasoningTokens: 0,
-        // No running row has been emitted for this first run yet, so the
-        // child's execution start opens one.
-        live: false,
+        // The child's execution start opens the first run.
+        status: "idle",
         toolUses: 0,
-        settled: false,
       };
       context.subagentsBySessionId.set(sessionId, subagent);
-      yield* emitSubagentTaskRow(context, subagent, { type: "started", raw });
+      yield* emitSubagentStarted(context, subagent, event);
     });
 
     /** Settles one tracked subagent; the first terminal row wins. */
@@ -1775,99 +1777,72 @@ export function makeOpenCode2Adapter(
         readonly status: "completed" | "failed" | "stopped";
         readonly error?: string;
       },
-      raw?: unknown,
+      event: OpenCodeEvent,
     ) =>
       Effect.gen(function* () {
         const subagent = context.subagentsBySessionId.get(sessionId);
-        if (subagent === undefined || subagent.settled) return;
-        subagent.live = false;
-        subagent.settled = true;
-        yield* emitSubagentTaskRow(context, subagent, {
-          type: "settled",
-          status: outcome.status,
-          ...(outcome.error ? { error: outcome.error } : {}),
-          raw,
-        });
+        if (subagent === undefined || subagent.status === "settled") return;
+        subagent.status = "settled";
+        yield* emitSubagentSettled(context, subagent, outcome, event);
       });
 
     /**
      * Child sessions run their own execution lifecycle, which never maps onto
-     * the parent turn. It only drives the roster row; the parent's completion
-     * path must never see it.
+     * the parent turn. It only drives the roster row; a child's terminal frame
+     * must never complete the parent turn.
      */
     const handleSubagentLifecycleEvent = Effect.fn("opencode2.handleSubagentLifecycleEvent")(
       function* (context: OpenCode2SessionContext, sessionId: string, event: OpenCodeEvent) {
         const subagent = context.subagentsBySessionId.get(sessionId);
         switch (event.type) {
           case "session.reasoning.started": {
-            // The panel's live line shows `progress` before `lastToolName`, so
-            // a reasoning block must publish its own activity or the line would
-            // stay stuck on the previous tool for the rest of the run. The label
-            // matches the trace convention the chat already uses for thinking.
-            if (subagent === undefined || !subagent.live) return;
-            yield* emitSubagentTaskRow(context, subagent, {
-              type: "activity",
-              summary: "Thinking",
-              raw: event,
-            });
+            if (subagent?.status !== "running") return;
+            yield* emitSubagentProgress(context, subagent, { summary: "Thinking" }, event);
             return;
           }
           case "session.model.selected": {
-            // The child's own model is the honest source: OpenCode resolves the
-            // concrete model at run time, which may differ from the spawn
-            // call's request. Stored bare (`claude-opus-5`), matching the
-            // vocabulary Claude and Codex rows use.
+            // The resolved model can differ from what the spawn call requested.
             if (subagent === undefined) return;
             subagent.model = event.data.model.id;
             subagent.effort = event.data.model.variant;
             return;
           }
           case "session.text.ended": {
-            // The child's assistant messages are only visible to the parent as
-            // an outcome: the last one is what the panel reports when the run
-            // settles.
             if (subagent === undefined) return;
             const text = trimText(event.data.text);
             if (text !== undefined) subagent.lastText = text;
             return;
           }
           case "session.tool.input.started": {
-            // Child tools are routed here, so the shared name map the root
-            // switch fills never sees them; record it for the called/progress
-            // frames that carry only the id.
+            // Child tools are routed here, so the root switch never fills the
+            // shared name map for them; the called frame carries only the id.
             context.toolNamesById.set(event.data.id, event.data.name);
             return;
           }
           case "session.tool.called": {
-            // The current tool is the agent's live activity line. It rides the
-            // same activity channel as reasoning so the two alternate instead
-            // of one sticking; `lastToolName` is not used because the panel
-            // prefers `progress` and a stale value would never clear.
-            if (subagent === undefined || !subagent.live) return;
+            if (subagent?.status !== "running") return;
             const toolName = context.toolNamesById.get(event.data.id);
             if (toolName === undefined) return;
-            yield* emitSubagentTaskRow(context, subagent, {
-              type: "activity",
-              summary: `▸ ${toolName}`,
-              lastToolName: toolName,
-              raw: event,
-            });
+            yield* emitSubagentProgress(
+              context,
+              subagent,
+              { summary: `▸ ${toolName}`, toolName },
+              event,
+            );
             return;
           }
           case "session.tool.success": {
             if (subagent === undefined) return;
-            // The tool-use count rides the roster's usage figures, which the
-            // panel renders as "N tools" beside the token total.
             subagent.toolUses += 1;
-            yield* emitSubagentTaskRow(context, subagent, { type: "usage", raw: event });
+            yield* emitSubagentUsage(context, subagent, event);
             return;
           }
           case "session.step.ended": {
             // The child's own step tokens are the only per-agent usage source,
-            // and step boundaries are the finest granularity OpenCode exposes:
-            // `session.usage.updated` is emitted from these same boundaries and
-            // is session-cumulative. They must never reach the root turn
-            // accumulator, whose scope is main_agent — hence the split routing.
+            // and these boundaries are the finest granularity OpenCode exposes:
+            // `session.usage.updated` is emitted from them and is cumulative.
+            // They must never reach the root accumulator, whose scope is
+            // main_agent — hence the split routing.
             if (subagent === undefined) return;
             const tokens = event.data.tokens;
             if (subagent.usageStepIds.has(event.data.assistantMessageID)) return;
@@ -1876,12 +1851,9 @@ export function makeOpenCode2Adapter(
             subagent.cachedInputTokens += tokens.cache.read;
             subagent.outputTokens += tokens.output + tokens.reasoning;
             subagent.reasoningTokens += tokens.reasoning;
-            // Cache reads/writes are already part of `inputTokens`; adding
-            // them again would double-count.
+            // Cache reads/writes are already part of `inputTokens`.
             subagent.totalTokens = subagent.inputTokens + subagent.outputTokens;
-            // A usage-only tick so the agent's card counts up as it works,
-            // without reopening a run the way a status row would.
-            yield* emitSubagentTaskRow(context, subagent, { type: "usage", raw: event });
+            yield* emitSubagentUsage(context, subagent, event);
             return;
           }
           case "session.execution.started":
@@ -1889,18 +1861,13 @@ export function makeOpenCode2Adapter(
             if (event.type === "session.status" && event.data.status.type !== "busy") return;
             if (subagent === undefined) return;
             // The spawn tool may reuse an existing child session for a later
-            // run, so a settled agent reopens here instead of staying pinned to
-            // its previous outcome. Only the transition opens a row: a status
-            // burst must not multiply running rows.
-            if (subagent.live && !subagent.settled) return;
-            // A new run starts a clean slate: the previous run's outcome must
-            // not linger as this run's live activity or settled result.
-            if (subagent.settled) {
-              subagent.lastText = undefined;
-            }
-            subagent.live = true;
-            subagent.settled = false;
-            yield* emitSubagentTaskRow(context, subagent, { type: "running", raw: event });
+            // run, so a settled agent reopens here. Idempotent: a status burst
+            // must not multiply running rows.
+            if (subagent.status === "running") return;
+            // A new run must not inherit the previous run's outcome.
+            subagent.lastText = undefined;
+            subagent.status = "running";
+            yield* emitSubagentProgress(context, subagent, { summary: "Working" }, event);
             return;
           }
           case "session.execution.succeeded":
@@ -1959,23 +1926,17 @@ export function makeOpenCode2Adapter(
         }
 
         const turnId = context.activeTurnId;
-        const isRootSession = sessionId === undefined || sessionId === context.openCodeSessionId;
-        // A related subagent child session is routed here for three reasons
-        // only: to bind it to the thread, to surface its approvals in the
-        // parent UI, and to drive its row on the Agents surface. Its content —
-        // text, reasoning, tools — is the child's own transcript and must not
-        // be projected into the parent's turn.
-        if (!isRootSession && sessionId !== undefined) {
+        // A related subagent child session is routed here only to bind it, to
+        // surface its approvals, and to drive its roster row. Its transcript —
+        // text, reasoning, tools — must never be projected into this turn.
+        if (sessionId !== undefined && sessionId !== context.openCodeSessionId) {
           if (isRequestBearingEvent(event)) {
             // Fall through: approvals belong to the parent UI.
           } else if (event.type === "session.created") {
             // Only a child of a session already bound to this thread is a
-            // subagent; the shared server hosts unrelated sessions whose
-            // creations must not enter this thread's roster.
+            // subagent; the shared server hosts unrelated sessions.
             if (event.data.parentID && context.relatedSessionIds.has(event.data.parentID)) {
               addRelatedSession(context, sessionId);
-              // `session.created` reports the model the child was actually
-              // created with, which is the only place it is stated up front.
               const model = event.data.model;
               yield* trackSubagent(
                 context,
@@ -1991,9 +1952,8 @@ export function makeOpenCode2Adapter(
             }
             return;
           } else if (event.type === "session.forked") {
-            // A fork continues this thread's own session (rollback). Bind it so
-            // its later events route, but keep it off the roster: it is this
-            // conversation, not an agent.
+            // A fork continues this thread's own session (rollback): bind it so
+            // its later events route, but keep it off the roster.
             if (context.relatedSessionIds.has(event.data.parentID)) {
               addRelatedSession(context, sessionId);
             }
@@ -2004,8 +1964,6 @@ export function makeOpenCode2Adapter(
             context.subagentsBySessionId.delete(sessionId);
             return;
           } else {
-            // Child lifecycle drives the roster row only; the parent turn must
-            // never be completed by a child's terminal frame.
             yield* handleSubagentLifecycleEvent(context, sessionId, event);
             return;
           }
