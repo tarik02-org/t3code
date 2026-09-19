@@ -54,6 +54,15 @@
       "t3CodeRange": ">=0.0.42",
       "recommendedRange": "=1.1.1",
       "ranges": [{ "range": "=1.1.1", "status": "supported" }]
+    },
+    {
+      "driver": "opencode2",
+      "t3CodeRange": ">=0.0.42",
+      "recommendedRange": ">=2.0.0 <3.0.0",
+      "ranges": [
+        { "range": ">=2.0.0 <3.0.0", "status": "supported" },
+        { "range": "<2.0.0", "status": "broken" }
+      ]
     }
   ],
   "currentModels": {
