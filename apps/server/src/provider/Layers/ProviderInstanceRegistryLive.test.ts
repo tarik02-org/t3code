@@ -57,6 +57,7 @@ import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
+import * as OpenCode2Runtime from "../opencode2Runtime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
 
@@ -595,6 +596,9 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
   // surfaced; that merged layer then provides `ServerConfig.layerTest`'s
   // `FileSystem` dep while keeping everything else surfaced to the test.
   const infraLayer = OpenCodeRuntimeLive.pipe(Layer.provideMerge(NodeServices.layer));
+  const infraLayer2 = OpenCode2Runtime.OpenCode2RuntimeLive.pipe(
+    Layer.provideMerge(NodeServices.layer),
+  );
   const testLayer = AntigravityInstallation.layer.pipe(
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), {
@@ -602,6 +606,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       }),
     ),
     Layer.provideMerge(infraLayer),
+    Layer.provideMerge(infraLayer2),
     Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
     Layer.provideMerge(ServerSettingsService.layerTest()),
     Layer.provideMerge(TestHttpClientLive),
