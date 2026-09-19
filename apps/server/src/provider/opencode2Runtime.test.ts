@@ -20,9 +20,9 @@ import {
   withOpenCode2Variant,
 } from "./opencode2Runtime.ts";
 
-// `server.info` (2.0.8) reports the server paths alongside the version.
+// `server.info` (2.0.8+) reports the server paths alongside the version.
 const HEALTH_BODY = {
-  version: "2.0.8",
+  version: "2.0.9",
   pid: 1234,
   urls: [] as Array<string>,
   paths: { tmp: "/tmp/opencode" },
@@ -71,7 +71,7 @@ it.effect("probes an external server at its configured URL", () =>
     NodeAssert.equal(exit._tag, "Success");
     if (exit._tag !== "Success") return;
     NodeAssert.equal(exit.value.url, "http://127.0.0.1:49374");
-    NodeAssert.equal(exit.value.version, "2.0.8");
+    NodeAssert.equal(exit.value.version, "2.0.9");
     NodeAssert.deepEqual(requestedUrls, ["http://127.0.0.1:49374/api/info"]);
   }),
 );

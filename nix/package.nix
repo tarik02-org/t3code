@@ -50,7 +50,7 @@ stdenv.mkDerivation (finalAttrs: {
       ;
     inherit pnpm;
     fetcherVersion = 4;
-    hash = "sha256-zBuIxuPbMRMKuXjXBkLiEgFHtgHkN2mcLVgmwr0YiQ4=";
+    hash = "sha256-7qrL1+ZqDFA+1L5mP2uXR7/lwowvpEctZ8v3DqGYM3I=";
   };
 
   postPatch = lib.optionalString (finalAttrs.version != sourceVersion) ''
