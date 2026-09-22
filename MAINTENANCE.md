@@ -24,7 +24,7 @@ fork feature and fix commits
 
 The PR intentionally starts conflicted so GitHub can run checks against the mirrored upstream base after its head is rebuilt. Manual work rebuilds the fork commits on that base. After checks pass, promotion pushes the first fork commit to a temporary base, retargets the PR there, and asks GitHub to rebase-merge the remaining reviewed commits. Only that complete staged result is force-pushed to `main`, guarded by a lease. The default branch never exposes incomplete history. GitHub assigns new commit IDs during the merge, so the resulting `main` tip differs from the reviewed PR head.
 
-Release-state files belong only to release preparation, not to the actualization stack. Dependency declarations stay with the feature or fix that needs them. Intermediate lockfiles and Nix hashes are consolidated by the release flow.
+Release-state commits belong only to release preparation, not to the actualization stack. The four releasable package manifests must still carry the last published fork stable CalVer after actualization; nightly versioning derives its next patch from the desktop manifest. Dependency declarations stay with the feature or fix that needs them. Intermediate lockfiles and Nix hashes are consolidated by the release flow.
 
 History above the upstream base is linear. `history/validated` must pass before a stable release can be promoted. It validates descent, not currency: `main` based on an older `upstream/main` commit is valid while an actualization is pending, and the check never gates on the mirror tip. Promotion separately requires the candidate to sit exactly on the base it declares, so a stale base is rejected there rather than here. Release tags preserve published chronology; no extra backup branch is required for normal work.
 
@@ -63,7 +63,7 @@ Actualization is a local rebuild followed by a Draft PR promoted into `main`.
    - drop behavior now supplied by upstream;
    - port provider, orchestration, projection, composer, sidebar, and terminal changes to current seams;
    - leave upstream documentation upstream.
-5. Remove the old release-state commit. Do not add a replacement release-state commit; stable release preparation owns package versions and generated lock/hash state.
+5. Remove the old release-state commit. In the fork packaging stratum, restore the last published fork stable CalVer in `apps/{desktop,server,web}/package.json` and `packages/contracts/package.json`; verify all four match and the nightly resolver derives the next CalVer patch. Do not add a replacement release-state commit. Stable release preparation owns the next stable version and generated lock/hash state.
 6. Run `range-diff`, the full fork delta review, focused checks for every conflict area, `history/validated`, and the Nix runtime build.
 7. Push the temporary branch.
 8. The sync workflow opens a Draft `actualization/incoming -> upstream/main` PR whose head starts as the current `main` snapshot.
