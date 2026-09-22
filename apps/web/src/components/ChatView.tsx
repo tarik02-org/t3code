@@ -59,6 +59,7 @@ import {
   submitCodexFeedback,
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
+import { parseCodexGoalCommand } from "@t3tools/client-runtime/state/threads";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -239,7 +240,11 @@ import {
   GitBranchIcon,
   Minimize2Icon,
   PaperclipIcon,
+  PauseIcon,
+  PlayIcon,
+  TargetIcon,
   WifiOffIcon,
+  XIcon,
 } from "lucide-react";
 import { cn, randomHex, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -272,6 +277,7 @@ import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { formatGoalStatusToastDescription, goalStatusToastTitle } from "../goalPresentation";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import {
   getComposerPromptInjectionState,
@@ -634,7 +640,7 @@ const TYPE_TO_FOCUS_INTERACTIVE_SELECTOR = [
   "button",
   "a[href]",
   "summary",
-  '[role="button"]',
+  '[role="button"]:not([data-thread-row])',
   '[role="checkbox"]',
   '[role="menuitem"]',
   '[role="option"]',
@@ -687,6 +693,7 @@ function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
   if (event.isComposing) return false;
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
+  if (event.key === " " && eventPathContainsSelector(event, "[data-thread-row]")) return false;
   if (!shouldRedirectInputToComposer(event)) return false;
 
   // The right-panel surface launcher claims its shortcut letters while it is
@@ -1072,7 +1079,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   );
 
   const splitTerminal = useCallback(() => {
-    if (!cwd) {
+    if (!cwd || !project) {
       return;
     }
     const terminalId = nextTerminalId(allocatableTerminalIds);
@@ -1083,6 +1090,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       input: {
         threadId,
         terminalId,
+        projectId: project.id,
         cwd,
         ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
         env: runtimeEnv,
@@ -1093,6 +1101,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     bumpFocusRequestId,
     cwd,
     effectiveWorktreePath,
+    project,
     runtimeEnv,
     storeSplitTerminal,
     threadId,
@@ -1100,7 +1109,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     openTerminal,
   ]);
   const splitTerminalVertical = useCallback(() => {
-    if (!cwd) {
+    if (!cwd || !project) {
       return;
     }
     const terminalId = nextTerminalId(allocatableTerminalIds);
@@ -1111,6 +1120,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       input: {
         threadId,
         terminalId,
+        projectId: project.id,
         cwd,
         ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
         env: runtimeEnv,
@@ -1122,6 +1132,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     cwd,
     effectiveWorktreePath,
     openTerminal,
+    project,
     runtimeEnv,
     storeSplitTerminalVertical,
     threadId,
@@ -1129,7 +1140,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   ]);
 
   const createNewTerminal = useCallback(() => {
-    if (!cwd) {
+    if (!cwd || !project) {
       return;
     }
     const terminalId = nextTerminalId(allocatableTerminalIds);
@@ -1140,6 +1151,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       input: {
         threadId,
         terminalId,
+        projectId: project.id,
         cwd,
         ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
         env: runtimeEnv,
@@ -1155,6 +1167,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     threadId,
     threadRef,
     openTerminal,
+    project,
   ]);
 
   const activateTerminal = useCallback(
@@ -1228,6 +1241,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         <ThreadTerminalDrawer
           threadRef={threadRef}
           threadId={threadId}
+          projectId={project.id}
           cwd={cwd}
           worktreePath={effectiveWorktreePath}
           runtimeEnv={runtimeEnv}
@@ -1398,6 +1412,7 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
       visible={visible}
       threadRef={threadRef}
       threadId={threadRef.threadId}
+      projectId={project.id}
       cwd={cwd}
       worktreePath={worktreePath}
       runtimeEnv={runtimeEnv}
@@ -1441,6 +1456,21 @@ type LocalThreadErrorEntry = {
 
 function chatActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
+}
+
+function showGoalStatusToast(goal: Thread["goal"]): void {
+  if (!goal) {
+    toastManager.add({
+      type: "info",
+      title: "No active goal",
+    });
+    return;
+  }
+  toastManager.add({
+    type: "info",
+    title: goalStatusToastTitle(goal),
+    description: formatGoalStatusToastDescription(goal),
+  });
 }
 
 const ENVIRONMENT_UNAVAILABLE_SEND_TOAST_TRAIL_SIZE = 3;
@@ -1511,6 +1541,9 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const requestThreadGoal = useAtomCommand(threadEnvironment.requestGoal, {
+    reportFailure: false,
+  });
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
     refresh: true,
@@ -1722,6 +1755,9 @@ export default function ChatView(props: ChatViewProps) {
   const [isConnecting, _setIsConnecting] = useState(false);
   const isRevertingCheckpoint = useComposerDraftStore((store) =>
     store.rewindingThreadKeys.has(routeThreadKey),
+  );
+  const [pendingGoalAction, setPendingGoalAction] = useState<"pause" | "resume" | "clear" | null>(
+    null,
   );
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
     null,
@@ -4056,6 +4092,7 @@ export default function ChatView(props: ChatViewProps) {
         input: {
           threadId: activeThreadId,
           terminalId,
+          projectId: activeProject.id,
           cwd: cwdForOpen,
           ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
           env: projectScriptRuntimeEnv({
@@ -4102,6 +4139,7 @@ export default function ChatView(props: ChatViewProps) {
         input: {
           threadId: activeThreadId,
           terminalId,
+          projectId: activeProject.id,
           cwd: cwdForOpen,
           ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
           env: projectScriptRuntimeEnv({
@@ -4141,6 +4179,7 @@ export default function ChatView(props: ChatViewProps) {
       input: {
         threadId: activeThreadId,
         terminalId,
+        projectId: activeProject.id,
         cwd: cwdForOpen,
         ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
         env: projectScriptRuntimeEnv({
@@ -4244,6 +4283,7 @@ export default function ChatView(props: ChatViewProps) {
         ? {
             threadId: activeThreadId,
             terminalId: targetTerminalId,
+            projectId: activeProject.id,
             cwd: targetCwd,
             ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
             env: runtimeEnv,
@@ -4253,6 +4293,7 @@ export default function ChatView(props: ChatViewProps) {
         : {
             threadId: activeThreadId,
             terminalId: targetTerminalId,
+            projectId: activeProject.id,
             cwd: targetCwd,
             ...(targetWorktreePath !== null ? { worktreePath: targetWorktreePath } : {}),
             env: runtimeEnv,
@@ -4896,6 +4937,7 @@ export default function ChatView(props: ChatViewProps) {
       input: {
         threadId: activeThreadId,
         terminalId,
+        projectId: activeProject.id,
         cwd,
         ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
         env: projectScriptRuntimeEnv({
@@ -4935,6 +4977,7 @@ export default function ChatView(props: ChatViewProps) {
         input: {
           threadId: activeThreadId,
           terminalId,
+          projectId: activeProject.id,
           cwd,
           ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
           env: projectScriptRuntimeEnv({
@@ -5738,6 +5781,15 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     if (!activeThread?.id || terminalUiState.terminalOpen) return;
     const frame = window.requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLElement &&
+        activeElement.isConnected &&
+        activeElement.matches(":focus-visible") &&
+        activeElement.closest("[data-thread-item]") !== null
+      ) {
+        return;
+      }
       focusComposer();
     });
     return () => {
@@ -6363,6 +6415,134 @@ export default function ChatView(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "clear") => {
+      if (
+        !isServerThread ||
+        !activeThread ||
+        pendingGoalAction !== null ||
+        isSendBusy ||
+        isConnecting ||
+        threadDetailLoading ||
+        activeEnvironmentUnavailable
+      ) {
+        return;
+      }
+      setPendingGoalAction(action);
+      setThreadError(activeThread.id, null);
+      const result = await requestThreadGoal({
+        environmentId,
+        input: {
+          threadId: activeThread.id,
+          request: { kind: "control", action },
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : `Failed to ${action} Goal.`,
+        );
+      }
+      setPendingGoalAction(null);
+    },
+    [
+      activeEnvironmentUnavailable,
+      activeThread,
+      environmentId,
+      isConnecting,
+      isSendBusy,
+      isServerThread,
+      pendingGoalAction,
+      requestThreadGoal,
+      setThreadError,
+      threadDetailLoading,
+    ],
+  );
+  const goalBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    const goal = activeThread?.goal;
+    if (!goal || !isServerThread) {
+      return null;
+    }
+    const description = formatGoalStatusToastDescription(goal);
+    const primaryAction = goal.status === "active" ? "pause" : "resume";
+    const controlsDisabled =
+      pendingGoalAction !== null ||
+      isSendBusy ||
+      isConnecting ||
+      threadDetailLoading ||
+      activeEnvironmentUnavailable;
+    return {
+      id: `goal:${activeThread.id}`,
+      variant: "info",
+      icon: <TargetIcon />,
+      title: goalStatusToastTitle(goal),
+      description: (
+        <Tooltip>
+          <TooltipTrigger render={<span className="line-clamp-2">{description}</span>} />
+          <TooltipPopup side="top" className="max-w-96">
+            {description}
+          </TooltipPopup>
+        </Tooltip>
+      ),
+      actions: (
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="outline"
+                  aria-label={`${primaryAction === "pause" ? "Pause" : "Resume"} Goal`}
+                  disabled={controlsDisabled}
+                  onClick={() => void handleGoalControl(primaryAction)}
+                />
+              }
+            >
+              {primaryAction === "pause" ? <PauseIcon /> : <PlayIcon />}
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {pendingGoalAction === primaryAction
+                ? primaryAction === "pause"
+                  ? "Pausing Goal..."
+                  : "Resuming Goal..."
+                : primaryAction === "pause"
+                  ? "Pause Goal"
+                  : "Resume Goal"}
+            </TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Clear Goal"
+                  disabled={controlsDisabled}
+                  onClick={() => void handleGoalControl("clear")}
+                />
+              }
+            >
+              <XIcon />
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {pendingGoalAction === "clear" ? "Clearing Goal..." : "Clear Goal"}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
+      ),
+    };
+  }, [
+    activeEnvironmentUnavailable,
+    activeThread?.goal,
+    activeThread?.id,
+    handleGoalControl,
+    isConnecting,
+    isSendBusy,
+    isServerThread,
+    pendingGoalAction,
+    threadDetailLoading,
+  ]);
   // Session-scoped dismissals, one key per (thread, snapshot). A set rather
   // than a single slot so dismissing the banner on one thread does not
   // resurface it on another thread dismissed earlier.
@@ -6498,6 +6678,7 @@ export default function ChatView(props: ChatViewProps) {
     // The user asked for this one, so it leads the notice tier instead of trailing it.
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
+    const goalItems = goalBannerItem === null ? [] : [goalBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
@@ -6508,6 +6689,7 @@ export default function ChatView(props: ChatViewProps) {
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
+        ...goalItems,
       ];
     }
     return [
@@ -6557,11 +6739,13 @@ export default function ChatView(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
+      ...goalItems,
     ];
   }, [
     activeBranchMismatchKey,
     backgroundLivenessBannerItem,
     feedbackBannerItems,
+    goalBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
@@ -7518,6 +7702,137 @@ export default function ChatView(props: ChatViewProps) {
         feedbackUploadsInFlightRef.current.delete(routeThreadKey);
       });
 
+      return;
+    }
+    const goalSlashCommand =
+      ctxSelectedProvider === "codex" &&
+      composerImages.length === 0 &&
+      composerFiles.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0
+        ? parseCodexGoalCommand(trimmed)
+        : null;
+    if (goalSlashCommand) {
+      if (goalSlashCommand.kind === "invalid") {
+        setThreadError(activeThread.id, goalSlashCommand.message);
+        return;
+      }
+      if (!activeProject) {
+        setThreadError(activeThread.id, "Choose a project before using /goal.");
+        return;
+      }
+      if (!isServerThread && goalSlashCommand.kind !== "set") {
+        setThreadError(activeThread.id, "Enter a goal objective to start a thread with /goal.");
+        return;
+      }
+
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      setThreadError(activeThread.id, null);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+
+      const createdAt = new Date().toISOString();
+      const title =
+        goalSlashCommand.kind === "set" ? truncate(goalSlashCommand.objective) : activeThread.title;
+      const threadCreateModelSelection = createModelSelection(
+        ctxSelectedModelSelection.instanceId,
+        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        ctxSelectedModelSelection.options,
+      );
+      let failure: AtomCommandResult<unknown, unknown> | null = null;
+
+      if (!isServerThread) {
+        const createResult = await createThread({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            projectId: activeProject.id,
+            title,
+            modelSelection: threadCreateModelSelection,
+            runtimeMode,
+            interactionMode: sendInteractionMode,
+            branch: activeThread.branch,
+            worktreePath: activeThread.worktreePath,
+            createdAt: activeThread.createdAt,
+          },
+        });
+        if (createResult._tag === "Failure") {
+          failure = createResult;
+        }
+      } else if (activeThread.messages.length === 0 && goalSlashCommand.kind === "set") {
+        const titleResult = await updateThreadMetadata({
+          environmentId,
+          input: { threadId: activeThread.id, title },
+        });
+        if (titleResult._tag === "Failure") {
+          failure = titleResult;
+        }
+      }
+
+      if (failure === null && isServerThread) {
+        const settingsResult = await persistThreadSettingsForNextTurn({
+          threadId: activeThread.id,
+          createdAt,
+          ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
+          runtimeMode,
+          interactionMode: sendInteractionMode,
+        });
+        if (settingsResult._tag === "Failure") {
+          failure = settingsResult;
+        }
+      }
+
+      if (failure === null) {
+        const goalResult = await requestThreadGoal({
+          environmentId,
+          input: {
+            threadId: activeThread.id,
+            request: goalSlashCommand,
+            createdAt,
+          },
+        });
+        if (goalResult._tag === "Failure") {
+          failure = goalResult;
+        }
+      }
+
+      if (failure === null) {
+        if (goalSlashCommand.kind === "status") {
+          showGoalStatusToast(activeThread.goal);
+        }
+        if (!isServerThread) {
+          await waitForStartedServerThread(
+            scopeThreadRef(activeThread.environmentId, activeThread.id),
+          );
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: {
+              environmentId: activeThread.environmentId,
+              threadId: activeThread.id,
+            },
+          });
+        }
+      } else {
+        promptRef.current = promptForSend;
+        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+          prompt: promptForSend,
+          detectTrigger: true,
+        });
+        if (!isAtomCommandInterrupted(failure)) {
+          const error = squashAtomCommandFailure(failure);
+          setThreadError(
+            activeThread.id,
+            error instanceof Error ? error.message : "Failed to send goal command.",
+          );
+        }
+      }
+      sendInFlightRef.current = false;
+      resetLocalDispatch();
       return;
     }
     if (
