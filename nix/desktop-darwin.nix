@@ -73,9 +73,12 @@ stdenvNoCC.mkDerivation {
     makeWrapper "$app/Contents/MacOS/Electron" "$out/bin/t3code" \
       --set T3CODE_DISABLE_AUTO_UPDATE 1 \
       --run 'export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/''${USER:-$(id -un)}/bin:$PATH"'
-    /usr/bin/codesign --force --deep --sign - "$app"
-
     runHook postInstall
+  '';
+
+  # Fixup rewrites executable script shebangs inside the sealed resources.
+  postFixup = ''
+    /usr/bin/codesign --force --deep --sign - "$out/Applications/T3 Code.app"
   '';
 
   meta = {
