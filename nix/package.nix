@@ -77,6 +77,7 @@ stdenv.mkDerivation (finalAttrs: {
   buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ libsecret ];
 
   dontPatchELF = true;
+  dontStrip = true;
   noAuditTmpdir = true;
   SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
