@@ -448,6 +448,10 @@ export const layerWithOptions = (
       const isMcpCredentialReserved = (threadId: ThreadId, mcpCredentialId: string) =>
         (mcpCredentialReservations.get(mcpReservationKey(threadId, mcpCredentialId)) ?? 0) > 0;
       const mcpPrepareLock = yield* KeyedLock.make<ThreadId>();
+      // A provider switch can leave both processes alive with their original MCP clients.
+      const mcpConfigsByProvider = new Map<string, McpProviderSession.McpProviderSessionConfig>();
+      const mcpConfigKey = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+        `${threadId}\0${providerInstanceId}`;
       /**
        * Resolves (or mints) the thread's MCP credential and returns it with a
        * reservation held; the caller must drop the reservation exactly once.
@@ -479,7 +483,19 @@ export const layerWithOptions = (
                 >(["orchestration", "worktree", "pull-requests"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
-                const existing = McpProviderSession.readMcpProviderSession(threadId);
+                // Permission changes apply to retained clients too, not just the next provider.
+                for (const [key, config] of mcpConfigsByProvider) {
+                  if (
+                    config.threadId === threadId &&
+                    (config.browserToolsAvailable !== browserToolsAvailable ||
+                      (config.capabilities?.has("device") === true) !== deviceToolsAvailable)
+                  ) {
+                    yield* mcpSessionRegistry.revokeProviderSession(config.providerSessionId);
+                    mcpConfigsByProvider.delete(key);
+                  }
+                }
+                const configKey = mcpConfigKey(threadId, providerInstanceId);
+                const existing = mcpConfigsByProvider.get(configKey);
                 if (existing !== undefined) {
                   // Reserve before the async resolve so a release cannot
                   // revoke the credential between validation and reservation.
@@ -505,17 +521,19 @@ export const layerWithOptions = (
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
                     resolved.capabilities.has("device") === deviceToolsAvailable
                   ) {
+                    McpProviderSession.setMcpProviderSession(existing);
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
+                  yield* mcpSessionRegistry.revokeProviderSession(existing.providerSessionId);
                 }
-                yield* mcpSessionRegistry.revokeThread(threadId);
                 const credential = yield* mcpSessionRegistry.issue({
                   threadId,
                   providerInstanceId,
                   browserToolsAvailable,
                   capabilities,
                 });
+                mcpConfigsByProvider.set(configKey, credential.config);
                 McpProviderSession.setMcpProviderSession(credential.config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
@@ -529,16 +547,24 @@ export const layerWithOptions = (
        */
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
-          ? mcpSessionRegistry
-              .revokeThread(threadId)
-              .pipe(
-                Effect.tap(() =>
-                  Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
-                ),
-              )
+          ? mcpSessionRegistry.revokeThread(threadId).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  for (const [key, config] of mcpConfigsByProvider) {
+                    if (config.threadId === threadId) mcpConfigsByProvider.delete(key);
+                  }
+                  McpProviderSession.clearMcpProviderSession(threadId);
+                }),
+              ),
+            )
           : mcpSessionRegistry.revokeProviderSession(mcpCredentialId).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
+                  for (const [key, config] of mcpConfigsByProvider) {
+                    if (config.providerSessionId === mcpCredentialId) {
+                      mcpConfigsByProvider.delete(key);
+                    }
+                  }
                   if (
                     McpProviderSession.readMcpProviderSession(threadId)?.providerSessionId ===
                     mcpCredentialId
@@ -1010,8 +1036,7 @@ export const layerWithOptions = (
                           Array.from(current.values()).some(
                             (other) =>
                               other !== entry &&
-                              (other.attachedThreadIds.has(threadId) ||
-                                other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId),
+                              other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId,
                           );
                         return heldElsewhere
                           ? Effect.void
@@ -1854,6 +1879,10 @@ export const layerWithOptions = (
                   threadId: input.threadId,
                   providerInstanceId: existing.runtime.instanceId,
                 });
+                const mcpConfig = mcpConfigsByProvider.get(
+                  mcpConfigKey(input.threadId, existing.runtime.instanceId),
+                );
+                if (mcpConfig !== undefined) McpProviderSession.setMcpProviderSession(mcpConfig);
                 yield* touchActivity(input.providerSessionId);
                 return existing.exposedRuntime;
               }
