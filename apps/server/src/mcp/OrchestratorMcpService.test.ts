@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  AuthSessionId,
   EnvironmentId,
   NodeId,
   ProjectId,
@@ -21,7 +22,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
-import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import type { McpExternalInvocationScope, McpInvocationScope } from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
 describe("OrchestratorMcpService", () => {
@@ -1035,5 +1036,100 @@ describe("OrchestratorMcpService provider resolution", () => {
           }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
         }
       }),
+  );
+});
+
+describe("OrchestratorMcpService with an external caller", () => {
+  const projectId = ProjectId.make("project:external");
+  const threadId = ThreadId.make("thread:external-target");
+  const external: McpExternalInvocationScope = {
+    kind: "external",
+    environmentId: EnvironmentId.make("environment:external"),
+    sessionId: AuthSessionId.make("session:gateway"),
+  };
+  const projection = {
+    thread: {
+      id: threadId,
+      projectId,
+      deletedAt: null,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+    },
+  } as unknown as OrchestrationV2ThreadProjection;
+
+  const serviceWith = (
+    threadManagement: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
+  ) =>
+    OrchestratorMcpService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)(threadManagement),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        ),
+      ),
+    );
+
+  it.effect("sends as another agent without a sender thread", () =>
+    Effect.gen(function* () {
+      const sent: Array<ThreadManagementService.ThreadManagementSendInput> = [];
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const result = yield* service.sendToThread(external, {
+          threadId,
+          message: "hello from another environment",
+          clientRequestId: "request-1",
+        });
+        assert.equal(result.threadId, threadId);
+      }).pipe(
+        Effect.provide(
+          serviceWith({
+            getThreadShell: () => Effect.succeed(projection.thread as never),
+            getProjectThreadRecords: () => Effect.succeed(projection as never),
+            sendToThread: (input) => {
+              sent.push(input);
+              return Effect.succeed({
+                run: { id: RunId.make("run:external"), status: "running" },
+                delivery: "started",
+              } as never);
+            },
+          }),
+        ),
+      );
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0]!.projectId, projectId);
+      assert.equal(sent[0]!.createdBy, "agent");
+      assert.equal(sent[0]!.creationSource, "mcp");
+      assert.isUndefined(sent[0]!.senderThreadId);
+      assert.include(String(sent[0]!.commandId), "external%3Asession%3Agateway");
+    }),
+  );
+
+  it.effect("lists threads only in the project it names", () =>
+    Effect.gen(function* () {
+      const listed: Array<ProjectId> = [];
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const missing = yield* service.listThreads(external, {}).pipe(Effect.flip);
+        assert.equal(missing.code, "invalid_request");
+        const result = yield* service.listThreads(external, { projectId });
+        assert.equal(result.projectId, projectId);
+        assert.isNull(result.currentThreadId);
+      }).pipe(
+        Effect.provide(
+          serviceWith({
+            listProjectThreads: (input) => {
+              listed.push(input.projectId);
+              return Effect.succeed([]);
+            },
+          }),
+        ),
+      );
+      assert.deepEqual(listed, [projectId]);
+    }),
   );
 });

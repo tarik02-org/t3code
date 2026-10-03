@@ -54,6 +54,24 @@ The MCP HTTP server resolves the bearer token and supplies the resulting
 `McpInvocationScope` to tool handlers. Orchestration handlers additionally
 check the `orchestration` capability before reading or mutating state.
 
+### External callers
+
+When the bearer token is not a registry credential, the endpoint also accepts
+an environment access token that grants `orchestration:operate`, such as a
+gateway or another machine's agent holds after pairing. Only the
+`Authorization` header authenticates this way; browser session cookies are
+stripped first, so a page that can reach the server cannot drive its agents.
+
+An external caller has no calling thread. It gets the same reach as a paired
+client over the WebSocket: any project and thread in the environment, no
+liveness or mode-escalation checks, and no capability set. Tools built around
+"this thread" (delegation, `create_threads`, worktree, preview, device, pull
+request, fork, configure, identity) refuse it. Its messages are written as
+`createdBy: "agent"`, `creationSource: "mcp"` without a `senderThreadId`, so
+clients show them as sent by another agent without a link. `tools/list` is
+not filtered per credential; tools that serve external callers carry
+`_meta: { "t3code/externalCaller": true }` so a relay can list only those.
+
 ## Provider Injection
 
 ### Codex V2

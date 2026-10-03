@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
+import * as EnvironmentAuth from "../../../auth/EnvironmentAuth.ts";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -74,6 +75,7 @@ it.effect("production mcp layer lists worktree tools over http", () =>
             getEnvironmentId: Effect.succeed("environment-scratch" as never),
           }),
         ),
+        Layer.provide(Layer.mock(EnvironmentAuth.EnvironmentAuth)({})),
         Layer.provide(PreviewAutomationBroker.layer),
         Layer.provide(StubServicesLive),
         Layer.build,

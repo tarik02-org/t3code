@@ -55,7 +55,8 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   ],
 })
   .annotate(Tool.Title, "Organize a thread")
-  .annotate(Tool.Destructive, true);
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const queueTarget = { threadId: Schema.optional(ThreadId), queuedRunId: RunId };
 const commandTool = {
@@ -88,7 +89,8 @@ const QueueListTool = Tool.make("t3_queue_list", {
   }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const QueueReadTool = Tool.make("t3_queue_read", {
   ...commandTool,
   description: "Read up to 16,000 characters of a queued message in the calling project.",
@@ -96,7 +98,8 @@ const QueueReadTool = Tool.make("t3_queue_read", {
   success: queueEntry,
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const QueueEditTool = Tool.make("t3_queue_edit", {
   ...commandTool,
   description:
@@ -105,23 +108,31 @@ const QueueEditTool = Tool.make("t3_queue_edit", {
     ...queueTarget,
     text: Schema.String.check(Schema.isMaxLength(100000)),
   }),
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const QueueCancelTool = Tool.make("t3_queue_cancel", {
   ...commandTool,
   description: "Cancel a queued run using the existing queue command.",
   parameters: Schema.Struct(queueTarget),
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const QueueReorderTool = Tool.make("t3_queue_reorder", {
   ...commandTool,
   description: "Move a queued run before another queued run, or to the end with beforeRunId=null.",
   parameters: Schema.Struct({ ...queueTarget, beforeRunId: Schema.NullOr(RunId) }),
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
   ...commandTool,
   description:
     "Deliver a queued message as steering to the specified active run. Existing provider and run-state rules apply.",
   parameters: Schema.Struct({ ...queueTarget, targetRunId: RunId }),
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const requestTarget = { threadId: Schema.optional(ThreadId), requestId: RuntimeRequestId };
 const question = Schema.Struct({
@@ -151,7 +162,8 @@ const PendingRequestListTool = Tool.make("t3_pending_request_list", {
   success: Schema.Struct({ requestIds: Schema.Array(RuntimeRequestId) }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
   ...commandTool,
   description:
@@ -160,7 +172,8 @@ const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
   success: pendingRequest,
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
   ...commandTool,
   description:
@@ -168,7 +181,8 @@ const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
   parameters: Schema.Struct({ ...requestTarget, answers: ProviderUserInputAnswers }),
 })
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
   ...commandTool,
@@ -183,7 +197,8 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
   }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
@@ -228,7 +243,8 @@ const ThreadTransfersTool = Tool.make("t3_thread_transfers", {
   }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ThreadSearchTool = Tool.make("t3_thread_search", {
   ...commandTool,
@@ -239,7 +255,8 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
   dependencies: [...commandTool.dependencies, ThreadSearch.ThreadSearch],
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   ...commandTool,

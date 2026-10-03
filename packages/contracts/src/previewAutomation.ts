@@ -642,11 +642,12 @@ export const PreviewAutomationResponse = Schema.Struct({
 });
 export type PreviewAutomationResponse = typeof PreviewAutomationResponse.Type;
 
+// External MCP callers have no thread or provider session, so only the environment is always known.
 const McpCapabilityErrorFields = {
   environmentId: EnvironmentId,
-  threadId: ThreadId,
-  providerSessionId: TrimmedNonEmptyString,
-  providerInstanceId: ProviderInstanceId,
+  threadId: Schema.optional(ThreadId),
+  providerSessionId: Schema.optional(TrimmedNonEmptyString),
+  providerInstanceId: Schema.optional(ProviderInstanceId),
 };
 
 /** Agents read this message, so it names the next step and not only the failure. */

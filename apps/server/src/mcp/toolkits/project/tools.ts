@@ -54,7 +54,8 @@ const ProjectListTool = Tool.make("t3_project_list", {
   }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ProjectReadTool = Tool.make("t3_project_read", {
   ...shared,
   description:
@@ -62,7 +63,8 @@ const ProjectReadTool = Tool.make("t3_project_read", {
   parameters: Schema.Struct({ projectId: ProjectId }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ProjectCreateTool = Tool.make("t3_project_create", {
   ...shared,
   description:
@@ -73,19 +75,25 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
   }),
   success: Schema.Struct({ ...Project.fields, commitError: Schema.optional(Schema.String) }),
   dependencies: [...shared.dependencies, ManagedProjectFolders.ManagedProjectFolders],
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
   description:
     "Update a registered project's settings. Omitted fields are preserved. Uses the same project service as the app.",
   parameters: Schema.Struct({ projectId: ProjectId, ...ProjectUpdatePayload.fields }),
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
   ...shared,
   description:
     "Delete a project using the existing project deletion lifecycle. Nonempty projects require force=true. This does not delete the repository directory or promise a deleted-thread count.",
   parameters: Schema.Struct({ projectId: ProjectId, force: Schema.optionalKey(Schema.Boolean) }),
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ProjectCloneTool = Tool.make("t3_project_clone", {
   ...shared,
   description:
@@ -98,11 +106,12 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
   ],
 })
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    'Create an ordinary TOP-LEVEL thread with an explicit workspace binding before its agent starts. Use this when the user requests independent work, a new thread, or a PR stack in its own worktree; use delegate_task for child subagents. Set workspaceStrategy to {type:"worktree",baseRef:"parent-branch",branch:"new-branch",startFromOrigin:false} for a new worktree based on local commits, or {type:"existing_worktree",worktreePath:"/absolute/path",branch:"existing-branch"} to use an existing checkout. For upstream commits, set startFromOrigin:true. Omitted workspaceStrategy means the project root, NOT the caller\'s worktree. Omit projectId/modelSelection/modes to inherit those settings. Set scratch:true instead of projectId for a thread without a project: it runs in a fresh folder of its own, outside any repository. Put the task in message. Do not ask the agent to create its own worktree via shell: that does not update the thread binding. Each call creates a new launch with no retry key; retain threadId and use t3_thread_read/t3_thread_wait to follow preparation. After errors or lost responses, inspect t3_thread_list before retrying. Attachments must be pending uploads. Requires a full-access/default caller.',
+    'Create an ordinary TOP-LEVEL thread with an explicit workspace binding before its agent starts. Use this when the user requests independent work, a new thread, or a PR stack in its own worktree; use delegate_task for child subagents. Set workspaceStrategy to {type:"worktree",baseRef:"parent-branch",branch:"new-branch",startFromOrigin:false} for a new worktree based on local commits, or {type:"existing_worktree",worktreePath:"/absolute/path",branch:"existing-branch"} to use an existing checkout. For upstream commits, set startFromOrigin:true. Omitted workspaceStrategy means the project root, NOT the caller\'s worktree. Omit projectId/modelSelection/modes to inherit those settings. Set scratch:true instead of projectId for a thread without a project: it runs in a fresh folder of its own, outside any repository. Put the task in message. Do not ask the agent to create its own worktree via shell: that does not update the thread binding. Each call creates a new launch with no retry key; retain threadId and use t3_thread_read/t3_thread_wait to follow preparation. After errors or lost responses, inspect t3_thread_list before retrying. Attachments must be pending uploads. Requires a full-access/default caller. Callers outside T3 Code pass projectId or scratch:true; modelSelection then defaults to the project default model and modes to full-access/default.',
   parameters: Schema.Struct({
     projectId: Schema.optional(ProjectId),
     scratch: Schema.optional(
@@ -145,7 +154,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ],
 })
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 export const ProjectToolkit = Toolkit.make(
   ThreadLaunchTool,

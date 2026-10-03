@@ -281,6 +281,12 @@ export const OrchestratorMcpThreadStatus = Schema.Union([
 export type OrchestratorMcpThreadStatus = typeof OrchestratorMcpThreadStatus.Type;
 
 export const OrchestratorMcpThreadListInput = Schema.Struct({
+  projectId: Schema.optional(
+    ProjectId.annotate({
+      description:
+        "Project to list. Required for callers outside T3 Code; an agent thread lists its own project.",
+    }),
+  ),
   statuses: Schema.optional(
     Schema.Array(OrchestratorMcpThreadStatus).check(Schema.isMaxLength(10)),
   ),
@@ -316,7 +322,7 @@ export type OrchestratorMcpThreadListItem = typeof OrchestratorMcpThreadListItem
 
 export const OrchestratorMcpThreadListResult = Schema.Struct({
   projectId: ProjectId,
-  currentThreadId: ThreadId,
+  currentThreadId: Schema.NullOr(ThreadId),
   threads: Schema.Array(OrchestratorMcpThreadListItem),
   nextCursor: Schema.NullOr(NonNegativeInt),
   total: NonNegativeInt,

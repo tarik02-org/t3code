@@ -4,7 +4,7 @@ import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { readCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
+import { readEnvironmentCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
 import { EnvironmentToolkit } from "./tools.ts";
 
 export function preferences(settings: ServerSettings) {
@@ -28,9 +28,11 @@ export function preferences(settings: ServerSettings) {
     },
   };
 }
-const access = (writable = false) =>
+const access = <C extends { readonly scope: McpInvocationContext.McpCaller }, E, R>(
+  readContext: Effect.Effect<C, E, R>,
+) =>
   Effect.gen(function* () {
-    const context = yield* writable ? readMutationCaller() : readCaller();
+    const context = yield* readContext;
     const environment = yield* Environment.ServerEnvironment;
     const descriptor = yield* environment.getDescriptor;
     if (descriptor.environmentId !== context.scope.environmentId)
@@ -43,7 +45,7 @@ const access = (writable = false) =>
 export const EnvironmentHandlersLive = EnvironmentToolkit.toLayer({
   t3_identity: () =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       return {
         environmentId: scope.environmentId,
         threadId: scope.threadId,
@@ -52,7 +54,7 @@ export const EnvironmentHandlersLive = EnvironmentToolkit.toLayer({
     }),
   t3_environment_read: () =>
     Effect.gen(function* () {
-      const { descriptor, settings } = yield* access();
+      const { descriptor, settings } = yield* access(readEnvironmentCaller());
       const current = yield* settings.getSettings.pipe(Effect.mapError(unavailable));
       return {
         environmentId: descriptor.environmentId,
@@ -64,12 +66,12 @@ export const EnvironmentHandlersLive = EnvironmentToolkit.toLayer({
     }),
   t3_environment_preferences_update: (patch) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
       return yield* executor.withLock(
         scope.threadId,
         Effect.gen(function* () {
-          const { caller, settings } = yield* access(true);
+          const { caller, settings } = yield* access(readMutationCaller());
           if (
             caller.archivedAt !== null ||
             caller.runtimeMode !== "full-access" ||

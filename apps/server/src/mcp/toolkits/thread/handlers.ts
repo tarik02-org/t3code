@@ -10,9 +10,10 @@ import {
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   newCommandId,
-  readCaller,
+  readEnvironmentCaller,
   readMutationCaller,
   readThread,
   readWritableThread,
@@ -108,13 +109,19 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
     }),
   t3_thread_search: (input) =>
     Effect.gen(function* () {
-      const { caller } = yield* readCaller();
+      const { caller } = yield* readEnvironmentCaller();
       const threadSearch = yield* ThreadSearch.ThreadSearch;
       const result = yield* threadSearch.search(input).pipe(Effect.mapError(unavailable));
-      return { matches: result.matches.filter((match) => match.projectId === caller.projectId) };
+      return {
+        matches:
+          caller === null
+            ? result.matches
+            : result.matches.filter((match) => match.projectId === caller.projectId),
+      };
     }),
   t3_thread_fork: (input) =>
     Effect.gen(function* () {
+      yield* McpInvocationContext.requireThreadCaller;
       const { threads, projection } = yield* readWritableThread();
       const commandId = yield* newCommandId();
       const targetThreadId = ThreadId.make(`${commandId}:fork`);
@@ -135,6 +142,7 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
   t3_thread_merge_back: (input) =>
     Effect.gen(function* () {
       const { threads, caller } = yield* readWritableThread(input.targetThreadId);
+      if (caller === null) return yield* McpInvocationContext.threadCallerRequired();
       const result = yield* threads
         .dispatch({
           type: "thread.merge_back",
@@ -176,6 +184,7 @@ export const ThreadToolkitHandlersLive = ThreadToolkit.toLayer({
     }),
   t3_thread_configure: (input) =>
     Effect.gen(function* () {
+      yield* McpInvocationContext.requireThreadCaller;
       const {
         threads,
         projection: { thread },

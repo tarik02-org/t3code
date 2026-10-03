@@ -69,7 +69,13 @@ import {
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
-import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import {
+  type McpCaller,
+  type McpInvocationScope,
+  callerRequestKey,
+  isExternalCaller,
+  threadCallerRequired,
+} from "./McpInvocationContext.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -113,34 +119,34 @@ export interface OrchestratorMcpServiceShape {
     input: OrchestratorMcpScheduleTaskInput,
   ) => Effect.Effect<OrchestratorMcpScheduleTaskResult, OrchestratorMcpFailure>;
   readonly listScheduledTasks: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
   ) => Effect.Effect<OrchestratorMcpListScheduledTasksResult, OrchestratorMcpFailure>;
   readonly updateScheduledTask: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpUpdateScheduledTaskInput,
   ) => Effect.Effect<OrchestratorMcpScheduleTaskResult, OrchestratorMcpFailure>;
   readonly deleteScheduledTask: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpDeleteScheduledTaskInput,
   ) => Effect.Effect<OrchestratorMcpDeleteScheduledTaskResult, OrchestratorMcpFailure>;
   readonly listThreads: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpThreadListInput,
   ) => Effect.Effect<OrchestratorMcpThreadListResult, OrchestratorMcpFailure>;
   readonly readThread: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpThreadReadInput,
   ) => Effect.Effect<OrchestratorMcpThreadReadResult, OrchestratorMcpFailure>;
   readonly sendToThread: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpThreadSendInput,
   ) => Effect.Effect<OrchestratorMcpThreadSendResult, OrchestratorMcpFailure>;
   readonly waitForThread: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpThreadWaitInput,
   ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>;
   readonly interruptThread: (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: OrchestratorMcpThreadInterruptInput,
   ) => Effect.Effect<OrchestratorMcpThreadInterruptResult, OrchestratorMcpFailure>;
 }
@@ -473,7 +479,7 @@ function stablePart(value: string): string {
 }
 
 function stableCommandId(input: {
-  readonly scope: McpInvocationScope;
+  readonly scope: McpCaller;
   readonly requestKey: string;
   readonly operation: string;
   readonly index?: number;
@@ -482,7 +488,7 @@ function stableCommandId(input: {
     [
       "command",
       "mcp",
-      stablePart(input.scope.providerSessionId),
+      stablePart(callerRequestKey(input.scope)),
       stablePart(input.operation),
       stablePart(input.requestKey),
       ...(input.index === undefined ? [] : [String(input.index)]),
@@ -491,7 +497,7 @@ function stableCommandId(input: {
 }
 
 function stableThreadId(input: {
-  readonly scope: McpInvocationScope;
+  readonly scope: McpCaller;
   readonly requestKey: string;
   readonly index: number;
 }): ThreadId {
@@ -499,7 +505,7 @@ function stableThreadId(input: {
     [
       "thread",
       "mcp",
-      stablePart(input.scope.providerSessionId),
+      stablePart(callerRequestKey(input.scope)),
       stablePart(input.requestKey),
       String(input.index),
     ].join(":"),
@@ -507,7 +513,7 @@ function stableThreadId(input: {
 }
 
 function stableMessageId(input: {
-  readonly scope: McpInvocationScope;
+  readonly scope: McpCaller;
   readonly requestKey: string;
   readonly index: number;
 }): MessageId {
@@ -515,7 +521,7 @@ function stableMessageId(input: {
     [
       "message",
       "mcp",
-      stablePart(input.scope.providerSessionId),
+      stablePart(callerRequestKey(input.scope)),
       stablePart(input.requestKey),
       String(input.index),
     ].join(":"),
@@ -523,7 +529,7 @@ function stableMessageId(input: {
 }
 
 function stableOperationMessageId(input: {
-  readonly scope: McpInvocationScope;
+  readonly scope: McpCaller;
   readonly requestKey: string;
   readonly operation: string;
 }): MessageId {
@@ -531,7 +537,7 @@ function stableOperationMessageId(input: {
     [
       "message",
       "mcp",
-      stablePart(input.scope.providerSessionId),
+      stablePart(callerRequestKey(input.scope)),
       stablePart(input.operation),
       stablePart(input.requestKey),
     ].join(":"),
@@ -757,8 +763,9 @@ const make = Effect.gen(function* () {
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
 
-  const requireCapability = (scope: McpInvocationScope) =>
-    scope.capabilities.has("orchestration")
+  // External callers authenticated with `orchestration:operate`, which is this capability.
+  const requireCapability = (scope: McpCaller) =>
+    isExternalCaller(scope) || scope.capabilities.has("orchestration")
       ? Effect.void
       : Effect.fail(
           failure(
@@ -813,9 +820,33 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(threadManagementFailure));
 
-  const loadScopedThread = (scope: McpInvocationScope, threadId: ThreadId) =>
+  /** Any live thread in the environment, for an external caller that has no calling project. */
+  const loadEnvironmentThread = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const shell = yield* threadManagement
+        .getThreadShell(threadId)
+        .pipe(Effect.mapError(threadManagementFailure));
+      if (shell === null || shell.deletedAt !== null) {
+        return yield* failure("thread_not_found", `Thread ${threadId} was not found.`);
+      }
+      return yield* loadProjectThread(shell.projectId, threadId);
+    });
+
+  /** The calling thread's project; null for an external caller, which may use any project. */
+  const loadCallerProjectId = (scope: McpCaller) =>
     Effect.gen(function* () {
       yield* requireCapability(scope);
+      if (isExternalCaller(scope)) return null;
+      return (yield* loadProjection(scope.threadId)).thread.projectId;
+    });
+
+  /** `parent` is the calling thread, absent for an external caller. */
+  const loadScopedThread = (scope: McpCaller, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      yield* requireCapability(scope);
+      if (isExternalCaller(scope)) {
+        return { parent: null, target: yield* loadEnvironmentThread(threadId) } as const;
+      }
       const parent = yield* loadProjection(scope.threadId);
       const target =
         threadId === scope.threadId
@@ -842,9 +873,12 @@ const make = Effect.gen(function* () {
     return ids;
   };
 
-  const loadReadableThread = (scope: McpInvocationScope, threadId: ThreadId) =>
+  const loadReadableThread = (scope: McpCaller, threadId: ThreadId) =>
     Effect.gen(function* () {
       yield* requireCapability(scope);
+      if (isExternalCaller(scope)) {
+        return { parent: null, target: yield* loadEnvironmentThread(threadId) } as const;
+      }
       const parent = yield* loadProjection(scope.threadId);
       const loadTarget = () =>
         threadManagement
@@ -1163,7 +1197,7 @@ const make = Effect.gen(function* () {
   // Load a single scheduled task and enforce that it belongs to the calling
   // thread's project, so agents can only read/mutate tasks in their own scope.
   const loadScopedScheduledTask = (
-    projectId: ScheduledTask["projectId"],
+    projectId: ScheduledTask["projectId"] | null,
     scheduledTaskId: ScheduledTask["id"],
   ): Effect.Effect<ScheduledTask, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
@@ -1175,7 +1209,7 @@ const make = Effect.gen(function* () {
           ),
         );
       const task = tasks.find((candidate) => candidate.id === scheduledTaskId);
-      if (task === undefined || task.projectId !== projectId) {
+      if (task === undefined || (projectId !== null && task.projectId !== projectId)) {
         return yield* failure(
           "task_not_found",
           `Scheduled task ${scheduledTaskId} was not found in the calling project.`,
@@ -1229,8 +1263,7 @@ const make = Effect.gen(function* () {
       }),
     listScheduledTasks: (scope) =>
       Effect.gen(function* () {
-        yield* requireCapability(scope);
-        const parent = yield* loadProjection(scope.threadId);
+        const projectId = yield* loadCallerProjectId(scope);
         const { tasks } = yield* scheduledTasks
           .list()
           .pipe(
@@ -1238,27 +1271,26 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not list scheduled tasks: ${error.message}`),
             ),
           );
-        // Only expose tasks belonging to the calling thread's project.
+        // A thread caller sees only tasks belonging to its own project.
         return {
           tasks: tasks
-            .filter((task) => task.projectId === parent.thread.projectId)
+            .filter((task) => projectId === null || task.projectId === projectId)
             .map(scheduledTaskSummary),
         };
       }),
     updateScheduledTask: (scope, input) =>
       Effect.gen(function* () {
-        yield* requireCapability(scope);
-        const parent = yield* loadProjection(scope.threadId);
         const existing = yield* loadScopedScheduledTask(
-          parent.thread.projectId,
+          yield* loadCallerProjectId(scope),
           input.scheduledTaskId,
         );
-        const threadId =
-          input.bindToCurrentThread === undefined
-            ? existing.threadId
-            : input.bindToCurrentThread
-              ? scope.threadId
-              : null;
+        let threadId = existing.threadId;
+        if (input.bindToCurrentThread === true) {
+          if (isExternalCaller(scope)) return yield* threadCallerRequired();
+          threadId = scope.threadId;
+        } else if (input.bindToCurrentThread === false) {
+          threadId = null;
+        }
         // Rebinding changes where runs execute, so the workspace strategy must
         // follow: unbinding a root-strategy task would otherwise run loose
         // prompts in the shared project checkout.
@@ -1292,10 +1324,8 @@ const make = Effect.gen(function* () {
       }),
     deleteScheduledTask: (scope, input) =>
       Effect.gen(function* () {
-        yield* requireCapability(scope);
-        const parent = yield* loadProjection(scope.threadId);
         const existing = yield* loadScopedScheduledTask(
-          parent.thread.projectId,
+          yield* loadCallerProjectId(scope),
           input.scheduledTaskId,
         );
         yield* scheduledTasks
@@ -1707,11 +1737,23 @@ const make = Effect.gen(function* () {
       }),
     listThreads: (scope, input) =>
       Effect.gen(function* () {
-        yield* requireCapability(scope);
-        const parent = yield* loadProjection(scope.threadId);
+        const callerProjectId = yield* loadCallerProjectId(scope);
+        const projectId = input.projectId ?? callerProjectId;
+        if (projectId === null) {
+          return yield* failure(
+            "invalid_request",
+            "projectId is required: an external caller has no calling project.",
+          );
+        }
+        if (callerProjectId !== null && projectId !== callerProjectId) {
+          return yield* failure(
+            "invalid_request",
+            "An agent thread can list only threads in its own project.",
+          );
+        }
         const projectThreads = yield* threadManagement
           .listProjectThreads({
-            projectId: parent.thread.projectId,
+            projectId,
             includeSubagents: input.includeSubagents !== false,
           })
           .pipe(
@@ -1740,8 +1782,8 @@ const make = Effect.gen(function* () {
         const page = filtered.slice(cursor, cursor + limit);
         const nextCursor = cursor + page.length < filtered.length ? cursor + page.length : null;
         return {
-          projectId: parent.thread.projectId,
-          currentThreadId: scope.threadId,
+          projectId,
+          currentThreadId: isExternalCaller(scope) ? null : scope.threadId,
           threads: page.map(listItemFromShell),
           nextCursor,
           total: filtered.length,
@@ -1780,8 +1822,14 @@ const make = Effect.gen(function* () {
           { concurrency: 1 },
         );
         const messagesByThreadId = new Map(sourceMessages);
-        const task = directAppOwnedChildTask(parent, target);
-        if (task !== undefined && (input.textOffset ?? 0) === 0) {
+        // Only the parent thread acknowledges its own child's result; external callers have none.
+        const task = parent === null ? undefined : directAppOwnedChildTask(parent, target);
+        if (
+          task !== undefined &&
+          parent !== null &&
+          !isExternalCaller(scope) &&
+          (input.textOffset ?? 0) === 0
+        ) {
           const transfer = parent.contextTransfers.find(
             (transfer) =>
               transfer.type === "subagent_result" &&
@@ -1831,8 +1879,13 @@ const make = Effect.gen(function* () {
     sendToThread: (scope, input) =>
       Effect.gen(function* () {
         const { parent, target } = yield* loadScopedThread(scope, input.threadId);
-        yield* resolveRuntimeMode(parent.thread.runtimeMode, target.thread.runtimeMode);
-        yield* resolveInteractionMode(parent.thread.interactionMode, target.thread.interactionMode);
+        if (parent !== null) {
+          yield* resolveRuntimeMode(parent.thread.runtimeMode, target.thread.runtimeMode);
+          yield* resolveInteractionMode(
+            parent.thread.interactionMode,
+            target.thread.interactionMode,
+          );
+        }
 
         const mode = input.mode ?? "auto";
         const key = yield* requestKey(input.clientRequestId);
@@ -1843,14 +1896,15 @@ const make = Effect.gen(function* () {
         });
         const result = yield* threadManagement
           .sendToThread({
-            projectId: parent.thread.projectId,
+            projectId: target.thread.projectId,
             commandId: stableCommandId({
               scope,
               requestKey: key,
               operation: "thread-send",
             }),
             threadId: input.threadId,
-            senderThreadId: scope.threadId,
+            // An external caller has no thread to link; the UI shows it as another agent.
+            ...(isExternalCaller(scope) ? {} : { senderThreadId: scope.threadId }),
             messageId,
             text: input.message,
             attachments: [],
@@ -1878,10 +1932,10 @@ const make = Effect.gen(function* () {
       }),
     waitForThread: (scope, input) =>
       Effect.gen(function* () {
-        const { parent } = yield* loadScopedThread(scope, input.threadId);
+        const { target } = yield* loadScopedThread(scope, input.threadId);
         const result = yield* threadManagement
           .waitForThread({
-            projectId: parent.thread.projectId,
+            projectId: target.thread.projectId,
             threadId: input.threadId,
             ...(input.runId === undefined ? {} : { runId: input.runId }),
             timeoutMs: Math.min(
@@ -1899,11 +1953,11 @@ const make = Effect.gen(function* () {
       }),
     interruptThread: (scope, input) =>
       Effect.gen(function* () {
-        const { parent } = yield* loadScopedThread(scope, input.threadId);
+        const { target } = yield* loadScopedThread(scope, input.threadId);
         const key = yield* requestKey(input.clientRequestId);
         const result = yield* threadManagement
           .interruptThread({
-            projectId: parent.thread.projectId,
+            projectId: target.thread.projectId,
             commandId: stableCommandId({
               scope,
               requestKey: key,

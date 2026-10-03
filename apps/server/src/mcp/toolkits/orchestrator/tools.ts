@@ -118,7 +118,8 @@ const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
   .annotate(Tool.Title, "List scheduled tasks")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const UpdateScheduledTaskTool = Tool.make("update_scheduled_task", {
   description:
@@ -130,7 +131,8 @@ const UpdateScheduledTaskTool = Tool.make("update_scheduled_task", {
   dependencies,
 })
   .annotate(Tool.Title, "Update a scheduled task")
-  .annotate(Tool.Destructive, true);
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
   description:
@@ -142,7 +144,8 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
   dependencies,
 })
   .annotate(Tool.Title, "Delete a scheduled task")
-  .annotate(Tool.Destructive, true);
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 export const CreateThreadsTool = Tool.make("create_threads", {
   description:
@@ -169,7 +172,8 @@ const ThreadListTool = Tool.make("t3_thread_list", {
   .annotate(Tool.Title, "List T3 threads")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
@@ -183,7 +187,8 @@ const ThreadReadTool = Tool.make("t3_thread_read", {
   .annotate(Tool.Title, "Read a T3 thread")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 export const ThreadUpdateTool = Tool.make("t3_thread_update", {
   description:
@@ -196,7 +201,8 @@ export const ThreadUpdateTool = Tool.make("t3_thread_update", {
 })
   .annotate(Tool.Title, "Update T3 thread metadata")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, false);
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ThreadSendTool = Tool.make("t3_thread_send", {
   description:
@@ -209,7 +215,8 @@ const ThreadSendTool = Tool.make("t3_thread_send", {
 })
   .annotate(Tool.Title, "Send to a T3 thread")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ThreadWaitTool = Tool.make("t3_thread_wait", {
   description:
@@ -223,7 +230,8 @@ const ThreadWaitTool = Tool.make("t3_thread_wait", {
   .annotate(Tool.Title, "Wait for a T3 thread")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   description:
@@ -235,7 +243,8 @@ const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   dependencies,
 })
   .annotate(Tool.Title, "Interrupt a T3 thread")
-  .annotate(Tool.Destructive, true);
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 
 export const OrchestratorToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,

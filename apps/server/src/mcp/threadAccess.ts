@@ -19,7 +19,7 @@ export const unavailable = () =>
   });
 
 export const readCaller = Effect.fn("mcp.readCaller")(function* () {
-  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const scope = yield* McpInvocationContext.requireThreadCaller;
   if (!scope.capabilities.has("orchestration")) {
     return yield* new OrchestratorMcpFailure({
       code: "capability_denied",
@@ -35,6 +35,17 @@ export const readCaller = Effect.fn("mcp.readCaller")(function* () {
     });
   }
   return { scope, threads, caller };
+});
+
+/**
+ * A caller that may use environment-wide tools: a thread caller (validated as by
+ * `readCaller`), or an external client, which has no calling thread.
+ */
+export const readEnvironmentCaller = Effect.fn("mcp.readEnvironmentCaller")(function* () {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (McpInvocationContext.isExternalCaller(scope)) return { scope, caller: null };
+  const { caller } = yield* readCaller();
+  return { scope, caller };
 });
 
 function assertLiveCaller({
@@ -61,34 +72,58 @@ export const readMutationCaller = Effect.fn("mcp.readMutationCaller")(function* 
   return context;
 });
 
-/** Resolve the credential's project before looking up a caller-supplied thread. */
+const threadNotFound = (message: string) =>
+  new OrchestratorMcpFailure({ code: "thread_not_found", message });
+
+/**
+ * Resolve the credential's project before looking up a caller-supplied thread.
+ * External callers have no project, so they name the thread and reach any in the environment.
+ */
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
-  const { scope, threads, caller } = yield* readCaller();
-  const projection = yield* threads
-    .getProjectThreadRecords(
-      { projectId: caller.projectId, threadId: threadId ?? caller.id },
-      fields,
-      { turnItemTypes: ["user_input_request"] },
-    )
-    .pipe(
-      Effect.mapError((error) =>
-        error._tag === "ThreadManagementThreadNotFoundError"
-          ? new OrchestratorMcpFailure({
-              code: "thread_not_found",
-              message: "The thread was not found in the calling project.",
-            })
-          : unavailable(),
-      ),
-    );
-  return { scope, threads, caller, projection };
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const readProjectThread = (projectId: OrchestrationV2ThreadShell["projectId"], id: ThreadId) =>
+    threads
+      .getProjectThreadRecords({ projectId, threadId: id }, fields, {
+        turnItemTypes: ["user_input_request"],
+      })
+      .pipe(
+        Effect.mapError((error) =>
+          error._tag === "ThreadManagementThreadNotFoundError"
+            ? threadNotFound("The thread was not found in the calling project.")
+            : unavailable(),
+        ),
+      );
+  if (McpInvocationContext.isExternalCaller(scope)) {
+    if (threadId === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "threadId is required: an external caller has no calling thread.",
+      });
+    }
+    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* threadNotFound("The thread was not found.");
+    }
+    const projection = yield* readProjectThread(shell.projectId, threadId);
+    return { scope, threads, caller: null, projection };
+  }
+  const { scope: threadScope, caller } = yield* readCaller();
+  const projection = yield* readProjectThread(caller.projectId, threadId ?? caller.id);
+  return { scope: threadScope, threads, caller, projection };
 });
 
+/**
+ * A thread caller must be live and may not act on a thread with broader modes than its own.
+ * An external caller holds `orchestration:operate`, so it acts as the user's own client does.
+ */
 export const readWritableThread = Effect.fn("mcp.readWritableThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
   const context = yield* readThread(threadId, fields);
+  if (context.caller === null) return context;
   yield* assertLiveCaller(context);
   yield* OrchestrationMcp.resolveRuntimeMode(
     context.caller.runtimeMode,
