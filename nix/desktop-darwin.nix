@@ -30,7 +30,7 @@ stdenvNoCC.mkDerivation {
     cp -R ${electron_44-bin}/Applications/Electron.app "$app"
     chmod -R u+w "$app"
     rm -f "$app/Contents/Resources/default_app.asar"
-    ln -s ${runtime}/libexec/t3code "$app/Contents/Resources/app"
+    cp -R ${runtime}/libexec/t3code "$app/Contents/Resources/app"
     cp -R ${runtime}/libexec/t3code/apps/desktop/prod-resources/. "$app/Contents/Resources/"
 
     mkdir icon.iconset

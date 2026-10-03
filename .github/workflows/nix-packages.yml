@@ -52,10 +52,18 @@ jobs:
           desktop="$(nix eval --raw .#t3code-desktop.outPath)"
           runtime="$(nix eval --raw .#t3code-runtime.outPath)"
           electron="$(nix eval --raw .#t3code-desktop.electron.outPath)"
+          electron_bin="$electron/bin/electron"
+          app_root="$runtime/libexec/t3code"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            app="$desktop/Applications/T3 Code.app"
+            electron_bin="$app/Contents/MacOS/Electron"
+            app_root="$app/Contents/Resources/app"
+          fi
           "$headless/bin/t3" --version
-          ELECTRON_RUN_AS_NODE=1 "$electron/bin/electron" - "$runtime" <<'JS'
+          ELECTRON_RUN_AS_NODE=1 "$electron_bin" "$app_root/apps/server/dist/bin.mjs" --version
+          ELECTRON_RUN_AS_NODE=1 "$electron_bin" - "$app_root" <<'JS'
           const assert = require("node:assert/strict");
-          const pty = require(`${process.argv[2]}/libexec/t3code/apps/server/node_modules/node-pty`);
+          const pty = require(`${process.argv[2]}/apps/server/node_modules/node-pty`);
           const terminal = pty.spawn("/bin/sh", ["-c", "printf nix-pty-smoke"], { env: process.env });
           let output = "";
           terminal.onData((data) => { output += data; });
@@ -66,7 +74,6 @@ jobs:
           JS
           test -x "$desktop/bin/t3code"
           if [[ "$RUNNER_OS" == macOS ]]; then
-            app="$desktop/Applications/T3 Code.app"
             test -e "$app/Contents/Resources/app/apps/server/dist/bin.mjs"
             /usr/bin/codesign --verify --deep --strict "$app"
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.T3Code
