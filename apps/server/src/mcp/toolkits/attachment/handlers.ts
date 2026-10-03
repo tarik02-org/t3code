@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   newCommandId,
   readMutationCaller,
@@ -48,6 +49,8 @@ export const AttachmentHandlersLive = AttachmentToolkit.toLayer({
   t3_thread_send_attachments: (input) =>
     Effect.gen(function* () {
       const { caller, projection, scope } = yield* readWritableThread(input.threadId, ["messages"]);
+      // Uploads go through this server's own upload URL, which only local agents can reach.
+      if (caller === null) return yield* McpInvocationContext.threadCallerRequired();
       if (projection.thread.archivedAt !== null)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",

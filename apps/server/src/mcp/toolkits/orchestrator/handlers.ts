@@ -8,31 +8,31 @@ import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 const handlers = {
   orchestrator_capabilities: () =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.capabilities(scope);
     }),
   delegate_task: (input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.delegateTask(scope, input);
     }),
   task_status: ({ taskId }) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.taskStatus(scope, taskId);
     }),
   task_cancel: (input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.cancelTask(scope, input);
     }),
   schedule_task: (input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.scheduleTask(scope, input);
     }),
@@ -56,7 +56,7 @@ const handlers = {
     }),
   create_threads: (input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireThreadCaller;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.createThreads(scope, input);
     }),

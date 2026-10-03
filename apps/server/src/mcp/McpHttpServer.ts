@@ -12,11 +12,13 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { PreviewAutomationError } from "@t3tools/contracts";
+import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { AuthOrchestrationOperateScope, PreviewAutomationError } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -62,13 +64,28 @@ import {
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_mcp_credential",
-    message: "A valid provider-scoped MCP bearer credential is required.",
+    message:
+      "A valid provider-scoped MCP bearer credential or environment access token is required.",
   },
   {
     status: 401,
     headers: {
       "cache-control": "no-store",
       "www-authenticate": "Bearer",
+    },
+  },
+);
+
+const insufficientScope = HttpServerResponse.jsonUnsafe(
+  {
+    error: "insufficient_scope",
+    message: `The environment access token must grant ${AuthOrchestrationOperateScope}.`,
+  },
+  {
+    status: 403,
+    headers: {
+      "cache-control": "no-store",
+      "www-authenticate": `Bearer error="insufficient_scope", scope="${AuthOrchestrationOperateScope}"`,
     },
   },
 );
@@ -99,33 +116,74 @@ export const normalizeMcpHttpResponse = (
     : response;
 };
 
-const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
-  Effect.map((registry): McpAuthMiddleware =>
-    Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      const authorization = request.headers.authorization;
-      const token =
-        authorization?.startsWith("Bearer ") === true
-          ? authorization.slice("Bearer ".length).trim()
-          : "";
-      const invocation = yield* registry.resolve(token);
-      if (!invocation) {
-        // Without this the only symptom of a dead credential is the agent
-        // quietly losing the whole `t3-code` toolkit for the rest of its
-        // session, with nothing on the server to explain why.
-        yield* Effect.logWarning("rejected MCP request with an unusable credential", {
-          reason: token.length === 0 ? "missing_bearer_token" : "unknown_or_expired_token",
-        });
-        return unauthorized;
-      }
-      return yield* httpEffect.pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-        Effect.map(normalizeMcpHttpResponse),
+const makeMcpAuthMiddleware = Effect.gen(function* () {
+  const registry = yield* McpSessionRegistry.McpSessionRegistry;
+  const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+  const environment = yield* ServerEnvironment.ServerEnvironment;
+
+  /**
+   * An environment access token, as paired clients hold, makes an external caller.
+   * Only the Authorization header counts: a browser's session cookie must not let
+   * any page that reaches this server drive its agents.
+   */
+  const resolveExternalCaller = Effect.fn("McpHttpServer.resolveExternalCaller")(function* (
+    request: HttpServerRequest.HttpServerRequest,
+  ) {
+    const session = yield* environmentAuth
+      .authenticateHttpRequest(
+        request.modify({ headers: Headers.remove(request.headers, "cookie") }),
+      )
+      .pipe(
+        Effect.tapError((error) =>
+          EnvironmentAuth.isServerAuthInternalError(error)
+            ? Effect.logWarning("could not verify an MCP environment access token", {
+                error: error.message,
+              })
+            : Effect.void,
+        ),
+        Effect.option,
       );
-    }),
-  ),
-  Effect.withSpan("McpHttpServer.makeAuthMiddleware"),
-);
+    if (Option.isNone(session)) return "invalid" as const;
+    if (!session.value.scopes.includes(AuthOrchestrationOperateScope)) {
+      return "insufficient_scope" as const;
+    }
+    return {
+      kind: "external",
+      environmentId: yield* environment.getEnvironmentId,
+      sessionId: session.value.sessionId,
+    } satisfies McpInvocationContext.McpExternalInvocationScope;
+  });
+
+  return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const authorization = request.headers.authorization;
+    const token =
+      authorization?.startsWith("Bearer ") === true
+        ? authorization.slice("Bearer ".length).trim()
+        : "";
+    const threadInvocation = yield* registry.resolve(token);
+    const external =
+      threadInvocation === undefined && authorization !== undefined
+        ? yield* resolveExternalCaller(request)
+        : undefined;
+    if (external === "insufficient_scope") return insufficientScope;
+    const invocation: McpInvocationContext.McpCaller | undefined =
+      threadInvocation ?? (external === "invalid" ? undefined : external);
+    if (!invocation) {
+      // Without this the only symptom of a dead credential is the agent
+      // quietly losing the whole `t3-code` toolkit for the rest of its
+      // session, with nothing on the server to explain why.
+      yield* Effect.logWarning("rejected MCP request with an unusable credential", {
+        reason: token.length === 0 ? "missing_bearer_token" : "unknown_or_expired_token",
+      });
+      return unauthorized;
+    }
+    return yield* httpEffect.pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.map(normalizeMcpHttpResponse),
+    );
+  }) satisfies McpAuthMiddleware;
+}).pipe(Effect.withSpan("McpHttpServer.makeAuthMiddleware"));
 
 const McpAuthMiddlewareLive = HttpRouter.middleware<{
   provides: McpInvocationContext.McpInvocationContext;

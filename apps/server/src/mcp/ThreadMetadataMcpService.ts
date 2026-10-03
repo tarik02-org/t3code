@@ -15,13 +15,18 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import {
+  type McpCaller,
+  type McpInvocationScope,
+  callerRequestKey,
+  isExternalCaller,
+} from "./McpInvocationContext.ts";
 
 export class ThreadMetadataMcpService extends Context.Service<
   ThreadMetadataMcpService,
   {
     readonly update: (
-      scope: McpInvocationScope,
+      scope: McpCaller,
       input: ThreadMetadataMcpUpdateInput,
     ) => Effect.Effect<ThreadMetadataMcpUpdateResult, OrchestratorMcpFailure>;
   }
@@ -48,7 +53,7 @@ function stablePart(value: string): string {
 }
 
 function commandId(input: {
-  readonly scope: McpInvocationScope;
+  readonly scope: McpCaller;
   readonly threadId: ThreadId;
   readonly action: ThreadMetadataMcpAction;
   readonly requestKey: string;
@@ -57,7 +62,7 @@ function commandId(input: {
     [
       "command",
       "mcp",
-      stablePart(input.scope.providerSessionId),
+      stablePart(callerRequestKey(input.scope)),
       "thread-update",
       stablePart(input.threadId),
       stablePart(input.action),
@@ -135,47 +140,88 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
 
+  /** An external caller names the thread and may reach any in the environment. */
+  const loadExternalTarget = Effect.fn("ThreadMetadataMcpService.loadExternalTarget")(function* (
+    threadId: ThreadId | undefined,
+  ) {
+    if (threadId === undefined) {
+      return yield* failure(
+        "invalid_request",
+        "threadId is required: an external caller has no calling thread.",
+      );
+    }
+    const shell = yield* threadManagement
+      .getThreadShell(threadId)
+      .pipe(
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `Unable to locate thread ${threadId}: ${errorMessage(error)}`,
+          ),
+        ),
+      );
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* failure("thread_not_found", `Thread ${threadId} was not found.`);
+    }
+    const target = yield* threadManagement
+      .getProjectThreadRecords({ projectId: shell.projectId, threadId }, [])
+      .pipe(Effect.mapError(threadLookupFailure));
+    return { threadId, target };
+  });
+
+  const loadThreadCallerTarget = Effect.fn("ThreadMetadataMcpService.loadThreadCallerTarget")(
+    function* (scope: McpInvocationScope, inputThreadId: ThreadId | undefined) {
+      if (!scope.capabilities.has("orchestration")) {
+        return yield* failure(
+          "capability_denied",
+          "This MCP credential does not grant orchestration capabilities.",
+        );
+      }
+
+      const parentShell = yield* threadManagement
+        .getThreadShell(scope.threadId)
+        .pipe(
+          Effect.mapError((error) =>
+            failure(
+              "orchestration_error",
+              `Unable to locate calling thread ${scope.threadId}: ${errorMessage(error)}`,
+            ),
+          ),
+        );
+      if (parentShell === null) {
+        return yield* failure(
+          "thread_not_found",
+          `Calling thread ${scope.threadId} was not found.`,
+        );
+      }
+      const parent = yield* threadManagement
+        .getThreadRecords(scope.threadId, [])
+        .pipe(
+          Effect.mapError((error) =>
+            failure(
+              "orchestration_error",
+              `Unable to read calling thread ${scope.threadId}: ${errorMessage(error)}`,
+            ),
+          ),
+        );
+      const threadId = inputThreadId ?? scope.threadId;
+      const target =
+        threadId === scope.threadId
+          ? parent
+          : yield* threadManagement
+              .getProjectThreadRecords({ projectId: parent.thread.projectId, threadId }, [])
+              .pipe(Effect.mapError(threadLookupFailure));
+      return { threadId, target };
+    },
+  );
+
   const update = Effect.fn("ThreadMetadataMcpService.update")(function* (
-    scope: McpInvocationScope,
+    scope: McpCaller,
     input: ThreadMetadataMcpUpdateInput,
   ) {
-    if (!scope.capabilities.has("orchestration")) {
-      return yield* failure(
-        "capability_denied",
-        "This MCP credential does not grant orchestration capabilities.",
-      );
-    }
-
-    const parentShell = yield* threadManagement
-      .getThreadShell(scope.threadId)
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to locate calling thread ${scope.threadId}: ${errorMessage(error)}`,
-          ),
-        ),
-      );
-    if (parentShell === null) {
-      return yield* failure("thread_not_found", `Calling thread ${scope.threadId} was not found.`);
-    }
-    const parent = yield* threadManagement
-      .getThreadRecords(scope.threadId, [])
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to read calling thread ${scope.threadId}: ${errorMessage(error)}`,
-          ),
-        ),
-      );
-    const threadId = input.threadId ?? scope.threadId;
-    const target =
-      threadId === scope.threadId
-        ? parent
-        : yield* threadManagement
-            .getProjectThreadRecords({ projectId: parent.thread.projectId, threadId }, [])
-            .pipe(Effect.mapError(threadLookupFailure));
+    const { threadId, target } = isExternalCaller(scope)
+      ? yield* loadExternalTarget(input.threadId)
+      : yield* loadThreadCallerTarget(scope, input.threadId);
     const requestKey =
       input.clientRequestId === undefined
         ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)

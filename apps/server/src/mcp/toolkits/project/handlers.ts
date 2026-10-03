@@ -1,4 +1,10 @@
-import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId } from "@t3tools/contracts";
+import {
+  DEFAULT_RUNTIME_MODE,
+  MessageId,
+  ThreadId,
+  OrchestratorMcpFailure,
+  ProjectId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
@@ -6,7 +12,13 @@ import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
-import { newCommandId, readCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import {
+  newCommandId,
+  readEnvironmentCaller,
+  readMutationCaller,
+  unavailable,
+} from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
 function projectFailure(error: Project.ProjectServiceError) {
@@ -21,10 +33,13 @@ function projectFailure(error: Project.ProjectServiceError) {
 }
 
 const access = Effect.gen(function* () {
-  yield* readCaller();
+  yield* readEnvironmentCaller();
   return yield* Project.ProjectService;
 });
+// External callers hold `orchestration:operate`, which already grants project changes.
 const mutation = Effect.gen(function* () {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (McpInvocationContext.isExternalCaller(scope)) return yield* Project.ProjectService;
   const { caller } = yield* readMutationCaller();
   if (
     caller.archivedAt !== null ||
@@ -40,8 +55,14 @@ const mutation = Effect.gen(function* () {
 export const ProjectHandlersLive = ProjectToolkit.toLayer({
   t3_thread_launch: (input) =>
     Effect.gen(function* () {
-      const { caller, scope } = yield* readMutationCaller();
-      if (caller.runtimeMode !== "full-access" || caller.interactionMode !== "default")
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      const { caller, scope } = McpInvocationContext.isExternalCaller(invocation)
+        ? { caller: null, scope: invocation }
+        : yield* readMutationCaller();
+      if (
+        caller !== null &&
+        (caller.runtimeMode !== "full-access" || caller.interactionMode !== "default")
+      )
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
           message: "Project launches require a full-access/default calling thread.",
@@ -76,22 +97,41 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
                   }),
               ),
             )).projectId
-          : (input.projectId ?? caller.projectId);
+          : (input.projectId ?? caller?.projectId);
+      if (projectId === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "projectId or scratch:true is required: an external caller has no project.",
+        });
+      // Without a calling thread to inherit from, fall back to the project's own model default.
+      let modelSelection = input.modelSelection ?? caller?.modelSelection;
+      if (modelSelection === undefined) {
+        const projects = yield* Project.ProjectService;
+        const project = yield* projects.getById(projectId).pipe(Effect.mapError(unavailable));
+        modelSelection = Option.getOrUndefined(project)?.defaultModelSelection ?? undefined;
+      }
+      if (modelSelection === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "modelSelection is required: the project has no default model.",
+        });
       const result = yield* ThreadMessageIntake.launchThread({
         commandId,
         threadId,
         projectId,
         title: input.title,
-        modelSelection: input.modelSelection ?? caller.modelSelection,
-        runtimeMode: input.runtimeMode ?? caller.runtimeMode,
-        interactionMode: input.interactionMode ?? caller.interactionMode,
+        modelSelection,
+        runtimeMode: input.runtimeMode ?? caller?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        interactionMode: input.interactionMode ?? caller?.interactionMode ?? "default",
         workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
         ...(input.message === undefined && attachments.length === 0
           ? {}
           : {
               initialMessage: {
                 messageId,
-                senderThreadId: scope.threadId,
+                ...(McpInvocationContext.isExternalCaller(scope)
+                  ? {}
+                  : { senderThreadId: scope.threadId }),
                 text: input.message ?? "",
                 attachments,
               },

@@ -1,4 +1,4 @@
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, WorktreeMcpFailure } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as GitWorkflow from "../../../git/GitWorkflowService.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -9,10 +9,14 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
 import { WorktreeToolkit } from "./tools.ts";
 
+const requireWorktreeCaller = McpInvocationContext.requireThreadCaller.pipe(
+  Effect.mapError(({ message }) => new WorktreeMcpFailure({ code: "capability_denied", message })),
+);
+
 const handlers = {
   t3_worktree_list: (input) =>
     Effect.gen(function* () {
-      const context = yield* McpInvocationContext.McpInvocationContext;
+      const context = yield* McpInvocationContext.requireThreadCaller;
       if (!context.capabilities.has("worktree"))
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
@@ -33,13 +37,13 @@ const handlers = {
     }),
   t3_worktree_handoff: (input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* requireWorktreeCaller;
       const service = yield* WorktreeMcpService.WorktreeMcpService;
       return yield* service.handoff(scope, input);
     }),
   t3_worktree_status: () =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* requireWorktreeCaller;
       const service = yield* WorktreeMcpService.WorktreeMcpService;
       return yield* service.status(scope);
     }),

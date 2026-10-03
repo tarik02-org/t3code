@@ -53,7 +53,8 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
   }),
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Meta, McpInvocationContext.EXTERNAL_CALLER_TOOL_META);
 export const IdentityTool = Tool.make("t3_identity", {
   description:
     "Read your authenticated T3 Code thread, environment and provider instance IDs. No shell environment variables are required. Use t3_thread_read with the returned threadId for thread and project details.",
@@ -62,6 +63,8 @@ export const IdentityTool = Tool.make("t3_identity", {
     threadId: ThreadId,
     providerInstanceId: ProviderInstanceId,
   }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
   dependencies: [McpInvocationContext.McpInvocationContext],
 })
   .annotate(Tool.Title, "Get your T3 Code identity")
