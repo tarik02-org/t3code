@@ -5,15 +5,26 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 /**
  * Input for the `t3_worktree_handoff` MCP tool.
  *
- * Creates a git worktree for the calling agent thread and re-points the
- * thread at it. Changing the thread's workspace detaches the live provider
- * session, so the current turn ends shortly after the handoff is recorded;
- * the conversation continues inside the worktree on the thread's next run.
+ * Re-points the calling agent thread at a git worktree: either a new one
+ * created from `branch`, or an existing checkout given by
+ * `existingWorktreePath`. Changing the thread's workspace detaches the live
+ * provider session, so the current turn ends shortly after the handoff is
+ * recorded; the conversation continues inside the worktree on the thread's
+ * next run.
  */
 export const WorktreeMcpHandoffInput = Schema.Struct({
-  branch: TrimmedNonEmptyString.annotate({
-    description: "Branch name to create for the worktree (e.g. 'feature/my-change').",
-  }),
+  branch: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description:
+        "Branch name to create for a new worktree (e.g. 'feature/my-change'). Required unless existingWorktreePath is given.",
+    }),
+  ),
+  existingWorktreePath: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isPattern(/^(?:[A-Za-z]:[\\/]|[\\/])/)).annotate({
+      description:
+        "Absolute path of an existing checkout of the project's repository to move this thread into instead of creating one. Works when the thread is already in a worktree; the project's main checkout moves it back to the project root. The checkout must have a branch checked out. Excludes branch, baseRef, startFromOrigin, and path; the setup script does not run.",
+    }),
+  ),
   baseRef: Schema.optional(
     TrimmedNonEmptyString.annotate({
       description:
@@ -87,7 +98,9 @@ export type WorktreeMcpContinuationStatus = typeof WorktreeMcpContinuationStatus
 export const WorktreeMcpHandoffResult = Schema.Struct({
   worktreePath: TrimmedNonEmptyString,
   branch: TrimmedNonEmptyString,
-  baseRef: TrimmedNonEmptyString,
+  baseRef: Schema.NullOr(TrimmedNonEmptyString).annotate({
+    description: "Ref the new worktree started from; null when an existing worktree was attached.",
+  }),
   startedFromOrigin: Schema.Boolean,
   setupScript: WorktreeMcpSetupScriptStatus,
   continuation: WorktreeMcpContinuationStatus,
