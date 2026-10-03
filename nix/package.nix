@@ -19,6 +19,7 @@
 let
   nodejs = nodejs_24;
   pnpm = pnpm_11;
+  resourcePlatform = if stdenv.hostPlatform.isDarwin then "darwin-arm64" else "linux-x64";
   sourceVersion = (builtins.fromJSON (builtins.readFile "${src}/apps/server/package.json")).version;
   resourceMonitor = rustPlatform.buildRustPackage {
     pname = "t3-resource-monitor";
@@ -73,7 +74,7 @@ stdenv.mkDerivation (finalAttrs: {
     writableTmpDirAsHomeHook
   ];
 
-  buildInputs = [ libsecret ];
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ libsecret ];
 
   dontPatchELF = true;
   noAuditTmpdir = true;
@@ -123,7 +124,7 @@ stdenv.mkDerivation (finalAttrs: {
     ' "$app/package.json"
 
     install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
-      "$app/apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor"
+      "$app/apps/server/dist/resource-monitor/${resourcePlatform}/t3-resource-monitor"
     install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
       "$app/apps/desktop/prod-resources/resource-monitor/t3-resource-monitor"
 
@@ -136,6 +137,9 @@ stdenv.mkDerivation (finalAttrs: {
     description = "Shared runtime for T3 Code server and desktop packages";
     homepage = "https://github.com/tarik02-org/t3code";
     license = lib.licenses.mit;
-    platforms = [ "x86_64-linux" ];
+    platforms = [
+      "x86_64-linux"
+      "aarch64-darwin"
+    ];
   };
 })

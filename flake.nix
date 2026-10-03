@@ -3,29 +3,45 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+  nixConfig = {
+    extra-substituters = [ "https://tarik02-t3code.cachix.org" ];
+    extra-trusted-public-keys = [
+      "tarik02-t3code.cachix.org-1:1dYWmf4BhYdWlxABQA5hK/ykj2zLlyRYXG6nMTb/jac="
+    ];
+  };
+
   outputs =
     { nixpkgs, self }:
     let
-      system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
+      forEachSystem = nixpkgs.lib.genAttrs systems;
     in
     {
-      packages.${system} =
+      packages = forEachSystem (
+        system:
         let
+          pkgs = import nixpkgs { inherit system; };
           runtime = pkgs.callPackage ./nix/package.nix { src = self; };
         in
         rec {
           t3code-runtime = runtime;
           t3code-headless = pkgs.callPackage ./nix/headless.nix { inherit runtime; };
-          t3code-desktop = pkgs.callPackage ./nix/desktop.nix {
-            inherit runtime;
-            src = self;
-          };
+          t3code-desktop =
+            pkgs.callPackage
+              (if pkgs.stdenv.hostPlatform.isDarwin then ./nix/desktop-darwin.nix else ./nix/desktop.nix)
+              {
+                inherit runtime;
+                src = self;
+              };
 
           t3code = t3code-headless;
           default = t3code;
-        };
+        }
+      );
 
-      formatter.${system} = pkgs.nixfmt;
+      formatter = forEachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt);
     };
 }

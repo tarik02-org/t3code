@@ -1,0 +1,72 @@
+name: Nix packages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-packages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Nix (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-darwin
+            runner: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Configure public cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: tarik02-t3code
+          skipPush: true
+
+      - name: Build packages
+        shell: bash
+        run: |
+          nix build --no-link --print-out-paths \
+            .#t3code-headless .#t3code-desktop > "$RUNNER_TEMP/nix-package-paths"
+
+      - name: Smoke-test packages
+        shell: bash
+        run: |
+          headless="$(nix eval --raw .#t3code-headless.outPath)"
+          desktop="$(nix eval --raw .#t3code-desktop.outPath)"
+          "$headless/bin/t3" --version
+          test -x "$desktop/bin/t3code"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            app="$desktop/Applications/T3 Code.app"
+            test -e "$app/Contents/Resources/app/apps/server/dist/bin.mjs"
+            /usr/bin/codesign --verify --deep --strict "$app"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.T3Code
+          else
+            test -f "$desktop/share/applications/com.t3tools.T3Code.desktop"
+          fi
+
+      # Only reviewed main builds can publish. PR jobs never receive this token.
+      - name: Publish package closures
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          test -n "$CACHIX_AUTH_TOKEN"
+          cachix push tarik02-t3code < "$RUNNER_TEMP/nix-package-paths"
