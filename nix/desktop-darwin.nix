@@ -13,6 +13,7 @@ stdenvNoCC.mkDerivation {
   pname = "t3code-desktop";
   inherit (runtime) version;
   dontUnpack = true;
+  dontStrip = true;
 
   passthru.electron = electron_44-bin;
 

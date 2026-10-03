@@ -1,6 +1,6 @@
 {
   coreutils,
-  electron_44-bin,
+  electron_44,
   imagemagick,
   lib,
   runtime,
@@ -14,7 +14,7 @@ stdenvNoCC.mkDerivation {
   inherit (runtime) version;
   dontUnpack = true;
 
-  passthru.electron = electron_44-bin;
+  passthru.electron = electron_44;
 
   installPhase = ''
     runHook preInstall
@@ -56,7 +56,7 @@ stdenvNoCC.mkDerivation {
     export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$profile_user/bin:$PATH"
     export T3CODE_DISABLE_AUTO_UPDATE=1
     export T3CODE_LINUX_DESKTOP_ENTRY_MANAGED=true
-    exec ${lib.getExe electron_44-bin} \
+    exec ${lib.getExe electron_44} \
       --ozone-platform-hint=auto \
       --enable-features=WaylandWindowDecorations \
       ${runtime}/libexec/t3code \
