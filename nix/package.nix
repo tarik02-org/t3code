@@ -19,6 +19,7 @@
 let
   nodejs = nodejs_24;
   pnpm = pnpm_11;
+  resourcePlatform = if stdenv.hostPlatform.isDarwin then "darwin-arm64" else "linux-x64";
   sourceVersion = (builtins.fromJSON (builtins.readFile "${src}/apps/server/package.json")).version;
   resourceMonitor = rustPlatform.buildRustPackage {
     pname = "t3-resource-monitor";
@@ -73,14 +74,16 @@ stdenv.mkDerivation (finalAttrs: {
     writableTmpDirAsHomeHook
   ];
 
-  buildInputs = [ libsecret ];
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ libsecret ];
 
   dontPatchELF = true;
+  dontStrip = true;
   noAuditTmpdir = true;
   SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
   preBuild = ''
     export npm_config_nodedir=${nodejs}
+    export npm_config_build_from_source=true
     export ELECTRON_SKIP_BINARY_DOWNLOAD=1
     pnpm rebuild --pending "''${pnpmInstallFlags[@]}" --filter '!@t3tools/monorepo'
   '';
@@ -97,15 +100,15 @@ stdenv.mkDerivation (finalAttrs: {
     app="$out/libexec/t3code"
     mkdir -p "$app/apps/desktop" "$app/apps/server"
 
-    cp --recursive --no-preserve=mode node_modules packages "$app"
-    cp --recursive --no-preserve=mode \
+    cp --recursive node_modules packages "$app"
+    cp --recursive \
       apps/desktop/node_modules \
       apps/desktop/dist-electron \
       apps/desktop/resources \
       "$app/apps/desktop"
-    cp --recursive --no-preserve=mode apps/desktop/resources \
+    cp --recursive apps/desktop/resources \
       "$app/apps/desktop/prod-resources"
-    cp --recursive --no-preserve=mode \
+    cp --recursive \
       apps/server/node_modules \
       apps/server/dist \
       "$app/apps/server"
@@ -123,7 +126,7 @@ stdenv.mkDerivation (finalAttrs: {
     ' "$app/package.json"
 
     install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
-      "$app/apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor"
+      "$app/apps/server/dist/resource-monitor/${resourcePlatform}/t3-resource-monitor"
     install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
       "$app/apps/desktop/prod-resources/resource-monitor/t3-resource-monitor"
 
@@ -136,6 +139,9 @@ stdenv.mkDerivation (finalAttrs: {
     description = "Shared runtime for T3 Code server and desktop packages";
     homepage = "https://github.com/tarik02-org/t3code";
     license = lib.licenses.mit;
-    platforms = [ "x86_64-linux" ];
+    platforms = [
+      "x86_64-linux"
+      "aarch64-darwin"
+    ];
   };
 })

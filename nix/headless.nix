@@ -25,6 +25,9 @@ stdenvNoCC.mkDerivation {
     homepage = "https://github.com/tarik02-org/t3code";
     license = lib.licenses.mit;
     mainProgram = "t3";
-    platforms = [ "x86_64-linux" ];
+    platforms = [
+      "x86_64-linux"
+      "aarch64-darwin"
+    ];
   };
 }
