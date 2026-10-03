@@ -50,7 +50,20 @@ jobs:
         run: |
           headless="$(nix eval --raw .#t3code-headless.outPath)"
           desktop="$(nix eval --raw .#t3code-desktop.outPath)"
+          runtime="$(nix eval --raw .#t3code-runtime.outPath)"
+          electron="$(nix eval --raw .#t3code-desktop.electron.outPath)"
           "$headless/bin/t3" --version
+          ELECTRON_RUN_AS_NODE=1 "$electron/bin/electron" - "$runtime" <<'JS'
+          const assert = require("node:assert/strict");
+          const pty = require(`${process.argv[2]}/libexec/t3code/apps/server/node_modules/node-pty`);
+          const terminal = pty.spawn("/bin/sh", ["-c", "printf nix-pty-smoke"], { env: process.env });
+          let output = "";
+          terminal.onData((data) => { output += data; });
+          terminal.onExit(({ exitCode }) => {
+            assert.equal(exitCode, 0);
+            assert.equal(output, "nix-pty-smoke");
+          });
+          JS
           test -x "$desktop/bin/t3code"
           if [[ "$RUNNER_OS" == macOS ]]; then
             app="$desktop/Applications/T3 Code.app"

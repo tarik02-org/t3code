@@ -14,6 +14,8 @@ stdenvNoCC.mkDerivation {
   inherit (runtime) version;
   dontUnpack = true;
 
+  passthru.electron = electron_44-bin;
+
   installPhase = ''
     runHook preInstall
 
