@@ -42,7 +42,7 @@ jobs:
       - name: Build packages
         shell: bash
         run: |
-          nix build --no-link --print-out-paths \
+          nix build --no-link --print-out-paths --print-build-logs \
             .#t3code-headless .#t3code-desktop > "$RUNNER_TEMP/nix-package-paths"
 
       - name: Smoke-test packages
@@ -63,6 +63,7 @@ jobs:
           ELECTRON_RUN_AS_NODE=1 "$electron_bin" "$app_root/apps/server/dist/bin.mjs" --version
           ELECTRON_RUN_AS_NODE=1 "$electron_bin" - "$app_root" <<'JS'
           const assert = require("node:assert/strict");
+          require(`${process.argv[2]}/apps/server/node_modules/node-pty/build/Release/pty.node`);
           const pty = require(`${process.argv[2]}/apps/server/node_modules/node-pty`);
           const terminal = pty.spawn("/bin/sh", ["-c", "printf nix-pty-smoke"], { env: process.env });
           let output = "";

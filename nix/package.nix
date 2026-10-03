@@ -83,6 +83,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   preBuild = ''
     export npm_config_nodedir=${nodejs}
+    export npm_config_build_from_source=true
     export ELECTRON_SKIP_BINARY_DOWNLOAD=1
     pnpm rebuild --pending "''${pnpmInstallFlags[@]}" --filter '!@t3tools/monorepo'
   '';
