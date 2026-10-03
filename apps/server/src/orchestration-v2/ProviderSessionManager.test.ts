@@ -478,6 +478,11 @@ function layerTest(input: {
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly adapterRegistryLayer?: Layer.Layer<
+    ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+    never,
+    McpProviderSessions.McpProviderSessions
+  >;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -530,13 +535,16 @@ function layerTest(input: {
     IdAllocator.layer,
     layerConfiguredMcpRegistry,
     McpProviderSessions.layer,
+    ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
     ProviderSessionManager.layerWithOptions({
       idleTimeoutMs: input.idleTimeoutMs,
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
     }).pipe(
       Layer.provide(
         Layer.mergeAll(
-          layerRegistry.pipe(Layer.provideMerge(McpProviderSessions.layer)),
+          (input.adapterRegistryLayer ?? layerRegistry).pipe(
+            Layer.provideMerge(McpProviderSessions.layer),
+          ),
           layerConfiguredEventSink,
           IdAllocator.layer,
           layerProviderEventIngestorTest,
@@ -2464,6 +2472,142 @@ it.effect(
             state,
             idleTimeoutMs: 1_000,
             mcpConfigs,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 preserves each provider credential across switches and revokes only the closed session",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const otherSelection = {
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "openai/gpt-5.4",
+      } satisfies ModelSelection;
+      const adapterRegistryLayer = Layer.unwrap(
+        Effect.gen(function* () {
+          const adapter = yield* makeProviderAdapter(state, { mcpConfigs });
+          const otherAdapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
+            ...adapter,
+            instanceId: otherSelection.instanceId,
+            openSession: (input) =>
+              adapter.openSession(input).pipe(
+                Effect.map((runtime) => ({
+                  ...runtime,
+                  instanceId: otherSelection.instanceId,
+                  providerSession: {
+                    ...runtime.providerSession,
+                    providerInstanceId: otherSelection.instanceId,
+                  },
+                })),
+              ),
+          };
+          return ProviderAdapterRegistry.layerFromAdapters([adapter, otherAdapter]);
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-switch-mcp");
+        const firstSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const otherSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: otherSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({
+          threadId,
+          providerSessionId: firstSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const firstConfig = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert(firstConfig !== undefined);
+        const firstToken = firstConfig.authorizationHeader.replace(/^Bearer\s+/, "");
+        yield* manager.open({
+          threadId,
+          providerSessionId: otherSessionId,
+          modelSelection: otherSelection,
+          runtimePolicy,
+        });
+        const otherConfig = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert(otherConfig !== undefined);
+        const otherToken = otherConfig.authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.equal((yield* registry.resolve(firstToken))?.thread.providerInstanceId, "codex");
+        assert.equal((yield* registry.resolve(otherToken))?.thread.providerInstanceId, "opencode");
+        yield* manager.open({
+          threadId,
+          providerSessionId: firstSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal((yield* registry.resolve(firstToken))?.thread.providerInstanceId, "codex");
+        assert.equal(
+          (yield* (yield* McpProviderSessions.McpProviderSessions).read(threadId))
+            ?.authorizationHeader,
+          firstConfig.authorizationHeader,
+        );
+        yield* manager.detach({ providerSessionId: firstSessionId, threadId });
+        yield* manager.open({
+          threadId,
+          providerSessionId: firstSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal((yield* registry.resolve(firstToken))?.thread.providerInstanceId, "codex");
+        yield* manager.close(otherSessionId);
+        assert.isUndefined(yield* registry.resolve(otherToken));
+        assert.equal((yield* registry.resolve(firstToken))?.thread.providerInstanceId, "codex");
+        const settings = yield* ServerSettings.ServerSettingsService;
+        assert.equal((yield* registry.resolve(firstToken))?.capabilities.has("preview"), true);
+        assert.equal((yield* registry.resolve(firstToken))?.capabilities.has("device"), true);
+        yield* settings.updateSettings({
+          enableAgentBrowserAccess: false,
+          enableAgentDeviceAccess: false,
+        });
+        yield* manager.open({
+          threadId,
+          providerSessionId: otherSessionId,
+          modelSelection: otherSelection,
+          runtimePolicy,
+        });
+        assert.isUndefined(yield* registry.resolve(firstToken));
+        const restrictedConfig = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert(restrictedConfig !== undefined);
+        const restricted = yield* registry.resolve(
+          restrictedConfig.authorizationHeader.replace(/^Bearer\s+/, ""),
+        );
+        assert.equal(restricted?.thread.providerInstanceId, "opencode");
+        assert.equal(restricted?.capabilities.has("preview"), false);
+        assert.equal(restricted?.capabilities.has("device"), false);
+        yield* manager.close(otherSessionId);
+        yield* manager.close(firstSessionId);
+        assert.isUndefined(yield* registry.resolve(firstToken));
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1_000,
+            mcpConfigs,
+            adapterRegistryLayer,
+            serverSettingsLayer: ServerSettings.layerTest({
+              enableAgentBrowserAccess: true,
+              enableAgentDeviceAccess: true,
+            }),
           }),
         ),
       );
