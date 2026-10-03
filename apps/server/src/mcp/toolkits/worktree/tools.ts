@@ -24,7 +24,7 @@ const dependencies = [
 
 const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   description:
-    "Needs an agent running inside a T3 thread. Move this agent thread into a new git worktree. To launch a separate agent already bound to a new or existing worktree, use t3_thread_launch with workspaceStrategy instead. Creates the worktree branch (optionally from origin), re-points the thread at the worktree, and by default runs the project's setup script there. Changing the workspace detaches the live provider session, so the current turn ends shortly after the handoff is recorded; call this as the last action of the turn. To keep working after the handoff, pass continuationPrompt with the remaining work: it is queued as the thread's next message and starts a new turn inside the worktree with the conversation preserved. Without it the thread stays idle until the next message. The worktree is not removed automatically when the thread is deleted. Fails if the thread is already attached to a worktree.",
+    "Needs an agent running inside a T3 thread. Move this agent thread into a git worktree. To launch a separate agent already bound to a new or existing worktree, use t3_thread_launch with workspaceStrategy instead. With branch, creates the worktree branch (optionally from origin), re-points the thread at the new worktree, and by default runs the project's setup script there; this fails if the thread is already attached to a worktree. With existingWorktreePath, re-points the thread at that existing checkout of the project's repository, even from another worktree; pass the project's main checkout to return to the project root. Changing the workspace detaches the live provider session, so the current turn ends shortly after the handoff is recorded; call this as the last action of the turn. To keep working after the handoff, pass continuationPrompt with the remaining work: it is queued as the thread's next message and starts a new turn inside the worktree with the conversation preserved. Without it the thread stays idle until the next message. The worktree is not removed automatically when the thread is deleted.",
   parameters: WorktreeMcpHandoffInput,
   success: WorktreeMcpHandoffResult,
   failure: WorktreeMcpFailure,
@@ -57,7 +57,7 @@ const WorktreeStatusTool = Tool.make("t3_worktree_status", {
 
 const WorktreeListTool = Tool.make("t3_worktree_list", {
   description:
-    "List branch refs and their associated checkout paths for a thread's workspace (omit threadId for this thread) using the app's ref inventory. Detached worktrees without a branch are not included. Use t3_worktree_status for the thread binding and t3_worktree_handoff to create a new worktree.",
+    "List branch refs and their associated checkout paths for a thread's workspace (omit threadId for this thread) using the app's ref inventory. Detached worktrees without a branch are not included. Use t3_worktree_status for the thread binding and t3_worktree_handoff to move this thread into a new or listed worktree.",
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     query: VcsListRefsInput.fields.query,
