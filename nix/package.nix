@@ -100,15 +100,15 @@ stdenv.mkDerivation (finalAttrs: {
     app="$out/libexec/t3code"
     mkdir -p "$app/apps/desktop" "$app/apps/server"
 
-    cp --recursive --no-preserve=mode node_modules packages "$app"
-    cp --recursive --no-preserve=mode \
+    cp --recursive node_modules packages "$app"
+    cp --recursive \
       apps/desktop/node_modules \
       apps/desktop/dist-electron \
       apps/desktop/resources \
       "$app/apps/desktop"
-    cp --recursive --no-preserve=mode apps/desktop/resources \
+    cp --recursive apps/desktop/resources \
       "$app/apps/desktop/prod-resources"
-    cp --recursive --no-preserve=mode \
+    cp --recursive \
       apps/server/node_modules \
       apps/server/dist \
       "$app/apps/server"
