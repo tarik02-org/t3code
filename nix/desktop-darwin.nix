@@ -78,7 +78,13 @@ stdenvNoCC.mkDerivation {
 
   # Fixup rewrites executable script shebangs inside the sealed resources.
   postFixup = ''
-    /usr/bin/codesign --force --deep --sign - "$out/Applications/T3 Code.app"
+    /usr/bin/codesign \
+      --force \
+      --deep \
+      --options runtime \
+      --entitlements ${./desktop-darwin-entitlements.plist} \
+      --sign - \
+      "$out/Applications/T3 Code.app"
   '';
 
   meta = {
