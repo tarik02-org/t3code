@@ -25,8 +25,8 @@ let
     pname = "t3-resource-monitor";
     version =
       (builtins.fromTOML (builtins.readFile "${src}/native/resource-monitor/Cargo.toml")).package.version;
-    src = "${src}/native/resource-monitor";
-    cargoLock.lockFile = "${src}/native/resource-monitor/Cargo.lock";
+    src = lib.cleanSource "${src}/native/resource-monitor";
+    cargoLock.lockFile = "${resourceMonitor.src}/Cargo.lock";
   };
 in
 stdenv.mkDerivation (finalAttrs: {
@@ -100,16 +100,14 @@ stdenv.mkDerivation (finalAttrs: {
     app="$out/libexec/t3code"
     mkdir -p "$app/apps/desktop" "$app/apps/server"
 
-    cp --recursive node_modules packages "$app"
+    ${lib.getExe nodejs} scripts/stage-nix-runtime-dependencies.ts "$app"
     cp --recursive \
-      apps/desktop/node_modules \
       apps/desktop/dist-electron \
       apps/desktop/resources \
       "$app/apps/desktop"
     cp --recursive apps/desktop/resources \
       "$app/apps/desktop/prod-resources"
     cp --recursive \
-      apps/server/node_modules \
       apps/server/dist \
       "$app/apps/server"
 
