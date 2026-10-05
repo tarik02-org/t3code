@@ -33,6 +33,14 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
+      - name: Cache Nix build dependencies on GitHub
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-build-${{ matrix.system }}-${{ hashFiles('flake.lock', 'pnpm-lock.yaml', 'native/resource-monitor/Cargo.lock') }}
+          restore-prefixes-first-match: nix-build-${{ matrix.system }}-
+          save: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+          gc-max-store-size: 4G
+
       - name: Configure public cache
         uses: cachix/cachix-action@v17
         with:
