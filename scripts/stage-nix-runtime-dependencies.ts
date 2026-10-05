@@ -1,10 +1,18 @@
-// @effect-diagnostics nodeBuiltinImport:off - Node copy preserves pnpm symlinks while filtering build command shims.
-import * as NodeFS from "node:fs";
-import * as NodePath from "node:path";
-import * as Schema from "effect/Schema";
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import type { PlatformError } from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import {
+  HostProcessArchitecture,
+  HostProcessArguments,
+  HostProcessPlatform,
+  HostProcessWorkingDirectory,
+} from "@t3tools/shared/hostProcess";
 
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
@@ -16,111 +24,154 @@ const Manifest = Schema.fromJsonString(
     cpu: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
 );
-const decodeManifest = Schema.decodeSync(Manifest);
-const readManifest = (directory: string) =>
-  decodeManifest(NodeFS.readFileSync(NodePath.join(directory, "package.json"), "utf8"));
+const NotSymlink = Schema.Struct({ code: Schema.Literal("EINVAL") });
+const isNotSymlink = Schema.is(NotSymlink);
+const decodeManifest = Schema.decodeEffect(Manifest);
+const decodeDestination = Schema.decodeUnknownEffect(Schema.String);
 
-const platform = HostProcessPlatform.defaultValue();
-const architecture = HostProcessArchitecture.defaultValue();
-const destination = NodePath.resolve(Schema.decodeUnknownSync(Schema.String)(process.argv[2]));
-const root = process.cwd();
-const store = NodePath.join(root, "node_modules/.pnpm");
-const copied = new Set<string>();
+class RuntimeDependencyOutsideStore extends Schema.TaggedError<RuntimeDependencyOutsideStore>()(
+  "RuntimeDependencyOutsideStore",
+  { source: Schema.String },
+) {
+  override get message() {
+    return `Runtime dependency is outside the pnpm virtual store: ${this.source}`;
+  }
+}
 
 const matchesPlatform = (values: readonly string[] | undefined, current: string) =>
   values === undefined ||
   (!values.includes(`!${current}`) &&
     (values.every((value) => value.startsWith("!")) || values.includes(current)));
 
-function copyDependency(source: string): void {
-  const real = NodeFS.realpathSync(source);
-  const manifest = readManifest(real);
-  if (!matchesPlatform(manifest.os, platform) || !matchesPlatform(manifest.cpu, architecture)) {
-    return;
-  }
-  const relative = NodePath.relative(store, real);
-  const directory = relative.split(NodePath.sep)[0];
-  if (directory === undefined || relative.startsWith("..") || NodePath.isAbsolute(relative)) {
-    throw new Error(`Runtime dependency is outside the pnpm virtual store: ${source}`);
-  }
-  if (copied.has(directory)) return;
-  copied.add(directory);
+const stage = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = yield* HostProcessPlatform;
+  const architecture = yield* HostProcessArchitecture;
+  const args = yield* HostProcessArguments;
+  const destination = path.resolve(yield* decodeDestination(args[2]));
+  const root = yield* HostProcessWorkingDirectory;
+  const store = path.join(root, "node_modules/.pnpm");
+  const copied = new Set<string>();
 
-  const sourceDirectory = NodePath.join(store, directory);
-  const targetDirectory = NodePath.join(destination, "node_modules/.pnpm", directory);
-  // Copy the built package, including native binaries, rather than reinstalling
-  // it from the fetch store and losing build outputs. Preserve pnpm's peer variants.
-  NodeFS.cpSync(
-    NodePath.join(sourceDirectory, "node_modules"),
-    NodePath.join(targetDirectory, "node_modules"),
-    {
-      recursive: true,
-      verbatimSymlinks: true,
-      filter: (file) => {
-        if (NodePath.basename(file) === ".bin") return false;
-        // node-pty only loads Release binaries; generated makefiles retain build tools.
-        const relativeBuild = NodePath.relative(NodePath.join(real, "build"), file);
-        return (
-          NodePath.basename(real) !== "node-pty" ||
-          relativeBuild === "" ||
-          relativeBuild.startsWith("..") ||
-          relativeBuild === "Release" ||
-          relativeBuild.startsWith(`Release${NodePath.sep}`)
-        );
-      },
-    },
-  );
-  const modules = NodePath.join(sourceDirectory, "node_modules");
-  for (const entry of NodeFS.readdirSync(modules, { withFileTypes: true })) {
-    if (entry.name === ".bin") continue;
-    const candidate = NodePath.join(modules, entry.name);
-    if (entry.isSymbolicLink()) {
-      copyDependency(candidate);
-    } else if (entry.name.startsWith("@") && entry.isDirectory()) {
-      for (const scoped of NodeFS.readdirSync(candidate, { withFileTypes: true })) {
-        if (scoped.isSymbolicLink()) copyDependency(NodePath.join(candidate, scoped.name));
+  const readManifest = Effect.fn("readManifest")(function* (directory: string) {
+    const contents = yield* fs.readFileString(path.join(directory, "package.json"));
+    return yield* decodeManifest(contents);
+  });
+
+  const readSymlink = (source: string) =>
+    fs.readLink(source).pipe(
+      Effect.asSome,
+      Effect.catchIf(
+        (error) => error.reason._tag === "Unknown" && isNotSymlink(error.reason.cause),
+        () => Effect.succeed(Option.none<string>()),
+      ),
+    );
+
+  // FileSystem.copy rewrites relative symlinks into source-tree references.
+  // Copy entries individually so the staged pnpm layout remains self-contained.
+  const copyTree = Effect.fn("copyTree")(function* (
+    source: string,
+    target: string,
+    nativeBuild: string | undefined,
+  ): Effect.fn.Return<void, PlatformError> {
+    if (path.basename(source) === ".bin") return;
+    if (nativeBuild !== undefined) {
+      const relative = path.relative(nativeBuild, source);
+      if (
+        relative !== "" &&
+        !relative.startsWith("..") &&
+        relative !== "Release" &&
+        !relative.startsWith(`Release${path.sep}`)
+      )
+        return;
+    }
+    const link = yield* readSymlink(source);
+    if (Option.isSome(link)) {
+      yield* fs.symlink(link.value, target);
+      return;
+    }
+    const info = yield* fs.stat(source);
+    if (info.type === "Directory") {
+      yield* fs.makeDirectory(target, { recursive: true });
+      for (const entry of yield* fs.readDirectory(source)) {
+        yield* copyTree(path.join(source, entry), path.join(target, entry), nativeBuild);
+      }
+      yield* fs.chmod(target, info.mode);
+    } else {
+      yield* fs.copyFile(source, target);
+    }
+  });
+
+  const copyDependency = Effect.fn("copyDependency")(function* (
+    source: string,
+  ): Effect.fn.Return<void, PlatformError | Schema.SchemaError | RuntimeDependencyOutsideStore> {
+    const real = yield* fs.realPath(source);
+    const manifest = yield* readManifest(real);
+    if (!matchesPlatform(manifest.os, platform) || !matchesPlatform(manifest.cpu, architecture))
+      return;
+    const relative = path.relative(store, real);
+    const directory = relative.split(path.sep)[0];
+    if (directory === undefined || relative.startsWith("..") || path.isAbsolute(relative)) {
+      return yield* new RuntimeDependencyOutsideStore({ source });
+    }
+    if (copied.has(directory)) return;
+    copied.add(directory);
+
+    const modules = path.join(store, directory, "node_modules");
+    const target = path.join(destination, "node_modules/.pnpm", directory, "node_modules");
+    // Keep compiled native binaries and peer variants; omit node-pty's build metadata.
+    yield* copyTree(
+      modules,
+      target,
+      path.basename(real) === "node-pty" ? path.join(real, "build") : undefined,
+    );
+    for (const entry of yield* fs.readDirectory(modules)) {
+      if (entry === ".bin") continue;
+      const candidate = path.join(modules, entry);
+      if (Option.isSome(yield* readSymlink(candidate))) {
+        yield* copyDependency(candidate);
+      } else if (entry.startsWith("@") && (yield* fs.stat(candidate)).type === "Directory") {
+        for (const scoped of yield* fs.readDirectory(candidate)) {
+          const scopedPath = path.join(candidate, scoped);
+          if (Option.isSome(yield* readSymlink(scopedPath))) yield* copyDependency(scopedPath);
+        }
       }
     }
-  }
-}
+  });
 
-for (const [project, select] of [
-  ["apps/server", selectCliRuntimeExternalDependencies],
-  ["apps/desktop", selectDesktopRuntimeExternalDependencies],
-] as const) {
-  const manifest = readManifest(NodePath.join(root, project));
-  for (const name of Object.keys(select(manifest.dependencies ?? {}))) {
-    const source = NodePath.join(root, project, "node_modules", name);
-    copyDependency(source);
-    const target = NodePath.join(destination, project, "node_modules", name);
-    NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
-    NodeFS.symlinkSync(
-      NodePath.relative(
-        NodePath.dirname(target),
-        NodePath.join(destination, NodePath.relative(root, NodeFS.realpathSync(source))),
-      ),
+  const stageDependency = Effect.fn("stageDependency")(function* (source: string, target: string) {
+    yield* copyDependency(source);
+    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+    const real = yield* fs.realPath(source);
+    yield* fs.symlink(
+      path.relative(path.dirname(target), path.join(destination, path.relative(root, real))),
       target,
     );
-  }
-}
+  });
 
-// Cursor also searches the public hoist directory for its platform helper.
-const cursor = NodePath.join(root, "node_modules/@cursor");
-if (NodeFS.existsSync(cursor)) {
-  for (const name of NodeFS.readdirSync(cursor)) {
-    if (name !== `sdk-${platform}-${architecture}`) continue;
-    const source = NodePath.join(cursor, name);
-    copyDependency(source);
-    const target = NodePath.join(destination, "node_modules/@cursor", name);
-    NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
-    NodeFS.symlinkSync(
-      NodePath.relative(
-        NodePath.dirname(target),
-        NodePath.join(destination, NodePath.relative(root, NodeFS.realpathSync(source))),
-      ),
-      target,
+  for (const [project, select] of [
+    ["apps/server", selectCliRuntimeExternalDependencies],
+    ["apps/desktop", selectDesktopRuntimeExternalDependencies],
+  ] as const) {
+    const manifest = yield* readManifest(path.join(root, project));
+    for (const name of Object.keys(select(manifest.dependencies ?? {}))) {
+      yield* stageDependency(
+        path.join(root, project, "node_modules", name),
+        path.join(destination, project, "node_modules", name),
+      );
+    }
+  }
+
+  // Cursor also searches the public hoist directory for its platform helper.
+  const cursor = path.join(root, "node_modules/@cursor", `sdk-${platform}-${architecture}`);
+  if (yield* fs.exists(cursor)) {
+    yield* stageDependency(
+      cursor,
+      path.join(destination, "node_modules/@cursor", path.basename(cursor)),
     );
   }
-}
+  yield* Console.log(`Staged ${copied.size} runtime dependency variants.`);
+});
 
-await Effect.runPromise(Console.log(`Staged ${copied.size} runtime dependency variants.`));
+NodeRuntime.runMain(stage.pipe(Effect.provide(NodeServices.layer)));
