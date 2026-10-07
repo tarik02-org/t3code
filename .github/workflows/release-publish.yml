@@ -169,7 +169,7 @@ jobs:
           set -euo pipefail
           if [[ "$PRERELEASE" == true ]]; then
             if [[ -n "$PREVIOUS_TAG" ]]; then
-              node scripts/render-upstream-release-notes.mjs \
+              node scripts/render-upstream-release-notes.ts \
                 --previous-tag "$PREVIOUS_TAG" \
                 --release-ref "$RELEASE_REF" \
                 --upstream-ref "$RELEASE_UPSTREAM_REF" \
@@ -182,7 +182,7 @@ jobs:
             if [[ -n "$pr_number" ]]; then
               gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-body.md
             else
-              node scripts/render-upstream-release-notes.mjs \
+              node scripts/render-upstream-release-notes.ts \
                 --previous-tag "$PREVIOUS_TAG" \
                 --release-ref "$RELEASE_REF" \
                 --upstream-ref "$RELEASE_UPSTREAM_REF" \

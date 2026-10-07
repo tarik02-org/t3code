@@ -1,43 +1,45 @@
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeChildProcess from "node:child_process";
-import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { validateForkHistory } from "./validate-fork-history.ts";
+import { runGit, validateForkHistory } from "./validate-fork-history.ts";
 
-const git = (cwd: string, args: ReadonlyArray<string>): string =>
-  NodeChildProcess.execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "History Test",
-      GIT_AUTHOR_EMAIL: "history@example.com",
-      GIT_COMMITTER_NAME: "History Test",
-      GIT_COMMITTER_EMAIL: "history@example.com",
-    },
-  });
+const writeFile = Effect.fn("writeFile")(function* (target: string, contents: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+  yield* fs.writeFileString(target, contents);
+});
 
-const commitFile = (cwd: string, file: string, contents: string, message: string): string => {
-  const target = `${cwd}/${file}`;
-  NodeFS.mkdirSync(target.slice(0, target.lastIndexOf("/")), { recursive: true });
-  NodeFS.writeFileSync(target, contents);
-  git(cwd, ["add", file]);
-  git(cwd, ["commit", "-m", message]);
-  return git(cwd, ["rev-parse", "HEAD"]).trim();
-};
+const commitFile = Effect.fn("commitFile")(function* (
+  cwd: string,
+  file: string,
+  contents: string,
+  message: string,
+) {
+  const path = yield* Path.Path;
+  yield* writeFile(path.join(cwd, file), contents);
+  yield* runGit(["add", file], cwd);
+  yield* runGit(["commit", "-m", message], cwd);
+  return yield* runGit(["rev-parse", "HEAD"], cwd);
+});
 
-const writeManifests = (cwd: string, version: string, files: ReadonlyArray<string>): void => {
+const writeManifests = Effect.fn("writeManifests")(function* (
+  cwd: string,
+  version: string,
+  files: ReadonlyArray<string>,
+) {
+  const path = yield* Path.Path;
   for (const file of files) {
-    const target = `${cwd}/${file}`;
-    NodeFS.mkdirSync(target.slice(0, target.lastIndexOf("/")), { recursive: true });
-    NodeFS.writeFileSync(target, `${JSON.stringify({ version }, null, 2)}\n`);
+    yield* writeFile(
+      path.join(cwd, file),
+      `${JSON.stringify({ version }, null, 2)}
+`,
+    );
   }
-};
+});
 
 const RELEASE_MANIFESTS = [
   "apps/desktop/package.json",
@@ -52,9 +54,9 @@ const makeRepo = Effect.fn("makeRepo")(function* () {
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "validate-fork-history-" });
   const repo = path.join(root, "repo");
   yield* fs.makeDirectory(repo, { recursive: true });
-  git(repo, ["init", "--initial-branch=main"]);
-  git(repo, ["config", "user.email", "history@example.com"]);
-  git(repo, ["config", "user.name", "History Test"]);
+  yield* runGit(["init", "--initial-branch=main"], repo);
+  yield* runGit(["config", "user.email", "history@example.com"], repo);
+  yield* runGit(["config", "user.name", "History Test"], repo);
   return repo;
 });
 
@@ -65,12 +67,12 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("accepts a fork head based on an older upstream commit", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      const forkBase = commitFile(repo, "README.md", "upstream\n", "upstream one");
-      commitFile(repo, "README.md", "upstream two\n", "upstream two");
-      const upstreamBase = git(repo, ["rev-parse", "HEAD"]).trim();
+      const forkBase = yield* commitFile(repo, "README.md", "upstream\n", "upstream one");
+      yield* commitFile(repo, "README.md", "upstream two\n", "upstream two");
+      const upstreamBase = yield* runGit(["rev-parse", "HEAD"], repo);
 
-      git(repo, ["checkout", "-b", "fork", forkBase]);
-      commitFile(repo, "fork-only.txt", "fork\n", "feat: fork change");
+      yield* runGit(["checkout", "-b", "fork", forkBase], repo);
+      yield* commitFile(repo, "fork-only.txt", "fork\n", "feat: fork change");
 
       const result = yield* validateForkHistory({
         ref: "fork",
@@ -89,10 +91,10 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("rejects a fork head with no common ancestor", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      commitFile(repo, "README.md", "upstream\n", "upstream one");
-      git(repo, ["checkout", "--orphan", "unrelated"]);
-      git(repo, ["rm", "-rf", "--cached", "."]);
-      commitFile(repo, "other.txt", "other\n", "unrelated root");
+      yield* commitFile(repo, "README.md", "upstream\n", "upstream one");
+      yield* runGit(["checkout", "--orphan", "unrelated"], repo);
+      yield* runGit(["rm", "-rf", "--cached", "."], repo);
+      yield* commitFile(repo, "other.txt", "other\n", "unrelated root");
 
       const error = yield* validateForkHistory({
         ref: "unrelated",
@@ -110,13 +112,13 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("rejects merges above the history base", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      commitFile(repo, "README.md", "base\n", "base");
-      git(repo, ["branch", "upstream"]);
-      git(repo, ["checkout", "-b", "side"]);
-      commitFile(repo, "side.txt", "side\n", "side");
-      git(repo, ["checkout", "main"]);
-      commitFile(repo, "main.txt", "main\n", "main");
-      git(repo, ["merge", "--no-ff", "side", "-m", "merge side"]);
+      yield* commitFile(repo, "README.md", "base\n", "base");
+      yield* runGit(["branch", "upstream"], repo);
+      yield* runGit(["checkout", "-b", "side"], repo);
+      yield* commitFile(repo, "side.txt", "side\n", "side");
+      yield* runGit(["checkout", "main"], repo);
+      yield* commitFile(repo, "main.txt", "main\n", "main");
+      yield* runGit(["merge", "--no-ff", "side", "-m", "merge side"], repo);
 
       const error = yield* validateForkHistory({
         ref: "main",
@@ -134,7 +136,7 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("requires a release-state subject when requested", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      commitFile(repo, "README.md", "base\n", "base");
+      yield* commitFile(repo, "README.md", "base\n", "base");
 
       const error = yield* validateForkHistory({
         ref: "main",
@@ -152,10 +154,10 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("accepts a consistent release-state commit", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      commitFile(repo, "README.md", "base\n", "base");
-      writeManifests(repo, "9.9.9", RELEASE_MANIFESTS);
-      git(repo, ["add", "."]);
-      git(repo, ["commit", "-m", "prepare stable release 9.9.9"]);
+      yield* commitFile(repo, "README.md", "base\n", "base");
+      yield* writeManifests(repo, "9.9.9", RELEASE_MANIFESTS);
+      yield* runGit(["add", "."], repo);
+      yield* runGit(["commit", "-m", "prepare stable release 9.9.9"], repo);
 
       const result = yield* validateForkHistory({
         ref: "main",
@@ -171,11 +173,11 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("rejects release-state commits that disagree on the version", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      commitFile(repo, "README.md", "base\n", "base");
-      writeManifests(repo, "9.9.9", RELEASE_MANIFESTS);
-      writeManifests(repo, "9.9.10", ["apps/web/package.json"]);
-      git(repo, ["add", "."]);
-      git(repo, ["commit", "-m", "prepare stable release 9.9.9"]);
+      yield* commitFile(repo, "README.md", "base\n", "base");
+      yield* writeManifests(repo, "9.9.9", RELEASE_MANIFESTS);
+      yield* writeManifests(repo, "9.9.10", ["apps/web/package.json"]);
+      yield* runGit(["add", "."], repo);
+      yield* runGit(["commit", "-m", "prepare stable release 9.9.9"], repo);
 
       const error = yield* validateForkHistory({
         ref: "main",
@@ -193,9 +195,9 @@ it.layer(NodeServices.layer)("validateForkHistory", (it) => {
   it.effect("rejects release-state commits that touch files outside the release set", () =>
     Effect.gen(function* () {
       const repo = yield* makeRepo();
-      commitFile(repo, "README.md", "base\n", "base");
-      writeManifests(repo, "9.9.9", RELEASE_MANIFESTS);
-      commitFile(repo, "scripts/extra.ts", "extra\n", "prepare stable release 9.9.9");
+      yield* commitFile(repo, "README.md", "base\n", "base");
+      yield* writeManifests(repo, "9.9.9", RELEASE_MANIFESTS);
+      yield* commitFile(repo, "scripts/extra.ts", "extra\n", "prepare stable release 9.9.9");
 
       const error = yield* validateForkHistory({
         ref: "main",

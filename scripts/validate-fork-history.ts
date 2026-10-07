@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HostProcessWorkingDirectory } from "@t3tools/shared/hostProcess";
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
@@ -144,7 +145,7 @@ const runGitCommand = Effect.fn("validateForkHistory.runGitCommand")(function* (
   return { context, stdout, stderr, exitCode } as const;
 });
 
-const runGit = Effect.fn("validateForkHistory.runGit")(function* (
+export const runGit = Effect.fn("validateForkHistory.runGit")(function* (
   args: ReadonlyArray<string>,
   cwd: string,
 ) {
@@ -170,7 +171,7 @@ export const validateForkHistory = Effect.fn("validateForkHistory")(function* (i
   // point it at a scratch repo instead of changing the process cwd.
   readonly repoDir?: string;
 }) {
-  const repoDir = input.repoDir ?? process.cwd();
+  const repoDir = input.repoDir ?? (yield* HostProcessWorkingDirectory);
   const head = yield* runGit(["rev-parse", input.ref], repoDir);
   const upstreamBase = yield* runGit(["rev-parse", input.upstreamRef], repoDir);
 

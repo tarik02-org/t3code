@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeChildProcess from "node:child_process";
-import * as NodeFS from "node:fs";
-import * as NodePath from "node:path";
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Config from "effect/Config";
+import * as Console from "effect/Console";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { Command, Flag } from "effect/cli";
+
+import { listGitTags } from "./resolve-previous-release-tag.ts";
 
 export interface ForkStableReleaseMetadata {
   readonly version: string;
@@ -11,62 +19,29 @@ export interface ForkStableReleaseMetadata {
   readonly name: string;
 }
 
-function parseArgs(argv: ReadonlyArray<string>): {
-  readonly date: string;
-  readonly root: string;
-  readonly githubOutput: boolean;
-  readonly versionOnly: boolean;
-} {
-  let date: string | undefined;
-  let root = process.cwd();
-  let githubOutput = false;
-  let versionOnly = false;
+const DateSchema = Schema.String.check(Schema.isPattern(/^\d{8}$/));
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--date") {
-      const value = argv[index + 1];
-      if (!value) {
-        throw new Error("--date requires a value.");
-      }
-      date = value;
-      index += 1;
-      continue;
-    }
-    if (arg === "--root") {
-      const value = argv[index + 1];
-      if (!value) {
-        throw new Error("--root requires a value.");
-      }
-      root = NodePath.resolve(value);
-      index += 1;
-      continue;
-    }
-    if (arg === "--github-output") {
-      githubOutput = true;
-      continue;
-    }
-    if (arg === "--version-only") {
-      versionOnly = true;
-      continue;
-    }
-    throw new Error(`Unknown argument: ${arg}`);
+export class ForkStableReleaseGitHubOutputConfigError extends Schema.TaggedError<ForkStableReleaseGitHubOutputConfigError>()(
+  "ForkStableReleaseGitHubOutputConfigError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to resolve the GITHUB_OUTPUT path for fork stable release metadata.";
   }
-
-  if (!date || !/^\d{8}$/.test(date)) {
-    throw new Error("--date must use YYYYMMDD.");
-  }
-
-  return { date, root, githubOutput, versionOnly };
 }
 
-function readGitTags(root: string): ReadonlyArray<string> {
-  return NodeChildProcess.execFileSync("git", ["tag", "--list"], {
-    cwd: root,
-    encoding: "utf8",
-  })
-    .split("\n")
-    .filter((tag) => tag.length > 0);
+export class ForkStableReleaseGitHubOutputAppendError extends Schema.TaggedError<ForkStableReleaseGitHubOutputAppendError>()(
+  "ForkStableReleaseGitHubOutputAppendError",
+  {
+    outputPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to append fork stable release metadata to ${this.outputPath}.`;
+  }
 }
 
 export function resolveForkStableReleaseMetadata(
@@ -104,33 +79,75 @@ export function resolveForkStableReleaseMetadata(
   };
 }
 
-function writeOutput(metadata: ForkStableReleaseMetadata, githubOutput: boolean): void {
+const writeForkStableReleaseOutput = Effect.fn("writeForkStableReleaseOutput")(function* (
+  metadata: ForkStableReleaseMetadata,
+  writeGithubOutput: boolean,
+) {
   const entries = [
     ["version", metadata.version],
     ["tag", metadata.tag],
     ["name", metadata.name],
   ] as const;
 
-  if (githubOutput) {
-    const outputPath = process.env.GITHUB_OUTPUT;
-    if (!outputPath) {
-      throw new Error("GITHUB_OUTPUT is not set.");
+  if (!writeGithubOutput) {
+    for (const [key, value] of entries) {
+      yield* Console.log(`${key}=${value}`);
     }
-    NodeFS.appendFileSync(outputPath, entries.map(([key, value]) => `${key}=${value}\n`).join(""));
     return;
   }
 
-  for (const [key, value] of entries) {
-    process.stdout.write(`${key}=${value}\n`);
-  }
-}
+  const fs = yield* FileSystem.FileSystem;
+  const githubOutputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
+    Effect.mapError((cause) => new ForkStableReleaseGitHubOutputConfigError({ cause })),
+  );
+  const serialized = entries.map(([key, value]) => `${key}=${value}\n`).join("");
+  yield* fs
+    .writeFileString(githubOutputPath, serialized, { flag: "a" })
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new ForkStableReleaseGitHubOutputAppendError({ outputPath: githubOutputPath, cause }),
+      ),
+    );
+});
+
+const command = Command.make(
+  "resolve-fork-stable-release",
+  {
+    date: Flag.String("date").pipe(
+      Flag.withSchema(DateSchema),
+      Flag.withDescription("Release date in UTC, formatted as YYYYMMDD."),
+    ),
+    root: Flag.String("root").pipe(
+      Flag.withDescription("Repository whose tags are read. Defaults to the working directory."),
+      Flag.optional,
+    ),
+    githubOutput: Flag.Boolean("github-output").pipe(
+      Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
+      Flag.withDefault(false),
+    ),
+    versionOnly: Flag.Boolean("version-only").pipe(
+      Flag.withDescription("Print only the resolved version."),
+      Flag.withDefault(false),
+    ),
+  },
+  ({ date, root, githubOutput, versionOnly }) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const tags = yield* listGitTags(Option.getOrUndefined(Option.map(root, path.resolve)));
+      const metadata = resolveForkStableReleaseMetadata(date, tags);
+      if (versionOnly) {
+        yield* Console.log(metadata.version);
+        return;
+      }
+      yield* writeForkStableReleaseOutput(metadata, githubOutput);
+    }),
+).pipe(Command.withDescription("Resolve the next date-based fork stable release version."));
 
 if (import.meta.main) {
-  const args = parseArgs(process.argv.slice(2));
-  const metadata = resolveForkStableReleaseMetadata(args.date, readGitTags(args.root));
-  if (args.versionOnly) {
-    process.stdout.write(`${metadata.version}\n`);
-  } else {
-    writeOutput(metadata, args.githubOutput);
-  }
+  Command.run(command, { version: "0.0.0" }).pipe(
+    Effect.scoped,
+    Effect.provide(NodeServices.layer),
+    NodeRuntime.runMain,
+  );
 }

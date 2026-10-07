@@ -156,7 +156,7 @@ jobs:
 
       - name: Render upstream changelog
         run: |
-          node scripts/render-upstream-release-notes.mjs \
+          node scripts/render-upstream-release-notes.ts \
             --previous-tag "${{ steps.previous_tag.outputs.previous_tag }}" \
             --release-ref HEAD \
             --upstream-ref refs/remotes/upstream/main \
