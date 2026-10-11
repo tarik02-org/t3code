@@ -7,7 +7,7 @@ name: Desktop macOS Preview Publish
 #
 # Gate, in order: the completed build run belongs to an open PR that still
 # carries the preview:mac label and whose head is the built commit, and the PR
-# author is trusted by the vouch list. A maintainer applying the label alone is
+# author is a collaborator or bot. A maintainer applying the label alone is
 # not enough, since the bundle gets signed with the Developer ID certificate.
 #
 # The label is consumed here once the gate passes, so it only ever covers the
@@ -179,13 +179,14 @@ jobs:
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # VOUCHED.td is upstream's list; it is not trusted with this fork's certificate.
           case "$VOUCH_STATUS" in
-            bot|collaborator|vouched)
+            bot|collaborator)
               echo "Author $AUTHOR is trusted ($VOUCH_STATUS)."
               echo "eligible=true" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "Author $AUTHOR is not vouched ($VOUCH_STATUS). Add them to .github/VOUCHED.td to allow signed previews."
+              echo "Author $AUTHOR is not a collaborator ($VOUCH_STATUS). Signed previews are limited to collaborators and bots."
               echo "eligible=false" >> "$GITHUB_OUTPUT"
               ;;
           esac

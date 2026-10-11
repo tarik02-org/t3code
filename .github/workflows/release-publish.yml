@@ -91,7 +91,7 @@ jobs:
       channel: ${{ steps.read.outputs.channel }}
     steps:
       - name: Download release metadata
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-metadata
           path: release-metadata
@@ -127,13 +127,13 @@ jobs:
       name: ${{ needs.metadata.outputs.environment }}
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.metadata.outputs.ref }}
           fetch-depth: 0
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -191,7 +191,7 @@ jobs:
           fi
 
       - name: Download desktop artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: desktop-*
           merge-multiple: true
@@ -200,7 +200,7 @@ jobs:
           run-id: ${{ needs.runs.outputs.build_run_id }}
 
       - name: Download web artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: web-dist
           path: release-assets
@@ -208,7 +208,7 @@ jobs:
           run-id: ${{ needs.runs.outputs.build_run_id }}
 
       - name: Download CLI archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: cli-*
           merge-multiple: true
@@ -227,7 +227,7 @@ jobs:
           done
 
       - name: Publish release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ needs.metadata.outputs.tag }}
           target_commitish: ${{ needs.metadata.outputs.ref }}
