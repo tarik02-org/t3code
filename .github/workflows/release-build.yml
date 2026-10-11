@@ -36,7 +36,7 @@ jobs:
       ref: ${{ inputs.release_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.release_ref }}
           fetch-depth: 0
@@ -46,7 +46,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -135,7 +135,7 @@ jobs:
             > release-metadata/release.json
 
       - name: Upload release metadata
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-metadata
           path: release-metadata/release.json
@@ -152,7 +152,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.metadata.outputs.ref }}
           sparse-checkout: |
@@ -161,10 +161,10 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       - name: Restore and populate Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v14
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-flakehub: false
           use-gha-cache: true
@@ -194,7 +194,7 @@ jobs:
           test -f release-common/apps/server/dist/bin.mjs
 
       - name: Upload shared release files
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-common
           path: release-common
@@ -214,7 +214,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.metadata.outputs.ref }}
           sparse-checkout: |
@@ -223,7 +223,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -233,13 +233,15 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       # Brings apps/server/dist (server bundle plus web client) and the desktop
       # resources; the resource monitor is built below, since the Nix runtime
       # output does not carry it.
       - name: Download shared release files
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-common
           path: .
@@ -278,7 +280,7 @@ jobs:
         run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.metadata.outputs.version }}"
 
       - name: Upload CLI archive
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cli-linux-x64
           path: release-cli/*
@@ -335,7 +337,7 @@ jobs:
       T3CODE_DESKTOP_SIGNED: "false"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.metadata.outputs.ref }}
           sparse-checkout: |
@@ -344,7 +346,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -355,13 +357,15 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Set release version
         run: node scripts/update-release-package-versions.ts "${{ needs.metadata.outputs.version }}"
 
       - name: Download shared release files
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-common
           path: .
@@ -370,7 +374,7 @@ jobs:
       # Windows desktop embeds the same-arch archive the release attaches.
       - name: Download Linux CLI archive for WSL
         if: matrix.platform == 'win'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: cli-linux-${{ matrix.arch }}
           path: wsl-runtime
@@ -458,7 +462,7 @@ jobs:
 
       - name: Upload CLI archive
         if: matrix.cli_archive == true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cli-${{ matrix.resource_key }}
           path: release-cli/*
@@ -489,7 +493,7 @@ jobs:
           fi
 
       - name: Upload desktop artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-publish/*
@@ -509,12 +513,12 @@ jobs:
       VITE_HOSTED_APP_CHANNEL: ${{ needs.metadata.outputs.channel == 'canary' && 'canary' || contains(needs.metadata.outputs.version, '-nightly.') && 'nightly' || 'latest' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.metadata.outputs.ref }}
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -545,7 +549,7 @@ jobs:
           unzip -t "$archive"
 
       - name: Upload web artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: web-dist
           path: release-publish/*.zip
