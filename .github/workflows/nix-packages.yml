@@ -27,6 +27,10 @@ jobs:
     name: Nix (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      # Consumers fetch `github:` archives, whose source store path differs from this
+      # checkout's, so publishable builds use the same source to give them cache hits.
+      FLAKE: ${{ inputs.ref && format('github:{0}/{1}', github.repository, inputs.ref) || (github.event_name == 'push' && format('github:{0}/{1}', github.repository, github.sha)) || '.' }}
     strategy:
       fail-fast: false
       matrix:
@@ -62,15 +66,15 @@ jobs:
         shell: bash
         run: |
           nix build --no-link --print-out-paths --print-build-logs \
-            .#t3code-headless .#t3code-runtime .#t3code-desktop > "$RUNNER_TEMP/nix-package-paths"
+            "$FLAKE#t3code-headless" "$FLAKE#t3code-runtime" "$FLAKE#t3code-desktop" > "$RUNNER_TEMP/nix-package-paths"
 
       - name: Smoke-test packages
         shell: bash
         run: |
-          headless="$(nix eval --raw .#t3code-headless.outPath)"
-          desktop="$(nix eval --raw .#t3code-desktop.outPath)"
-          runtime="$(nix eval --raw .#t3code-runtime.outPath)"
-          electron="$(nix eval --raw .#t3code-desktop.electron.outPath)"
+          headless="$(nix eval --raw "$FLAKE#t3code-headless.outPath")"
+          desktop="$(nix eval --raw "$FLAKE#t3code-desktop.outPath")"
+          runtime="$(nix eval --raw "$FLAKE#t3code-runtime.outPath")"
+          electron="$(nix eval --raw "$FLAKE#t3code-desktop.electron.outPath")"
           electron_bin="$electron/bin/electron"
           app_root="$runtime/libexec/t3code"
           if [[ "$RUNNER_OS" == macOS ]]; then
