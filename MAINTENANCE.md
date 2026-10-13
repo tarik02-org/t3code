@@ -91,6 +91,8 @@ If the build fails, rerun it on the same SHA. No release exists until the publis
 
 Every push to `main` starts the nightly build. A stable preparation commit is excluded from nightly packaging.
 
+Publication tags a child of the built commit that only sets the four package manifests to the prerelease version, so the flake at the tag reports that version. The commit never lands on `main`. Stable tags point at the release-state commit itself. After the release is published, the Nix packages for the tag are built and pushed to Cachix.
+
 Nightly notes compare the previous channel tag and the upstream bases of the two release commits. Fork-only commits are omitted. Stable notes include the generated upstream section plus the manual fork section from the release PR.
 
 Release publication requires successful CI, successful `history/validated`, and a successful matching build for the same SHA.
