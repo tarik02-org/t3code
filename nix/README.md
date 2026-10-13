@@ -19,10 +19,17 @@ managed by Nix, not the desktop updater.
 
 ## Prebuilt packages
 
-Trusted `main` builds publish both packages to the public `tarik02-t3code` Cachix
-cache. Pull requests build without cache write credentials. Packages are built
-from the flake directly, without release version overrides or release-asset hashes.
-Pin the flake revision in your lockfile to select a version.
+Trusted `main` builds and published release tags, stable and nightly, publish
+`t3code-runtime`, `t3code-headless`, and `t3code-desktop` to the public
+`tarik02-t3code` Cachix cache. Pull requests build without cache write
+credentials. Packages are built from the flake directly, without release version
+overrides or release-asset hashes. Each release tag points at a commit whose
+package version matches the tag, so pin the flake to a tag such as
+`github:tarik02-org/t3code/v2026.9.700` to select a version.
+
+Cached builds use this flake's locked `nixpkgs`. Do not set
+`inputs.t3code.inputs.nixpkgs.follows` or override the package version if you
+want cache hits; either change produces a different derivation.
 
 The flake offers the cache configuration when used directly. For NixOS or
 nix-darwin configurations that consume it as an input, configure the cache explicitly:
