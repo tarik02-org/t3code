@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "2026.9.700",
+  "version": "2026.9.701-nightly.20261016.562",
   "private": true,
   "files": [
     "dist"
